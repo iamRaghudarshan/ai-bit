@@ -5,6 +5,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import 'models.dart';
 import 'preview_data.dart';
+import 'search_client.dart';
 
 /// Wraps `youtube_explode_dart` and hides its client-selection quirks behind a
 /// small task-shaped API.
@@ -15,9 +16,10 @@ import 'preview_data.dart';
 /// occasionally — [resolve] therefore walks a fallback chain of API clients
 /// instead of trusting a single one.
 class YtRepository {
-  YtRepository() : _yt = yt.YoutubeExplode();
+  YtRepository() : _yt = yt.YoutubeExplode(), _search = YoutubeSearchClient();
 
   final yt.YoutubeExplode _yt;
+  final YoutubeSearchClient _search;
 
   /// Signed CDN URLs stay valid for roughly six hours; expire ours well before
   /// that so a long-lived app never hands a dead URL to the player.
@@ -56,7 +58,10 @@ class YtRepository {
     'football highlights',
   ];
 
-  void dispose() => _yt.close();
+  void dispose() {
+    _yt.close();
+    _search.close();
+  }
 
   // ------------------------------------------------------------------ feed
 
@@ -108,11 +113,14 @@ class YtRepository {
           .toList();
     }
 
-    final results = await _yt.search.search(
+    // Deliberately not _yt.search.search — see YoutubeSearchClient for why the
+    // package's own parser cannot read YouTube's current search response.
+    return _search.search(
       query,
-      filter: sortByViews ? yt.SortFilters.viewCount : yt.TypeFilters.video,
+      params: sortByViews
+          ? YoutubeSearchClient.filterByViewCount
+          : YoutubeSearchClient.filterVideosOnly,
     );
-    return results.map(VideoBrief.fromYt).toList();
   }
 
   Future<List<String>> suggestions(String query) async {
