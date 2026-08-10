@@ -68,9 +68,26 @@ jobs:
       # workflow does not go permanently red before the account is wired up.
       # A workflow that is red for a thing you chose not to do teaches people to
       # ignore it being red.
-      - name: Is there an Apple account configured?
+      # Every secret the job needs, checked together and BEFORE the archive.
+      # Gating on the certificate alone meant a missing upload credential still
+      # spent a full macOS archive — billed at ten times the Linux rate — only
+      # to fail on the last step.
+      - name: Is everything Apple needs configured?
         id: apple
-        run: echo "ready=${{ secrets.IOS_CERT_P12_BASE64 != '' }}" >> $GITHUB_OUTPUT
+        run: |
+          MISSING=""
+          [ -n "${{ secrets.IOS_CERT_P12_BASE64 }}" ] || MISSING="$MISSING IOS_CERT_P12_BASE64"
+          [ -n "${{ secrets.IOS_CERT_PASSWORD }}"   ] || MISSING="$MISSING IOS_CERT_PASSWORD"
+          [ -n "${{ secrets.IOS_PROFILE_BASE64 }}"  ] || MISSING="$MISSING IOS_PROFILE_BASE64"
+          [ -n "${{ secrets.APPLE_TEAM_ID }}"       ] || MISSING="$MISSING APPLE_TEAM_ID"
+          [ -n "${{ secrets.APPLE_ID }}"            ] || MISSING="$MISSING APPLE_ID"
+          [ -n "${{ secrets.APPLE_APP_PASSWORD }}"  ] || MISSING="$MISSING APPLE_APP_PASSWORD"
+          if [ -n "$MISSING" ]; then
+            echo "ready=false" >> $GITHUB_OUTPUT
+            echo "missing=$MISSING" >> $GITHUB_OUTPUT
+          else
+            echo "ready=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Install the signing certificate
         if: steps.apple.outputs.ready == 'true'
@@ -182,12 +199,15 @@ jobs:
           path: build/ios/ipa/*.ipa
           retention-days: 14
 
-      - name: Say plainly that iOS was skipped
+      - name: Say plainly which secrets are missing
         if: steps.apple.outputs.ready != 'true'
         run: |
-          echo "::warning::No Apple signing secrets are configured, so nothing was"
-          echo "::warning::built. Add the IOS_* and APPLE_* secrets — see"
-          echo "::warning::TESTFLIGHT.md — then re-push the tag."
+          echo "::warning::Skipped the iOS build. Missing secrets:"
+          echo "::warning::  ${{ steps.apple.outputs.missing }}"
+          echo "::warning::Add them under Settings > Secrets and variables >"
+          echo "::warning::Actions, then delete and re-push the tag:"
+          echo "::warning::  git tag -d v1.0.0 && git push origin :v1.0.0"
+          echo "::warning::  git tag v1.0.0 && git push origin v1.0.0"
 
   android:
     name: Android
