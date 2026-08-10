@@ -49,6 +49,12 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Answers App Store Connect's export-compliance question at build time.
+	     Without it every uploaded build stops at "Missing Compliance" and waits
+	     for someone to click through the web form before testers can install
+	     it. The app only uses HTTPS, which is exempt. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- Required for background audio playback and Picture-in-Picture.
 	     Without "audio" here iOS suspends AVPlayer the moment the app leaves
 	     the foreground, and AVPictureInPictureController refuses to start. -->
