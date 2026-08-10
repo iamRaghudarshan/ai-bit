@@ -155,7 +155,14 @@ class PlaybackController extends ChangeNotifier {
           ? BetterPlayerDataSourceType.file
           : BetterPlayerDataSourceType.network,
       _preferredUrl(sources),
-      liveStream: video.isLive,
+      liveStream: sources.isLive || video.isLive,
+      // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
+      // without the hint AVPlayer guesses from the path and gets it wrong.
+      videoFormat: sources.isHls ? BetterPlayerVideoFormat.hls : null,
+      // Let better_player read the ladder's variants off the manifest, which is
+      // what puts real quality options in the overflow menu.
+      useAsmsTracks: sources.isHls,
+      useAsmsSubtitles: sources.isHls,
       resolutions: sources.qualities.isEmpty ? null : sources.qualities,
       // Turning the notification on is not cosmetic: better_player treats a
       // visible notification as "the host app manages playback", which is what

@@ -231,6 +231,7 @@ class PlaybackSources {
     required this.qualities,
     this.audioOnlyUrl,
     this.isHls = false,
+    this.isLive = false,
     this.videoUnavailable = false,
   });
 
@@ -244,6 +245,10 @@ class PlaybackSources {
   final String? audioOnlyUrl;
 
   final bool isHls;
+
+  /// Live streams have no duration and cannot be seeked past the edge; the
+  /// player needs telling so it shows a LIVE badge instead of a broken bar.
+  final bool isLive;
 
   /// True when we fell back to audio because YouTube offered no combined
   /// video+audio stream for this video at all. The UI surfaces this rather

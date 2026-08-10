@@ -141,7 +141,16 @@ class SearchPageState extends State<SearchPage> {
 
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 8,
+        titleSpacing: 0,
+        // Only when this page was pushed. As a bottom-nav tab there is nothing
+        // to go back to, and a dead arrow is worse than none.
+        leading: Navigator.of(context).canPop()
+            ? IconButton(
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Back',
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         automaticallyImplyLeading: false,
         title: TextField(
           controller: _controller,

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import 'models.dart';
+import 'player_client.dart';
 import 'preview_data.dart';
 import 'search_client.dart';
 
@@ -16,10 +17,14 @@ import 'search_client.dart';
 /// occasionally — [resolve] therefore walks a fallback chain of API clients
 /// instead of trusting a single one.
 class YtRepository {
-  YtRepository() : _yt = yt.YoutubeExplode(), _search = YoutubeSearchClient();
+  YtRepository()
+    : _yt = yt.YoutubeExplode(),
+      _search = YoutubeSearchClient(),
+      _player = YoutubePlayerClient();
 
   final yt.YoutubeExplode _yt;
   final YoutubeSearchClient _search;
+  final YoutubePlayerClient _player;
 
   /// Signed CDN URLs stay valid for roughly six hours; expire ours well before
   /// that so a long-lived app never hands a dead URL to the player.
@@ -61,6 +66,7 @@ class YtRepository {
   void dispose() {
     _yt.close();
     _search.close();
+    _player.close();
   }
 
   // ------------------------------------------------------------------ feed
@@ -190,12 +196,18 @@ class YtRepository {
 
   /// Resolves playable stream URLs for [videoId].
   ///
-  /// The player takes exactly one URL, so what matters here is finding a
-  /// *combined* video+audio stream. As of this build YouTube only still serves
-  /// one of those (the legacy 360p MP4) and only to the Android-family clients
-  /// — the iOS client returns separate video-only and audio-only tracks with no
-  /// HLS ladder at all. So the chain is ordered by who actually yields a
-  /// combined stream, with iOS kept on as an audio source of last resort.
+  /// Preference order, and why:
+  ///
+  ///   1. **HLS ladder** from [YoutubePlayerClient]. Adaptive, muxed, and goes
+  ///      to 2160p for on-demand video and 1080p for live. It is also the only
+  ///      thing that plays a live stream at all.
+  ///   2. **Progressive muxed MP4**, capped by YouTube at 360p. Only reached
+  ///      when no ladder is offered.
+  ///   3. **Audio only**, rather than failing outright.
+  ///
+  /// An earlier version went straight to (2) because `youtube_explode_dart`
+  /// never surfaces `hlsManifestUrl`, which made 360p look like a hard ceiling.
+  /// It was not.
   ///
   /// Re-check the ordering with `dart run tool/probe_clients.dart` if playback
   /// quality or reliability ever regresses.
@@ -204,6 +216,42 @@ class YtRepository {
     final cached = _streamCache[key];
     if (cached != null && DateTime.now().difference(cached.at) < _streamTtl) {
       return cached.sources;
+    }
+
+    // Ask YouTube's player endpoint first. It is the only source of the HLS
+    // ladder, which is both the way to get above 360p and the only way to play
+    // a live stream at all.
+    try {
+      final streams = await _player.fetch(videoId);
+      if (streams != null) {
+        if (audioOnly && streams.audioUrl != null) {
+          return _cache(key, PlaybackSources(
+            url: streams.audioUrl!,
+            qualities: const {},
+            audioOnlyUrl: streams.audioUrl,
+          ));
+        }
+        if (streams.hlsUrl != null) {
+          return _cache(key, PlaybackSources(
+            url: streams.hlsUrl!,
+            // Quality is chosen inside the ladder; better_player reads the
+            // variants off the manifest and offers them natively.
+            qualities: const {},
+            audioOnlyUrl: streams.audioUrl,
+            isHls: true,
+            isLive: streams.isLive,
+          ));
+        }
+        if (streams.muxedUrl != null) {
+          return _cache(key, PlaybackSources(
+            url: streams.muxedUrl!,
+            qualities: const {},
+            audioOnlyUrl: streams.audioUrl,
+          ));
+        }
+      }
+    } catch (e) {
+      debugPrint('AI BIT: player endpoint failed for $videoId — $e');
     }
 
     Object? lastError;
