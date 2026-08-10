@@ -190,7 +190,7 @@ class DownloadManager extends ChangeNotifier {
         _records[id]!.copyWith(status: DownloadStatus.failed, error: message),
       );
       await _db.updateDownloadStatus(id, DownloadStatus.failed, error: message);
-      debugPrint('AI Tube: download failed for $id — $e');
+      debugPrint('AI BIT: download failed for $id — $e');
     } finally {
       _activeSubscription = null;
     }

@@ -21,7 +21,7 @@ class AppDatabase {
     // in a browser.
     if (kIsWeb) databaseFactory = databaseFactoryFfiWeb;
 
-    final path = kIsWeb ? 'ai_tube.db' : '${await getDatabasesPath()}/ai_tube.db';
+    final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
       version: 2,

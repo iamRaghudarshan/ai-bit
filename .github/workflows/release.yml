@@ -1,4 +1,4 @@
-# Build AI Tube for iOS and hand it to TestFlight, without owning a Mac.
+# Build AI BIT for iOS and hand it to TestFlight, without owning a Mac.
 #
 # THE POINT
 # iOS apps can only be compiled and signed on macOS. This runs the build on
@@ -18,10 +18,10 @@
 #   APPLE_TEAM_ID          P57Y6ND67Y
 #   IOS_CERT_P12_BASE64    the distribution certificate, base64
 #   IOS_CERT_PASSWORD      its password
-#   IOS_PROFILE_BASE64     the AI Tube provisioning profile, base64
+#   IOS_PROFILE_BASE64     the AI BIT provisioning profile, base64
 #
 # The certificate is per-team and is the same one SafeNest uses. The
-# provisioning profile is NOT — it is tied to a bundle id, so AI Tube needs its
+# provisioning profile is NOT — it is tied to a bundle id, so AI BIT needs its
 # own. See TESTFLIGHT.md.
 name: Release
 
@@ -178,7 +178,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.apple.outputs.ready == 'true'
         with:
-          name: aitube-ios
+          name: aibit-ios
           path: build/ios/ipa/*.ipa
           retention-days: 14
 
@@ -224,6 +224,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: aitube-android
+          name: aibit-android
           path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 14

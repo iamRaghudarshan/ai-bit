@@ -1,4 +1,4 @@
-# AI Tube
+# AI BIT
 
 A personal, ad-free YouTube client for iOS (and Android) built in Flutter.
 
@@ -134,7 +134,7 @@ open ios/Runner.xcworkspace
 - Select the *Runner* target → *Signing & Capabilities*.
 - Set *Team* to your personal Apple ID (a free account is fine).
 - Change the *Bundle Identifier* to something unique, e.g.
-  `com.yourname.aitube`.
+  `com.yourname.aibit`.
 - Confirm *Background Modes* is checked with **Audio, AirPlay, and Picture in
   Picture** — `Info.plist` already declares it, this just surfaces it in Xcode.
 
@@ -175,7 +175,7 @@ Mac or an Android SDK. **Video will not play there**, and that is expected:
 ```bash
 flutter run -d chrome \
   --web-browser-flag "--disable-web-security" \
-  --web-browser-flag "--user-data-dir=/tmp/aitube_chrome_profile"
+  --web-browser-flag "--user-data-dir=/tmp/aibit_chrome_profile"
 ```
 
 The separate `--user-data-dir` is required — Chrome ignores

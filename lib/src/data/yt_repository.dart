@@ -230,7 +230,7 @@ class YtRepository {
         audioFallback ??= audioUrl;
       } catch (e) {
         lastError = e;
-        debugPrint('AI Tube: stream client failed for $videoId — $e');
+        debugPrint('AI BIT: stream client failed for $videoId — $e');
       }
     }
 
@@ -290,7 +290,7 @@ class YtRepository {
         );
       } catch (e) {
         lastError = e;
-        debugPrint('AI Tube: download client failed for $videoId — $e');
+        debugPrint('AI BIT: download client failed for $videoId — $e');
       }
     }
     throw StreamResolutionException(videoId, lastError);
@@ -361,7 +361,7 @@ class YtRepository {
     try {
       return await task();
     } catch (e) {
-      debugPrint('AI Tube: feed section failed — $e');
+      debugPrint('AI BIT: feed section failed — $e');
       return const [];
     }
   }

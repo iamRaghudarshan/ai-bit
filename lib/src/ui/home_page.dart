@@ -93,7 +93,7 @@ class _HomePageState extends State<HomePage>
           children: [
             const Icon(Icons.play_circle_fill, color: Color(0xFFFF0033), size: 26),
             const SizedBox(width: 6),
-            Text('AI Tube', style: Theme.of(context).appBarTheme.titleTextStyle),
+            Text('AI BIT', style: Theme.of(context).appBarTheme.titleTextStyle),
           ],
         ),
         actions: [

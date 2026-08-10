@@ -1,5 +1,5 @@
-import 'package:ai_tube/src/core/format.dart';
-import 'package:ai_tube/src/data/models.dart';
+import 'package:ai_bit/src/core/format.dart';
+import 'package:ai_bit/src/data/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

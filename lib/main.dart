@@ -24,7 +24,7 @@ Future<void> main() async {
   final database = await AppDatabase.open();
   final settings = await SettingsService.load();
 
-  runApp(AiTubeApp(database: database, settings: settings));
+  runApp(AiBitApp(database: database, settings: settings));
 }
 
 /// Constrains the browser preview to an iPhone-sized viewport inside a device
@@ -103,8 +103,8 @@ Widget _phoneFrame(BuildContext context, Widget? child) {
   );
 }
 
-class AiTubeApp extends StatelessWidget {
-  const AiTubeApp({super.key, required this.database, required this.settings});
+class AiBitApp extends StatelessWidget {
+  const AiBitApp({super.key, required this.database, required this.settings});
 
   final AppDatabase database;
   final SettingsService settings;
@@ -135,7 +135,7 @@ class AiTubeApp extends StatelessWidget {
       ],
       child: Consumer<SettingsService>(
         builder: (context, settings, _) => MaterialApp(
-          title: 'AI Tube',
+          title: 'AI BIT',
           debugShowCheckedModeBanner: false,
           themeMode: settings.themeMode,
           theme: buildTheme(Brightness.light),

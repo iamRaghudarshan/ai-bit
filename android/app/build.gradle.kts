@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.personal.aitube.ai_tube"
+    namespace = "com.personal.aibit.ai_bit"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -16,7 +16,7 @@ android {
 
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.personal.aitube.ai_tube"
+        applicationId = "com.personal.aibit.ai_bit"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

@@ -165,7 +165,7 @@ class PlaybackController extends ChangeNotifier {
         title: video.title,
         author: video.author,
         imageUrl: video.thumbUrl,
-        notificationChannelName: 'AI Tube playback',
+        notificationChannelName: 'AI BIT playback',
         activityName: 'MainActivity',
       ),
       // Caching a local file would just duplicate it on disk.

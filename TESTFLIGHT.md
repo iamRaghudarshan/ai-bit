@@ -1,4 +1,4 @@
-# Getting AI Tube onto your iPhone via TestFlight
+# Getting AI BIT onto your iPhone via TestFlight
 
 Everything that can be automated is. What is left are the steps only you can do,
 because they need your Apple account.
@@ -19,12 +19,12 @@ hard part is done:
 | Team ID `P57Y6ND67Y` | **Yes** |
 | Distribution certificate (`distribution.p12`) | **Yes** — certificates are per *team* |
 | `APPLE_ID` / `APPLE_APP_PASSWORD` | **Yes** — same values as SafeNest's secrets |
-| Provisioning profile | **No** — profiles are per *bundle id*. AI Tube needs its own. |
+| Provisioning profile | **No** — profiles are per *bundle id*. AI BIT needs its own. |
 | App Store Connect app record | **No** — every app needs its own. |
 
 So there are exactly two new things to create in Apple's portals.
 
-AI Tube's bundle id is **`aitube.raghudarshan.online`**, following SafeNest's
+AI BIT's bundle id is **`aibit.raghudarshan.online`**, following SafeNest's
 convention. It is set in `ios/Runner.xcodeproj/project.pbxproj` and
 `ios/ExportOptions.plist`; if you change one you must change both, and the CI
 job fails early on purpose if they disagree.
@@ -36,8 +36,8 @@ job fails early on purpose if they disagree.
 <https://developer.apple.com/account/resources/identifiers/list>
 
 - **+** → **App IDs** → **App**
-- Description: `AI Tube`
-- Bundle ID: **Explicit** → `aitube.raghudarshan.online`
+- Description: `AI BIT`
+- Bundle ID: **Explicit** → `aibit.raghudarshan.online`
 - Capabilities: leave everything off. Background audio and Picture-in-Picture
   are declared in `Info.plist` (`UIBackgroundModes`) and need no entitlement.
 - Register.
@@ -47,11 +47,11 @@ job fails early on purpose if they disagree.
 <https://developer.apple.com/account/resources/profiles/list>
 
 - **+** → Distribution → **App Store Connect** → Continue
-- App ID: `aitube.raghudarshan.online`
+- App ID: `aibit.raghudarshan.online`
 - Certificate: pick your existing **Apple Distribution** certificate — the same
   one SafeNest uses. Do not create a new one; a second certificate does not
   break anything but there is a limit of two and they expire together.
-- Name it exactly **`AITube AppStore`** — this string must match
+- Name it exactly **`AIBit AppStore`** — this string must match
   `ios/ExportOptions.plist`.
 - Generate, then **Download**.
 
@@ -61,55 +61,44 @@ job fails early on purpose if they disagree.
 
 - **+** → **New App**
 - Platform: iOS
-- Name: `AI Tube` (must be unique across the whole App Store — if taken, use
-  something like `AI Tube Personal`; the name here does not have to match the
+- Name: `AI BIT` (must be unique across the whole App Store — if taken, use
+  something like `AI BIT Personal`; the name here does not have to match the
   app's on-device name)
-- Primary language, then Bundle ID: `aitube.raghudarshan.online`
-- SKU: `aitube` (any private string)
+- Primary language, then Bundle ID: `aibit.raghudarshan.online`
+- SKU: `aibit` (any private string)
 - Create.
 
 You never submit this for review. TestFlight builds install without review for
 you and up to 100 internal testers.
 
-## 4. Push the code to GitHub
+## 4. GitHub — already done
 
-The repository is already initialised and committed locally. Create an **empty
-private** repo (`ai-tube`) at <https://github.com/new>, then:
+<https://github.com/iamRaghudarshan/ai-bit> exists and holds the code.
 
-```bash
-cd "D:/AI TUBE"
-git remote add origin https://github.com/iamRaghudarshan/ai-tube.git
-git push -u origin main
-```
+It is **public**, chosen deliberately after the trade-off was put: public repos
+get unlimited free Actions minutes, but this app bypasses YouTube ads, so being
+discoverable is what invites a DMCA takedown. Switch it to private at any time
+in Settings → General → Danger Zone; TestFlight and Actions work identically
+either way, on a smaller free minute allowance.
 
-**Private matters.** This app violates YouTube's Terms of Service; a public repo
-is an invitation for a takedown request.
+## 5. Add the remaining secrets
 
-## 5. Add the secrets
+Three are already set: `APPLE_TEAM_ID`, `IOS_CERT_P12_BASE64` and
+`IOS_CERT_PASSWORD` — all three were derivable from this machine.
 
-Repo → Settings → Secrets and variables → Actions → **New repository secret**.
+Three are not, because they did not exist yet. Repo → Settings → Secrets and
+variables → Actions → **New repository secret**.
 
 | Secret | Value |
 |---|---|
-| `APPLE_TEAM_ID` | `P57Y6ND67Y` |
 | `APPLE_ID` | the Apple ID email that owns the developer account |
-| `APPLE_APP_PASSWORD` | app-specific password from <https://appleid.apple.com> → Sign-In and Security → App-Specific Passwords |
-| `IOS_CERT_PASSWORD` | contents of `D:\AI PRO\apple-signing\p12-password.txt` |
-| `IOS_CERT_P12_BASE64` | see below |
-| `IOS_PROFILE_BASE64` | see below |
-
-Generate the two base64 values in PowerShell:
+| `APPLE_APP_PASSWORD` | app-specific password from <https://account.apple.com> → Sign-In and Security → App-Specific Passwords |
+| `IOS_PROFILE_BASE64` | base64 of the profile from step 2 — command below |
 
 ```powershell
-# Certificate — the same file SafeNest uses
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("D:\AI PRO\apple-signing\distribution.p12")) |
+# Adjust the filename to whatever actually landed in Downloads.
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\Downloads\AIBit_AppStore.mobileprovision")) |
   Set-Clipboard
-# paste into IOS_CERT_P12_BASE64
-
-# The NEW profile you downloaded in step 2
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\Downloads\AITube_AppStore.mobileprovision")) |
-  Set-Clipboard
-# paste into IOS_PROFILE_BASE64
 ```
 
 If `APPLE_ID` / `APPLE_APP_PASSWORD` already exist on the SafeNest repo, use the

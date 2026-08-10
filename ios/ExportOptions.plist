@@ -32,8 +32,8 @@
 
 	<key>provisioningProfiles</key>
 	<dict>
-		<key>aitube.raghudarshan.online</key>
-		<string>AITube AppStore</string>
+		<key>aibit.raghudarshan.online</key>
+		<string>AIBit AppStore</string>
 	</dict>
 
 	<key>uploadSymbols</key>

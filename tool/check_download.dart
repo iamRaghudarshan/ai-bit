@@ -58,7 +58,7 @@ Future<void> main(List<String> args) async {
       '${chosen.container.name}  ${chosen.size.totalMegaBytes.toStringAsFixed(2)} MB');
 
   final file = File(
-    '${Directory.systemTemp.path}/aitube_$id.${chosen.container.name}',
+    '${Directory.systemTemp.path}/aibit_$id.${chosen.container.name}',
   );
   final sink = file.openWrite();
   final started = DateTime.now();
