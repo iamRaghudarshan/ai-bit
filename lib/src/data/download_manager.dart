@@ -2,7 +2,9 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import 'db.dart';
 import 'models.dart';
@@ -217,6 +219,49 @@ class DownloadManager extends ChangeNotifier {
     }
     await _db.deleteDownload(videoId);
     notifyListeners();
+  }
+
+  /// Copies a finished video download into the system photo library.
+  ///
+  /// Downloads live in the app's private storage, which the Photos app and the
+  /// file browser cannot see. This is what puts a saved video where the user
+  /// expects to find it.
+  Future<void> saveToGallery(String videoId) async {
+    final record = _records[videoId];
+    if (record == null || !record.isComplete) {
+      throw StateError('That download has not finished.');
+    }
+    if (record.audioOnly) {
+      throw StateError('Photos only accepts video. Use Export for audio.');
+    }
+    if (!await File(record.filePath).exists()) {
+      throw StateError('The downloaded file is missing.');
+    }
+    if (!await Gal.hasAccess(toAlbum: true)) {
+      await Gal.requestAccess(toAlbum: true);
+    }
+    await Gal.putVideo(record.filePath, album: 'AI BIT');
+  }
+
+  /// Hands a finished download to the system share sheet, which is how a file
+  /// reaches the Files app, another player, or a messaging app. iOS has no
+  /// third-party-writable music library, so this is the audio equivalent of
+  /// saving to Photos.
+  Future<void> exportDownload(String videoId) async {
+    final record = _records[videoId];
+    if (record == null || !record.isComplete) {
+      throw StateError('That download has not finished.');
+    }
+    final file = File(record.filePath);
+    if (!await file.exists()) throw StateError('The downloaded file is missing.');
+
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(record.filePath)],
+        text: record.video.title,
+        subject: record.video.title,
+      ),
+    );
   }
 
   /// Total bytes on disk across finished downloads.

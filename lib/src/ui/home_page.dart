@@ -58,10 +58,13 @@ class _HomePageState extends State<HomePage>
         return;
       }
 
-      final seeds = await context.read<AppDatabase>().feedSeeds();
+      final db = context.read<AppDatabase>();
+      final seeds = await db.feedSeeds();
+      final searches = await db.recentSearches();
       if (!mounted) return;
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
+        searches: searches,
         refreshToken: _refreshToken,
       );
       if (!mounted) return;

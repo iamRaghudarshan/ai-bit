@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
 import 'watch_page.dart';
@@ -79,6 +80,11 @@ class SearchPageState extends State<SearchPage> {
     try {
       final results = await context.read<YtRepository>().search(query);
       if (!mounted || _controller.text.trim() != query.trim()) return;
+      // Only remember searches that found something — a typo that returned
+      // nothing should not shape the home feed.
+      if (results.isNotEmpty && mounted) {
+        unawaited(context.read<AppDatabase>().recordSearch(query));
+      }
       setState(() {
         _results = results;
         _searching = false;

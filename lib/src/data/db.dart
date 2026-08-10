@@ -24,14 +24,16 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
         await _createDownloads(db);
+        await _createSearches(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
+        if (from < 3) await _createSearches(db);
       },
     );
     return AppDatabase._(db);
@@ -113,6 +115,52 @@ class AppDatabase {
       )
     ''');
   }
+
+  static Future<void> _createSearches(Database db) async {
+    await db.execute('''
+      CREATE TABLE searches (
+        query      TEXT PRIMARY KEY,
+        hits       INTEGER NOT NULL DEFAULT 1,
+        searched_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  // --------------------------------------------------------- search history
+
+  /// Records a search so the home feed can recommend from it. Repeating a
+  /// query bumps its count, which is what makes a recurring interest outrank a
+  /// one-off lookup.
+  Future<void> recordSearch(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.length < 2) return;
+    await _db.rawInsert('''
+      INSERT INTO searches (query, hits, searched_at) VALUES (?, 1, ?)
+      ON CONFLICT(query) DO UPDATE SET
+        hits = hits + 1,
+        searched_at = excluded.searched_at
+    ''', [trimmed, DateTime.now().millisecondsSinceEpoch]);
+
+    // Keep it small; the feed only ever reads the top handful.
+    await _db.rawDelete('''
+      DELETE FROM searches WHERE query NOT IN (
+        SELECT query FROM searches ORDER BY searched_at DESC LIMIT 50
+      )
+    ''');
+  }
+
+  /// Recent searches, most-repeated first, for feeding recommendations.
+  Future<List<String>> recentSearches({int limit = 5}) async {
+    final rows = await _db.query(
+      'searches',
+      columns: ['query'],
+      orderBy: 'hits DESC, searched_at DESC',
+      limit: limit,
+    );
+    return rows.map((r) => r['query']! as String).toList();
+  }
+
+  Future<void> clearSearchHistory() => _db.delete('searches');
 
   // -------------------------------------------------------------- downloads
 

@@ -134,21 +134,33 @@ class _DownloadTile extends StatelessWidget {
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert, size: 18),
               onSelected: (value) async {
-                switch (value) {
-                  case 'retry':
-                    await downloads.enqueue(
-                      record.video,
-                      audioOnly: record.audioOnly,
-                    );
-                  case 'cancel':
-                    await downloads.cancel(record.video.id);
-                  case 'delete':
-                    await downloads.remove(record.video.id);
-                  case 'stream':
-                    if (context.mounted) {
-                      context.read<PlaybackController>().play(record.video);
-                      WatchPage.open(context, record.video);
-                    }
+                final messenger = ScaffoldMessenger.of(context);
+                try {
+                  switch (value) {
+                    case 'retry':
+                      await downloads.enqueue(
+                        record.video,
+                        audioOnly: record.audioOnly,
+                      );
+                    case 'cancel':
+                      await downloads.cancel(record.video.id);
+                    case 'delete':
+                      await downloads.remove(record.video.id);
+                    case 'gallery':
+                      await downloads.saveToGallery(record.video.id);
+                      messenger.showSnackBar(
+                        const SnackBar(content: Text('Saved to Photos')),
+                      );
+                    case 'export':
+                      await downloads.exportDownload(record.video.id);
+                    case 'stream':
+                      if (context.mounted) {
+                        context.read<PlaybackController>().play(record.video);
+                        WatchPage.open(context, record.video);
+                      }
+                  }
+                } catch (e) {
+                  messenger.showSnackBar(SnackBar(content: Text('$e')));
                 }
               },
               itemBuilder: (context) => [
@@ -157,6 +169,16 @@ class _DownloadTile extends StatelessWidget {
                 if (!record.isComplete &&
                     record.status != DownloadStatus.failed)
                   const PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                if (record.isComplete && !record.audioOnly)
+                  const PopupMenuItem(
+                    value: 'gallery',
+                    child: Text('Save to Photos'),
+                  ),
+                if (record.isComplete)
+                  const PopupMenuItem(
+                    value: 'export',
+                    child: Text('Export / Save to Files'),
+                  ),
                 if (record.isComplete)
                   const PopupMenuItem(
                     value: 'stream',

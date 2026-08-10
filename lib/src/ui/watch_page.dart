@@ -4,6 +4,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
@@ -13,6 +14,7 @@ import '../data/preview_data.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
+import 'widgets/player_gestures.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -285,6 +287,13 @@ class _PlayerSurface extends StatelessWidget {
             return Stack(
               fit: StackFit.expand,
               children: [
+                // Gestures first so better_player's controls layer above them
+                // and keep receiving their own taps.
+                PlayerGestures(
+                  onSeekBy: playback.skip,
+                  onVolume: playback.setVolume,
+                  currentVolume: playback.volume,
+                ),
                 BetterPlayer(key: playback.playerKey, controller: player),
                 if (playback.isAudioOnly)
                   IgnorePointer(
@@ -569,6 +578,35 @@ class _ActionRow extends StatelessWidget {
             label: 'PiP',
             onTap: playback.enterPictureInPicture,
           ),
+          _ActionChip(
+            icon: settings.autoplayNext
+                ? Icons.playlist_play
+                : Icons.playlist_remove,
+            label: 'Autoplay',
+            highlighted: settings.autoplayNext,
+            onTap: () => settings.autoplayNext = !settings.autoplayNext,
+          ),
+          _ActionChip(
+            icon: switch (playback.repeatMode) {
+              PlaybackRepeat.one => Icons.repeat_one,
+              _ => Icons.repeat,
+            },
+            label: switch (playback.repeatMode) {
+              PlaybackRepeat.off => 'Repeat',
+              PlaybackRepeat.one => 'Repeat 1',
+              PlaybackRepeat.all => 'Repeat all',
+            },
+            highlighted: playback.repeatMode != PlaybackRepeat.off,
+            onTap: playback.cycleRepeatMode,
+          ),
+          if (video != null)
+            _ActionChip(
+              icon: Icons.share_outlined,
+              label: 'Share',
+              onTap: () => SharePlus.instance.share(
+                ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
+              ),
+            ),
           _ActionChip(
             icon: settings.audioOnly ? Icons.headphones : Icons.headphones_outlined,
             label: 'Audio only',

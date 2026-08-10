@@ -17,14 +17,19 @@ import '../data/yt_repository.dart';
 /// per screen — is what allows audio to survive leaving the watch page, the app
 /// going to the background, and the screen locking. The `BetterPlayer` widget on
 /// the watch page merely attaches a render surface to it.
-class PlaybackController extends ChangeNotifier {
+class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   PlaybackController({
     required YtRepository repository,
     required AppDatabase database,
     required SettingsService settings,
   }) : _repo = repository,
        _db = database,
-       _config = settings;
+       _config = settings {
+    // Own the lifecycle rather than letting better_player have it: its handling
+    // is disabled so background audio survives, which leaves the screen-off
+    // transition ours to act on.
+    WidgetsBinding.instance.addObserver(this);
+  }
 
   final YtRepository _repo;
   final AppDatabase _db;
@@ -150,20 +155,51 @@ class PlaybackController extends ChangeNotifier {
     PlaybackSources sources, {
     Duration? startAt,
   }) async {
-    final dataSource = BetterPlayerDataSource(
+    final dataSource = _dataSource(
+      video,
+      _preferredUrl(sources),
+      isHls: sources.isHls,
+    );
+
+    if (_player == null) {
+      _player = BetterPlayerController(_configuration(startAt: startAt))
+        ..setBetterPlayerGlobalKey(playerKey)
+        ..addEventsListener(_onPlayerEvent);
+      await _player!.setupDataSource(dataSource);
+    } else {
+      await _player!.setupDataSource(dataSource);
+      if (startAt != null) await _player!.seekTo(startAt);
+      await _player!.play();
+    }
+
+    _player!.videoPlayerController?.removeListener(_onValueChanged);
+    _player!.videoPlayerController?.addListener(_onValueChanged);
+    await _player!.setSpeed(_config.playbackSpeed);
+  }
+
+  /// Builds the data source for one URL of [video]. Shared by the initial load
+  /// and by the screen-off track swap, so both stay configured identically.
+  BetterPlayerDataSource _dataSource(
+    VideoBrief video,
+    String url, {
+    required bool isHls,
+  }) {
+    return BetterPlayerDataSource(
       _isOffline
           ? BetterPlayerDataSourceType.file
           : BetterPlayerDataSourceType.network,
-      _preferredUrl(sources),
-      liveStream: sources.isLive || video.isLive,
+      url,
+      liveStream: (_sources?.isLive ?? false) || video.isLive,
       // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
       // without the hint AVPlayer guesses from the path and gets it wrong.
-      videoFormat: sources.isHls ? BetterPlayerVideoFormat.hls : null,
+      videoFormat: isHls ? BetterPlayerVideoFormat.hls : null,
       // Let better_player read the ladder's variants off the manifest, which is
-      // what puts real quality options in the overflow menu.
-      useAsmsTracks: sources.isHls,
-      useAsmsSubtitles: sources.isHls,
-      resolutions: sources.qualities.isEmpty ? null : sources.qualities,
+      // what puts real quality and subtitle options in the overflow menu.
+      useAsmsTracks: isHls,
+      useAsmsSubtitles: isHls,
+      resolutions: (_sources?.qualities.isEmpty ?? true)
+          ? null
+          : _sources!.qualities,
       // Turning the notification on is not cosmetic: better_player treats a
       // visible notification as "the host app manages playback", which is what
       // suppresses its built-in pause-on-background and pause-when-offscreen.
@@ -192,21 +228,6 @@ class PlaybackController extends ChangeNotifier {
       // HTTP 206 to a plain client. Offline use is served by real downloads.
       cacheConfiguration: const BetterPlayerCacheConfiguration(),
     );
-
-    if (_player == null) {
-      _player = BetterPlayerController(_configuration(startAt: startAt))
-        ..setBetterPlayerGlobalKey(playerKey)
-        ..addEventsListener(_onPlayerEvent);
-      await _player!.setupDataSource(dataSource);
-    } else {
-      await _player!.setupDataSource(dataSource);
-      if (startAt != null) await _player!.seekTo(startAt);
-      await _player!.play();
-    }
-
-    _player!.videoPlayerController?.removeListener(_onValueChanged);
-    _player!.videoPlayerController?.addListener(_onValueChanged);
-    await _player!.setSpeed(_config.playbackSpeed);
   }
 
   /// Resolves the on-disk path for a completed download, dropping the record
@@ -285,6 +306,17 @@ class PlaybackController extends ChangeNotifier {
     await seek(target < Duration.zero ? Duration.zero : target);
   }
 
+  double _volume = 1;
+
+  /// 0..1. Mirrored here because the platform player has no readable getter.
+  double get volume => _volume;
+
+  Future<void> setVolume(double value) async {
+    _volume = value.clamp(0.0, 1.0);
+    await _player?.setVolume(_volume);
+    notifyListeners();
+  }
+
   Future<void> setSpeed(double value) async {
     _config.playbackSpeed = value;
     await _player?.setSpeed(value);
@@ -331,6 +363,45 @@ class PlaybackController extends ChangeNotifier {
     await play(next, upNext: _queue.toList());
   }
 
+  PlaybackRepeat get repeatMode => _config.repeatMode;
+
+  /// Cycles off → one → all → off, which is how the button reads.
+  void cycleRepeatMode() {
+    final next = PlaybackRepeat
+        .values[(_config.repeatMode.index + 1) % PlaybackRepeat.values.length];
+    _config.repeatMode = next;
+    _player?.setLooping(next == PlaybackRepeat.one);
+    notifyListeners();
+  }
+
+  /// Reorders the queue randomly, keeping whatever is playing where it is.
+  void shuffleQueue() {
+    _queue.shuffle();
+    notifyListeners();
+  }
+
+  /// Decides what follows a finished video: repeat it, advance the queue, or
+  /// wrap the queue around.
+  Future<void> _onFinished() async {
+    switch (_config.repeatMode) {
+      case PlaybackRepeat.one:
+        await seek(Duration.zero);
+        await _player?.play();
+      case PlaybackRepeat.all:
+        if (_queue.isNotEmpty) {
+          // Send the finished video to the back so the queue keeps cycling.
+          final finished = _current;
+          await playNext();
+          if (finished != null) _queue.add(finished);
+        } else {
+          await seek(Duration.zero);
+          await _player?.play();
+        }
+      case PlaybackRepeat.off:
+        if (_config.autoplayNext) await playNext();
+    }
+  }
+
   Future<void> enterPictureInPicture() async {
     final player = _player;
     if (player == null) return;
@@ -351,6 +422,90 @@ class PlaybackController extends ChangeNotifier {
     player?.removeEventsListener(_onPlayerEvent);
     player?.dispose(forceDispose: true);
     notifyListeners();
+  }
+
+  // ------------------------------------------------- screen-off audio mode
+
+  /// True while the video track has been dropped because the screen is off.
+  bool _droppedVideo = false;
+  bool get isVideoDropped => _droppedVideo;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+        unawaited(_dropVideoTrack());
+      case AppLifecycleState.resumed:
+        unawaited(_restoreVideoTrack());
+      default:
+        break;
+    }
+  }
+
+  /// Swaps to the audio-only rendition while nothing can be seen.
+  ///
+  /// Video is roughly ten times the data of audio, and none of it is being
+  /// looked at behind a locked screen. Position is carried across so the swap
+  /// is inaudible.
+  Future<void> _dropVideoTrack() async {
+    if (!_config.audioOnlyWhenLocked || _droppedVideo) return;
+    if (_config.audioOnly) return; // already audio by choice
+    final player = _player;
+    final sources = _sources;
+    final video = _current;
+    if (player == null || sources == null || video == null) return;
+    if (_isOffline) return; // a local file costs no data
+    final audioUrl = sources.audioOnlyUrl;
+    if (audioUrl == null) return;
+    if (!(player.isPlaying() ?? false)) return;
+
+    final resumeAt = _position;
+    _droppedVideo = true;
+    await _swapSource(video, audioUrl, resumeAt: resumeAt, isHls: false);
+  }
+
+  Future<void> _restoreVideoTrack() async {
+    if (!_droppedVideo) return;
+    final player = _player;
+    final sources = _sources;
+    final video = _current;
+    _droppedVideo = false;
+    if (player == null || sources == null || video == null) return;
+
+    final wasPlaying = player.isPlaying() ?? false;
+    await _swapSource(
+      video,
+      _preferredUrl(sources),
+      resumeAt: _position,
+      isHls: sources.isHls,
+      autoPlay: wasPlaying,
+    );
+  }
+
+  /// Re-points the existing player at a different URL for the same video,
+  /// preserving position. Cheaper and less jarring than a full [play].
+  Future<void> _swapSource(
+    VideoBrief video,
+    String url, {
+    required Duration resumeAt,
+    required bool isHls,
+    bool autoPlay = true,
+  }) async {
+    final player = _player;
+    if (player == null) return;
+    try {
+      await player.setupDataSource(_dataSource(video, url, isHls: isHls));
+      // Live has no meaningful position to restore — it always resumes at the
+      // edge, and seeking backwards into a live window is not wanted here.
+      if (!(_sources?.isLive ?? false) && resumeAt > const Duration(seconds: 2)) {
+        await player.seekTo(resumeAt);
+      }
+      if (autoPlay) await player.play();
+      await player.setSpeed(_config.playbackSpeed);
+    } catch (e) {
+      debugPrint('AI BIT: track swap failed — $e');
+    }
   }
 
   // --------------------------------------------------------- sleep timer
@@ -384,7 +539,7 @@ class PlaybackController extends ChangeNotifier {
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.finished:
         _persistPosition(force: true);
-        if (_config.autoplayNext) unawaited(playNext());
+        unawaited(_onFinished());
       case BetterPlayerEventType.exception:
         // Carry the platform's own description through. A generic message here
         // meant a device failure could not be told apart from an expired link,
@@ -437,6 +592,7 @@ class PlaybackController extends ChangeNotifier {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cancelSleepTimer();
     _player?.videoPlayerController?.removeListener(_onValueChanged);
     _player?.removeEventsListener(_onPlayerEvent);

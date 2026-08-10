@@ -78,18 +78,22 @@ class YtRepository {
   /// something new rather than the same rows.
   Future<List<VideoBrief>> homeFeed({
     List<String> channelIds = const [],
+    List<String> searches = const [],
     int refreshToken = 0,
   }) async {
     if (isPreview) return _previewRows(refreshToken);
 
     final tasks = <Future<List<VideoBrief>>>[
+      // What you searched for is the strongest signal of what you want next,
+      // and it is the only interest signal available without an account.
+      for (final q in searches.take(4)) _safe(() => search(q)),
       for (final id in channelIds.take(3)) _safe(() => channelUploads(id, limit: 8)),
     ];
 
-    // Always mix in a couple of topic rows so the feed does not collapse into
-    // the same three channels once history builds up.
+    // Top up with popular topics so a fresh install is not empty and the feed
+    // does not collapse into the same few channels once history builds up.
     final topics = _rotate(_coldStartTopics, refreshToken);
-    final topicCount = channelIds.isEmpty ? 4 : 2;
+    final topicCount = (searches.isEmpty && channelIds.isEmpty) ? 4 : 1;
     tasks.addAll(
       topics.take(topicCount).map((t) => _safe(() => search(t, sortByViews: true))),
     );

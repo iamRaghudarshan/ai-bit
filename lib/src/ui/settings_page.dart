@@ -39,6 +39,15 @@ class SettingsPage extends StatelessWidget {
             },
           ),
           SwitchListTile(
+            value: settings.audioOnlyWhenLocked,
+            title: const Text('Drop video when the screen is off'),
+            subtitle: const Text(
+              'Switches to the audio track on lock and back to video on unlock, '
+              'keeping your place. Cuts data use by roughly ten times.',
+            ),
+            onChanged: (value) => settings.audioOnlyWhenLocked = value,
+          ),
+          SwitchListTile(
             value: settings.autoplayNext,
             title: const Text('Autoplay next video'),
             subtitle: const Text('Continue with the up-next queue when a video ends.'),

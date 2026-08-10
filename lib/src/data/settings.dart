@@ -1,6 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+/// What happens when a video ends.
+enum PlaybackRepeat {
+  /// Move on to the queue, or stop.
+  off,
+
+  /// Replay the same video forever.
+  one,
+
+  /// Loop the whole queue back to the start.
+  all,
+}
+
 /// Persisted user preferences. Small enough that SharedPreferences beats
 /// another SQLite table.
 class SettingsService extends ChangeNotifier {
@@ -14,6 +26,8 @@ class SettingsService extends ChangeNotifier {
   static const _kAudioOnly = 'audio_only';
   static const _kAutoplay = 'autoplay_next';
   static const _kBackground = 'background_playback';
+  static const _kLockedAudio = 'audio_only_when_locked';
+  static const _kRepeat = 'repeat_mode';
 
   /// Sentinel for "let the player pick the highest available".
   static const autoQuality = 'Auto';
@@ -43,6 +57,17 @@ class SettingsService extends ChangeNotifier {
   /// stock YouTube behaviour.
   bool get backgroundPlayback => _prefs.getBool(_kBackground) ?? true;
   set backgroundPlayback(bool value) => _write(_kBackground, value);
+
+  /// Drop the video track while the screen is off and pick it back up on
+  /// unlock. Nobody is watching a locked screen, and the video track is roughly
+  /// ten times the data of the audio one.
+  bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? true;
+  set audioOnlyWhenLocked(bool value) => _write(_kLockedAudio, value);
+
+  /// off / one / all.
+  PlaybackRepeat get repeatMode =>
+      PlaybackRepeat.values[_prefs.getInt(_kRepeat) ?? PlaybackRepeat.off.index];
+  set repeatMode(PlaybackRepeat value) => _write(_kRepeat, value.index);
 
   void _write(String key, Object value) {
     switch (value) {
