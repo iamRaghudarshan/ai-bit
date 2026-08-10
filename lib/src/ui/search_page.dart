@@ -84,11 +84,13 @@ class SearchPageState extends State<SearchPage> {
         _searching = false;
         _error = null;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
         _searching = false;
-        _error = 'Search failed. Check your connection and try again.';
+        // Show what actually went wrong. "Check your connection" was wrong
+        // often enough to be useless — there is no log to read on a phone.
+        _error = 'Search failed: $e';
       });
     }
   }

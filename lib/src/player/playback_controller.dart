@@ -168,15 +168,22 @@ class PlaybackController extends ChangeNotifier {
         notificationChannelName: 'AI BIT playback',
         activityName: 'MainActivity',
       ),
-      // Caching a local file would just duplicate it on disk.
-      cacheConfiguration: _isOffline
-          ? const BetterPlayerCacheConfiguration()
-          : const BetterPlayerCacheConfiguration(
-              useCache: true,
-              preCacheSize: 5 * 1024 * 1024,
-              maxCacheSize: 200 * 1024 * 1024,
-              maxCacheFileSize: 50 * 1024 * 1024,
-            ),
+      // Identify as the client the stream was issued to. The URLs serve fine
+      // without this today, but YouTube has bound streams to the requesting
+      // client before and it costs nothing to match.
+      headers: _isOffline
+          ? null
+          : const {
+              'User-Agent':
+                  'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
+            },
+      // Caching is OFF deliberately. With useCache the iOS plugin plays through
+      // CachingPlayerItem — a custom AVAssetResourceLoader — instead of a plain
+      // AVPlayerItem, and that path fails on googlevideo URLs, which redirect,
+      // carry expiring query parameters and rely on exact range semantics. It
+      // was the cause of "Playback failed" on device while the same URL served
+      // HTTP 206 to a plain client. Offline use is served by real downloads.
+      cacheConfiguration: const BetterPlayerCacheConfiguration(),
     );
 
     if (_player == null) {
@@ -372,8 +379,13 @@ class PlaybackController extends ChangeNotifier {
         _persistPosition(force: true);
         if (_config.autoplayNext) unawaited(playNext());
       case BetterPlayerEventType.exception:
-        _error = 'Playback failed. The stream link may have expired — '
-            'pull to refresh, or reopen the video.';
+        // Carry the platform's own description through. A generic message here
+        // meant a device failure could not be told apart from an expired link,
+        // and there is no console to read on someone else's phone.
+        final detail = event.parameters?['exception']?.toString();
+        _error = detail == null || detail.isEmpty
+            ? 'Playback failed. Reopen the video to try again.'
+            : 'Playback failed: $detail';
         notifyListeners();
       case BetterPlayerEventType.play:
       case BetterPlayerEventType.pause:
