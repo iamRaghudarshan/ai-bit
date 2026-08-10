@@ -125,6 +125,43 @@ class LocalPlaylist {
   bool get isWatchLater => id == watchLaterId;
 }
 
+/// A YouTube channel, as shown on its own page.
+class ChannelInfo {
+  const ChannelInfo({
+    required this.id,
+    required this.title,
+    this.avatarUrl,
+    this.subscriberLabel,
+  });
+
+  final String id;
+  final String title;
+  final String? avatarUrl;
+
+  /// Pre-rendered by YouTube, e.g. "1.2M subscribers". Kept as text because
+  /// the exact wording varies by locale and channel type.
+  final String? subscriberLabel;
+}
+
+/// A playlist on YouTube (not one of the local ones).
+class PlaylistBrief {
+  const PlaylistBrief({
+    required this.id,
+    required this.title,
+    this.videoCount,
+    this.thumbnailUrl,
+    this.channelId,
+  });
+
+  final String id;
+  final String title;
+  final int? videoCount;
+  final String? thumbnailUrl;
+  final String? channelId;
+
+  String get shareUrl => 'https://www.youtube.com/playlist?list=$id';
+}
+
 enum DownloadStatus { queued, running, completed, failed }
 
 /// A video saved to device storage for offline playback.

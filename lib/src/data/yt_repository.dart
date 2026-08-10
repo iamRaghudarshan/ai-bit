@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
+import '../core/format.dart';
+import 'browse_client.dart';
 import 'models.dart';
 import 'player_client.dart';
 import 'preview_data.dart';
@@ -20,11 +22,13 @@ class YtRepository {
   YtRepository()
     : _yt = yt.YoutubeExplode(),
       _search = YoutubeSearchClient(),
-      _player = YoutubePlayerClient();
+      _player = YoutubePlayerClient(),
+      _browse = YoutubeBrowseClient();
 
   final yt.YoutubeExplode _yt;
   final YoutubeSearchClient _search;
   final YoutubePlayerClient _player;
+  final YoutubeBrowseClient _browse;
 
   /// Signed CDN URLs stay valid for roughly six hours; expire ours well before
   /// that so a long-lived app never hands a dead URL to the player.
@@ -67,6 +71,7 @@ class YtRepository {
     _yt.close();
     _search.close();
     _player.close();
+    _browse.close();
   }
 
   // ------------------------------------------------------------------ feed
@@ -178,9 +183,40 @@ class YtRepository {
     return videos.map(VideoBrief.fromYt).toList();
   }
 
-  Future<({String title, String logoUrl})> channelInfo(String channelId) async {
+  /// Channel header. Falls back to the package when the browse endpoint
+  /// returns nothing useful, since the two read different shapes and each
+  /// occasionally comes back empty.
+  Future<ChannelInfo> channelInfo(String channelId) async {
+    try {
+      final info = await _browse.channel(channelId);
+      if (info.title.isNotEmpty) return info;
+    } catch (e) {
+      debugPrint('AI BIT: channel browse failed for $channelId — $e');
+    }
     final channel = await _yt.channels.get(channelId);
-    return (title: channel.title, logoUrl: channel.logoUrl);
+    return ChannelInfo(
+      id: channelId,
+      title: channel.title,
+      avatarUrl: channel.logoUrl,
+      subscriberLabel: channel.subscribersCount == null
+          ? null
+          : '${compactCount(channel.subscribersCount)} subscribers',
+    );
+  }
+
+  /// Playlists published by a channel.
+  Future<List<PlaylistBrief>> channelPlaylists(String channelId) =>
+      _browse.channelPlaylists(channelId);
+
+  /// Title and length of a YouTube playlist.
+  Future<PlaylistBrief> playlistInfo(String playlistId) async {
+    final p = await _yt.playlists.get(playlistId);
+    return PlaylistBrief(
+      id: playlistId,
+      title: p.title,
+      videoCount: p.videoCount,
+      channelId: null,
+    );
   }
 
   Future<List<VideoBrief>> remotePlaylist(String playlistId, {int limit = 100}) async {
@@ -189,6 +225,26 @@ class YtRepository {
   }
 
   // --------------------------------------------------------------- streams
+
+  /// Pulls a playlist id out of a `?list=…` URL, or accepts a bare one.
+  ///
+  /// Checked before the video id: a `watch?v=…&list=…` link carries both, and
+  /// opening the playlist is the more specific intent.
+  static String? parsePlaylistId(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return null;
+
+    final uri = Uri.tryParse(trimmed);
+    final fromQuery = uri?.queryParameters['list'];
+    if (fromQuery != null && fromQuery.isNotEmpty) return fromQuery;
+
+    // A bare id. "LL" (liked) and "WL" (watch later) need an account, so they
+    // are deliberately not accepted.
+    if (RegExp(r'^(PL|UU|OL|RD|FL)[\w-]{10,}$').hasMatch(trimmed)) {
+      return trimmed;
+    }
+    return null;
+  }
 
   /// Accepts a bare id, a `youtu.be/…` link, or a full watch URL.
   static String? parseVideoId(String input) {

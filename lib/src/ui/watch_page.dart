@@ -14,6 +14,7 @@ import '../data/preview_data.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
+import 'channel_page.dart';
 import 'widgets/player_gestures.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
@@ -49,6 +50,22 @@ class WatchPage extends StatefulWidget {
         ),
       ),
     );
+  }
+
+  /// Starts [videos] at [startAt] and queues everything after it, so a channel
+  /// or playlist plays through instead of stopping at one video.
+  static Future<void> openQueue(
+    BuildContext context,
+    List<VideoBrief> videos, {
+    int startAt = 0,
+  }) {
+    if (videos.isEmpty) return Future.value();
+    final index = startAt.clamp(0, videos.length - 1);
+    context.read<PlaybackController>().play(
+      videos[index],
+      upNext: videos.skip(index + 1).toList(),
+    );
+    return open(context, videos[index]);
   }
 
   @override
@@ -484,30 +501,46 @@ class _Header extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          Row(
-            children: [
-              CircleAvatar(
-                radius: 16,
-                backgroundColor: AppColors.darkElevated,
-                child: Text(
-                  video.author.isEmpty
-                      ? '?'
-                      : video.author.substring(0, 1).toUpperCase(),
-                  style: const TextStyle(fontSize: 14),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  video.author,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
+          // The whole row opens the channel — the same affordance the real app
+          // gives, and the only way to reach a channel from here.
+          InkWell(
+            onTap: video.channelId.isEmpty
+                ? null
+                : () => ChannelPage.open(
+                    context,
+                    video.channelId,
+                    title: video.author,
                   ),
-                ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 16,
+                    backgroundColor: AppColors.darkElevated,
+                    child: Text(
+                      video.author.isEmpty
+                          ? '?'
+                          : video.author.substring(0, 1).toUpperCase(),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      video.author,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  if (video.channelId.isNotEmpty)
+                    const Icon(Icons.chevron_right, size: 18),
+                ],
               ),
-            ],
+            ),
           ),
           if (description.trim().isNotEmpty) ...[
             const SizedBox(height: 12),

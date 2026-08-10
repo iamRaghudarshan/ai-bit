@@ -10,6 +10,7 @@ import '../data/db.dart';
 import '../data/models.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
+import '../ui/widgets/video_controls.dart';
 
 /// Owns the one and only video player for the whole app.
 ///
@@ -281,6 +282,15 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         playerVisibilityChangedBehavior: (_) {},
         errorBuilder: (context, message) => _PlayerError(message: message),
         controlsConfiguration: BetterPlayerControlsConfiguration(
+          // Custom, because the built-in controls have no notion of a queue:
+          // there is no way to reach the next or previous video from the video
+          // surface itself. See VideoControls.
+          playerTheme: BetterPlayerTheme.custom,
+          customControlsBuilder: (controller, onVisibilityChanged, _) =>
+              VideoControls(
+                controller: controller,
+                onVisibilityChanged: onVisibilityChanged,
+              ),
           enablePip: true,
           enableQualities: true,
           enablePlaybackSpeed: true,

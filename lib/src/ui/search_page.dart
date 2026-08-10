@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
+import 'playlist_page.dart';
 import 'watch_page.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
@@ -107,7 +108,14 @@ class SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     _focus.unfocus();
 
-    // A pasted link is a direct navigation, not a search.
+    // A pasted link is a direct navigation, not a search. Playlists are checked
+    // first: a "watch?v=…&list=…" URL contains both, and the list is the more
+    // specific intent.
+    final playlistId = YtRepository.parsePlaylistId(query);
+    if (playlistId != null) {
+      await PlaylistPage.openById(context, playlistId);
+      return;
+    }
     final videoId = YtRepository.parseVideoId(query);
     if (videoId != null) {
       await _openById(videoId);

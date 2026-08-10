@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/format.dart';
 import '../../data/db.dart';
@@ -7,6 +8,7 @@ import '../../data/download_manager.dart';
 import '../../data/models.dart';
 import '../../data/settings.dart';
 import '../../player/playback_controller.dart';
+import '../channel_page.dart';
 
 const _speedOptions = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 const _sleepOptions = [
@@ -345,6 +347,25 @@ Future<void> showVideoMenu(
             ),
           ],
           const Divider(height: 1),
+          if (video.channelId.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.account_circle_outlined),
+              title: Text('Go to ${video.author}'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                ChannelPage.open(context, video.channelId, title: video.author);
+              },
+            ),
+          ListTile(
+            leading: const Icon(Icons.share_outlined),
+            title: const Text('Share'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              SharePlus.instance.share(
+                ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
+              );
+            },
+          ),
           ListTile(
             leading: const Icon(Icons.queue_play_next_outlined),
             title: const Text('Play next'),
