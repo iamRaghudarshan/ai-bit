@@ -1,0 +1,44 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+ios/Runner/GeneratedPluginRegistrant.*
+
+# Apple signing material must never be committed. The distribution certificate
+# and its password go into GitHub secrets as base64; the private key stays off
+# this machine's repositories entirely.
+*.p12
+*.mobileprovision
+*.cer
+*.certSigningRequest
+*.p8
+
+# Web preview build output. The web target exists only to review the interface;
+# it is not a shipping platform.
+web/sqflite_sw.js
+web/sqlite3.wasm
+
+# OS noise
+.DS_Store
+Thumbs.db

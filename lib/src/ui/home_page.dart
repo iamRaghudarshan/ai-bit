@@ -1,0 +1,254 @@
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../core/theme.dart';
+import '../data/db.dart';
+import '../data/models.dart';
+import '../data/yt_repository.dart';
+import 'search_page.dart';
+import 'settings_page.dart';
+import 'watch_page.dart';
+import 'widgets/sheets.dart';
+import 'widgets/video_tile.dart';
+
+/// Landing screen — opens straight into a feed, the way the YouTube app does.
+///
+/// The feed is personalised from local watch history (recent channels first)
+/// and topped up with popular topics, so a fresh install still shows something.
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage>
+    with AutomaticKeepAliveClientMixin {
+  List<VideoBrief> _feed = const [];
+  bool _loading = true;
+  String? _error;
+  int _refreshToken = 0;
+  String _category = _CategoryChips.all;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = _feed.isEmpty;
+      _error = null;
+    });
+    try {
+      final repo = context.read<YtRepository>();
+      // A chosen category is a topic search; "All" is the personalised feed.
+      if (_category != _CategoryChips.all) {
+        final feed = await repo.search(_category, sortByViews: true);
+        if (!mounted) return;
+        setState(() {
+          _feed = feed;
+          _loading = false;
+          _error = feed.isEmpty ? 'Nothing came back for $_category.' : null;
+        });
+        return;
+      }
+
+      final seeds = await context.read<AppDatabase>().feedSeeds();
+      if (!mounted) return;
+      final feed = await repo.homeFeed(
+        channelIds: seeds.channelIds,
+        refreshToken: _refreshToken,
+      );
+      if (!mounted) return;
+      setState(() {
+        _feed = feed;
+        _loading = false;
+        _error = feed.isEmpty ? 'Nothing came back from YouTube.' : null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = 'Could not load the feed. Check your connection.';
+      });
+    }
+  }
+
+  Future<void> _refresh() async {
+    _refreshToken++;
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Row(
+          children: [
+            const Icon(Icons.play_circle_fill, color: Color(0xFFFF0033), size: 26),
+            const SizedBox(width: 6),
+            Text('AI Tube', style: Theme.of(context).appBarTheme.titleTextStyle),
+          ],
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SearchPage()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
+            ),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (YtRepository.isPreview) const _PreviewBanner(),
+          _CategoryChips(
+            selected: _category,
+            onSelected: (value) {
+              setState(() => _category = value);
+              _load();
+            },
+          ),
+          const Divider(height: 1),
+          Expanded(child: _buildFeed()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeed() {
+    return RefreshIndicator(
+        onRefresh: _refresh,
+        child: Builder(
+          builder: (context) {
+            if (_loading) return const FeedSkeleton(count: 4);
+            if (_feed.isEmpty) {
+              return ListView(
+                children: [
+                  const SizedBox(height: 80),
+                  EmptyState(
+                    icon: Icons.wifi_off_outlined,
+                    title: 'Feed unavailable',
+                    message: _error,
+                    action: FilledButton(
+                      onPressed: _refresh,
+                      child: const Text('Retry'),
+                    ),
+                  ),
+                ],
+              );
+            }
+            return ListView.builder(
+              padding: const EdgeInsets.only(top: 8),
+              itemCount: _feed.length,
+              itemBuilder: (context, index) {
+                final video = _feed[index];
+                return VideoCard(
+                  video: video,
+                  onTap: () => WatchPage.open(context, video),
+                  onMenu: () => showVideoMenu(context, video),
+                );
+              },
+            );
+          },
+      ),
+    );
+  }
+}
+
+/// Horizontal topic filter across the top of the feed, mirroring the real
+/// app's chip row.
+class _CategoryChips extends StatelessWidget {
+  const _CategoryChips({required this.selected, required this.onSelected});
+
+  static const all = 'All';
+  static const _categories = [
+    all,
+    'Music',
+    'Gaming',
+    'News',
+    'Movies',
+    'Live',
+    'Sports',
+    'Learning',
+    'Podcasts',
+    'Comedy',
+  ];
+
+  final String selected;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: 46,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        itemCount: _categories.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final category = _categories[index];
+          final isSelected = category == selected;
+          return ChoiceChip(
+            label: Text(category),
+            selected: isSelected,
+            showCheckmark: false,
+            onSelected: (_) => onSelected(category),
+            backgroundColor: scheme.onSurface.withValues(alpha: 0.08),
+            selectedColor: scheme.onSurface,
+            labelStyle: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+              color: isSelected ? scheme.surface : scheme.onSurface,
+            ),
+            side: BorderSide.none,
+            visualDensity: VisualDensity.compact,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// Only ever shown in a browser build.
+class _PreviewBanner extends StatelessWidget {
+  const _PreviewBanner();
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: AppColors.brand,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline, size: 16, color: Colors.white),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Preview — sample data, no playback.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.white,
+                fontSize: 11,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}

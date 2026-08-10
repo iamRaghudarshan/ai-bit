@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  How Xcode should package the signed app for TestFlight.
+
+  method app-store: the only one that can be uploaded. ad-hoc builds install
+  only on devices registered by UDID, which is the manual step TestFlight exists
+  to remove, and development builds cannot be uploaded at all.
+
+  signingStyle manual, and the profile named explicitly. Automatic signing asks
+  Apple for whatever profile it thinks fits, which needs an interactive login the
+  CI runner does not have — it fails there with a message about accounts rather
+  than about signing, which sends you looking in the wrong place.
+
+  The profile named below must exist in the Apple Developer portal for THIS
+  bundle id. The distribution certificate is per-team and is shared with the
+  other apps on this account; a provisioning profile is not, and reusing
+  SafeNest's would fail with a mismatch that reads as a signing error.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store</string>
+
+	<key>teamID</key>
+	<string>P57Y6ND67Y</string>
+
+	<key>signingStyle</key>
+	<string>manual</string>
+
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>aitube.raghudarshan.online</key>
+		<string>AITube AppStore</string>
+	</dict>
+
+	<key>uploadSymbols</key>
+	<true/>
+
+	<!-- Nothing here is a secret: the team id and the profile NAME are public
+	     identifiers. The certificate and its password live in GitHub secrets and
+	     never in the repository. -->
+	<key>destination</key>
+	<string>export</string>
+</dict>
+</plist>
