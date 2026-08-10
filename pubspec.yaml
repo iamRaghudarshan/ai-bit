@@ -59,6 +59,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -101,3 +102,20 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Generates every iOS and Android icon size from one source image.
+#   flutter pub run flutter_launcher_icons
+#
+# remove_alpha_ios is required: the App Store rejects an icon with an alpha
+# channel, and the source has transparent rounded corners. Those corners are
+# filled with the icon's own red so that iOS re-applying its mask leaves no
+# pale sliver at the edges.
+flutter_launcher_icons:
+  image_path: "assets/icon/app_icon.png"
+  remove_alpha_ios: true
+  background_color_ios: "#E8202A"
+  android: true
+  ios: true
+  min_sdk_android: 21
+  adaptive_icon_background: "#E8202A"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"

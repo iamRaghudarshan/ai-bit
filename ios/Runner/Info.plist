@@ -49,10 +49,21 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<!-- Saving a downloaded video into Photos. Add-only: the app never reads
-	     the user's library, so NSPhotoLibraryUsageDescription is not needed. -->
+	<!-- Both keys are required, and reasoning about what the app *does* is not
+	     enough. Shipping only the add-only key failed upload with:
+
+	       90683: Missing purpose string in Info.plist ... should contain a
+	       NSPhotoLibraryUsageDescription key ...
+
+	     Apple scans the linked binary, not the code paths taken: the `gal`
+	     library references read APIs, so the read string is demanded even
+	     though nothing here ever reads the library. Their own note says
+	     "While your app might not use these APIs, a purpose string is still
+	     required." -->
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>AI BIT saves videos you download into your Photos library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>AI BIT needs photo library access to save downloaded videos. It never reads or uploads your photos.</string>
 	<!-- Answers App Store Connect's export-compliance question at build time.
 	     Without it every uploaded build stops at "Missing Compliance" and waits
 	     for someone to click through the web form before testers can install

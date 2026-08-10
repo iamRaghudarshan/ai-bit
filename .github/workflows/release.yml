@@ -164,6 +164,35 @@ jobs:
             exit 1
           fi
 
+      # Apple rejects an upload for a missing purpose string, but only after
+      # the archive has been built and pushed -- a ~20 minute round trip for a
+      # one-line omission. It scans the linked binary, not the code paths
+      # taken, so a plugin that merely *references* a protected API demands the
+      # string even when nothing calls it. Shipping the add-only Photos key was
+      # rejected for exactly this reason (error 90683).
+      - name: Purpose strings present for the plugins in use
+        run: |
+          set -euo pipefail
+          PLIST=ios/Runner/Info.plist
+          fail=0
+          need() {  # need <pubspec-package> <Info.plist key...>
+            local pkg="$1"; shift
+            grep -qE "^\s{2}$pkg:" pubspec.yaml || return 0
+            for key in "$@"; do
+              if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1; then
+                echo "  ok      $pkg -> $key"
+              else
+                echo "::error::$pkg is a dependency but $PLIST has no $key"
+                fail=1
+              fi
+            done
+          }
+          need gal NSPhotoLibraryUsageDescription NSPhotoLibraryAddUsageDescription
+          need image_picker NSPhotoLibraryUsageDescription NSCameraUsageDescription
+          need record NSMicrophoneUsageDescription
+          need geolocator NSLocationWhenInUseUsageDescription
+          exit $fail
+
       - name: Build the signed app
         if: steps.apple.outputs.ready == 'true'
         env:
