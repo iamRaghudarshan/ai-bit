@@ -94,8 +94,17 @@ class MiniPlayer extends StatelessWidget {
                       ),
                       onPressed: playback.togglePlayPause,
                     ),
+                  // Only when there is somewhere to go — a permanently dead
+                  // button costs space the title could use.
+                  if (playback.hasNext)
+                    IconButton(
+                      icon: const Icon(Icons.skip_next),
+                      tooltip: 'Next',
+                      onPressed: playback.playNext,
+                    ),
                   IconButton(
                     icon: const Icon(Icons.close),
+                    tooltip: 'Stop',
                     onPressed: playback.stop,
                   ),
                 ],

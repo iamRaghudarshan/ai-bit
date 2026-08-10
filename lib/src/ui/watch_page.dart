@@ -214,6 +214,7 @@ class _WatchPageState extends State<WatchPage>
                       () => _descriptionExpanded = !_descriptionExpanded,
                     ),
                   ),
+                  const _TransportRow(),
                   const _ActionRow(),
                   const Divider(height: 24),
                   if (_loadingDetails && _related.isEmpty)
@@ -535,6 +536,65 @@ class _Header extends StatelessWidget {
               ),
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+/// Previous / rewind / play / forward / next, laid out the way every media
+/// player does it.
+///
+/// The video surface has its own overlay controls, but they vanish after a few
+/// seconds and carry no notion of a queue. Track skipping needs to be reachable
+/// without waiting for an overlay to reappear.
+class _TransportRow extends StatelessWidget {
+  const _TransportRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final playback = context.watch<PlaybackController>();
+    final onSurface = Theme.of(context).colorScheme.onSurface;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.skip_previous),
+            iconSize: 32,
+            tooltip: 'Previous',
+            // Never disabled: with no history it restarts the video, which is
+            // what the button does in every music player.
+            color: playback.hasPrevious ? onSurface : onSurface.withValues(alpha: 0.5),
+            onPressed: playback.playPrevious,
+          ),
+          IconButton(
+            icon: const Icon(Icons.replay_10),
+            iconSize: 28,
+            tooltip: 'Back 10 seconds',
+            onPressed: () => playback.skip(const Duration(seconds: -10)),
+          ),
+          IconButton.filled(
+            icon: Icon(playback.isPlaying ? Icons.pause : Icons.play_arrow),
+            iconSize: 32,
+            tooltip: playback.isPlaying ? 'Pause' : 'Play',
+            onPressed: playback.togglePlayPause,
+          ),
+          IconButton(
+            icon: const Icon(Icons.forward_10),
+            iconSize: 28,
+            tooltip: 'Forward 10 seconds',
+            onPressed: () => playback.skip(const Duration(seconds: 10)),
+          ),
+          IconButton(
+            icon: const Icon(Icons.skip_next),
+            iconSize: 32,
+            tooltip: playback.hasNext ? 'Next' : 'Nothing queued',
+            color: playback.hasNext ? onSurface : onSurface.withValues(alpha: 0.3),
+            onPressed: playback.hasNext ? playback.playNext : null,
+          ),
         ],
       ),
     );

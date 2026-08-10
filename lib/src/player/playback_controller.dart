@@ -100,11 +100,23 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   // ------------------------------------------------------------------- play
 
   /// Loads [video] and starts playing. [upNext] becomes the autoplay queue.
-  Future<void> play(VideoBrief video, {List<VideoBrief> upNext = const []}) async {
+  ///
+  /// Set [recordHistory] false when stepping *backwards*, so the video being
+  /// left does not get pushed onto the history it was just taken from.
+  Future<void> play(
+    VideoBrief video, {
+    List<VideoBrief> upNext = const [],
+    bool recordHistory = true,
+  }) async {
     if (_current?.id == video.id && _player != null && _error == null) {
       // Re-tapping the currently loaded video should just resume it.
       await _player!.play();
       return;
+    }
+
+    final leaving = _current;
+    if (recordHistory && leaving != null && leaving.id != video.id) {
+      _pushHistory(leaving);
     }
 
     _current = video;
@@ -357,10 +369,47 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Videos already played, newest last. Gives "previous" something to mean —
+  /// a queue alone only ever moves forward.
+  final List<VideoBrief> _playHistory = [];
+
+  bool get hasNext => _queue.isNotEmpty;
+  bool get hasPrevious => _playHistory.isNotEmpty;
+
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
     final next = _queue.removeAt(0);
     await play(next, upNext: _queue.toList());
+  }
+
+  /// Steps back to the previously played video, pushing the current one to the
+  /// front of the queue so going forward again returns to it.
+  ///
+  /// Restarts the current video instead when it is more than three seconds in —
+  /// the behaviour every music player has, and what the button is reached for
+  /// most often.
+  Future<void> playPrevious() async {
+    if (_position > const Duration(seconds: 3)) {
+      await seek(Duration.zero);
+      await _player?.play();
+      return;
+    }
+    if (_playHistory.isEmpty) {
+      await seek(Duration.zero);
+      return;
+    }
+    final leaving = _current;
+    final previous = _playHistory.removeLast();
+    final rest = [?leaving, ..._queue];
+    await play(previous, upNext: rest, recordHistory: false);
+  }
+
+  void _pushHistory(VideoBrief video) {
+    _playHistory
+      ..removeWhere((v) => v.id == video.id)
+      ..add(video);
+    if (_playHistory.length > 50) _playHistory.removeAt(0);
+    notifyListeners();
   }
 
   PlaybackRepeat get repeatMode => _config.repeatMode;
