@@ -116,9 +116,15 @@ class _PlayerGesturesState extends State<PlayerGestures> {
 
     return LayoutBuilder(
       builder: (context, box) => GestureDetector(
-        // deferToChild, NOT opaque: better_player's controls sit above this in
-        // the stack and must keep receiving their own taps.
-        behavior: HitTestBehavior.deferToChild,
+        // translucent: this layer is hit-tested across its whole area, and the
+        // controls beneath it still receive their own taps.
+        //
+        // It used to be deferToChild over a transparent ColoredBox, which
+        // hit-tests nothing at all — RenderColoredBox only accepts a hit when
+        // the colour has alpha, so a fully transparent one is invisible to the
+        // gesture system. Double-tap to seek and the volume drag were both
+        // dead as a result.
+        behavior: HitTestBehavior.translucent,
         onDoubleTapDown: (d) => _onDoubleTapDown(d, box),
         onDoubleTap: () {},
         onVerticalDragStart: (d) => _onDragStart(d, box),
@@ -128,9 +134,6 @@ class _PlayerGesturesState extends State<PlayerGestures> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Something must be hit-testable for the drag to register, but it
-            // has to stay invisible and let taps fall through to the controls.
-            const ColoredBox(color: Colors.transparent),
             if (_seekSide != 0) _SeekRipple(side: _seekSide, step: _seekStep),
             if (_adjust != null)
               _LevelBadge(adjust: _adjust!, value: _liveValue),

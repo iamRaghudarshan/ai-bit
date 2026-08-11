@@ -19,6 +19,9 @@ import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'channel_page.dart';
 import 'widgets/comments_sheet.dart';
+import 'widgets/end_screen.dart';
+import 'widgets/stats_overlay.dart';
+import 'widgets/cast_button.dart';
 import 'widgets/description_sheet.dart';
 import 'widgets/player_gestures.dart';
 import 'widgets/queue_sheet.dart';
@@ -320,13 +323,6 @@ class _PlayerSurface extends StatelessWidget {
             return Stack(
               fit: StackFit.expand,
               children: [
-                // Gestures first so better_player's controls layer above them
-                // and keep receiving their own taps.
-                PlayerGestures(
-                  onSeekBy: playback.skip,
-                  onVolume: playback.setVolume,
-                  currentVolume: playback.volume,
-                ),
                 // Always mounted, including in audio mode.
                 //
                 // Returning the artwork *instead* of this widget left iOS with
@@ -335,6 +331,38 @@ class _PlayerSurface extends StatelessWidget {
                 // error". The artwork is painted over the player, never in
                 // place of it.
                 BetterPlayer(key: playback.playerKey, controller: player),
+                // Above the player, not below it. Underneath, every pointer was
+                // claimed by the controls before this layer saw it.
+                PlayerGestures(
+                  onSeekBy: playback.skip,
+                  onVolume: playback.setVolume,
+                  currentVolume: playback.volume,
+                ),
+                // Refreshes with the clock, so buffer health actually moves.
+                if (playback.showStats)
+                  ValueListenableBuilder<Duration>(
+                    valueListenable: playback.ticker,
+                    builder: (context, _, _) => StatsOverlay(
+                      stats: playback.stats,
+                      onClose: playback.toggleStats,
+                    ),
+                  ),
+                // Over everything else: a finished video used to freeze on its
+                // last frame with no sign that anything came next.
+                if (playback.showEndScreen)
+                  Positioned.fill(
+                    child: EndScreen(
+                      suggestions: playback.endScreenSuggestions,
+                      countdown: playback.autoplayCountdown,
+                      onReplay: playback.replay,
+                      onCancel: playback.cancelAutoplay,
+                      onDismiss: playback.dismissEndScreen,
+                      onPlay: (video) {
+                        playback.dismissEndScreen();
+                        WatchPage.open(context, video);
+                      },
+                    ),
+                  ),
                 // Audio-only has no picture, so the player draws a black
                 // rectangle — which reads as a failure rather than a feature.
                 // Transparent to touch, so the controls underneath still take
@@ -927,6 +955,13 @@ class _ActionRow extends StatelessWidget {
             label: sleep == null ? 'Sleep' : clockLabel(sleep),
             highlighted: sleep != null,
             onTap: () => showSleepTimerSheet(context),
+          ),
+          const CastChip(),
+          _ActionChip(
+            icon: Icons.analytics_outlined,
+            label: 'Stats',
+            highlighted: playback.showStats,
+            onTap: playback.toggleStats,
           ),
           _ActionChip(
             icon: Icons.picture_in_picture_alt_outlined,

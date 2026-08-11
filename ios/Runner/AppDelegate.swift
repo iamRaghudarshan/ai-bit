@@ -1,3 +1,4 @@
+import AVKit
 import Flutter
 import MediaPlayer
 import UIKit
@@ -25,6 +26,15 @@ import UIKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
+    // The Cast button is the system output-route picker, which only Apple's
+    // own view can present.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "RoutePicker") {
+      registrar.register(
+        RoutePickerViewFactory(),
+        withId: "ai.bit/route_picker"
+      )
+    }
   }
 
   /// Claims the lock-screen skip buttons back from the player plugin.
@@ -79,5 +89,50 @@ import UIKit
       self?.remote?.invokeMethod("previous", arguments: nil)
       return .success
     }
+  }
+}
+
+/// Hosts the system output-route picker so Flutter can show a real Cast button.
+///
+/// This is `AVRoutePickerView`, the control the stock apps use: it lists Apple
+/// TVs, AirPlay speakers and anything else the device can reach, and lights up
+/// on its own while a route is active. Drawing our own button would not work —
+/// only Apple's view may present the picker, and only it knows the current
+/// route.
+///
+/// It lives in this file rather than its own because the Xcode project lists
+/// its sources explicitly, and a new file would have to be registered in four
+/// places in the pbxproj to be compiled at all.
+///
+/// Chromecast is deliberately absent: it needs the Google Cast SDK as a pod
+/// and a receiver app id, which is a decision to take rather than a dependency
+/// to add quietly.
+class RoutePickerViewFactory: NSObject, FlutterPlatformViewFactory {
+  func create(
+    withFrame frame: CGRect,
+    viewIdentifier viewId: Int64,
+    arguments args: Any?
+  ) -> FlutterPlatformView {
+    return RoutePickerPlatformView(frame: frame)
+  }
+
+  func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol {
+    return FlutterStandardMessageCodec.sharedInstance()
+  }
+}
+
+class RoutePickerPlatformView: NSObject, FlutterPlatformView {
+  private let picker: AVRoutePickerView
+
+  init(frame: CGRect) {
+    picker = AVRoutePickerView(frame: frame)
+    picker.backgroundColor = .clear
+    picker.tintColor = .white
+    picker.activeTintColor = .systemRed
+    super.init()
+  }
+
+  func view() -> UIView {
+    return picker
   }
 }

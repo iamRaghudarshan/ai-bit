@@ -5,6 +5,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../core/format.dart';
 import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/models.dart';
@@ -231,6 +232,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _player!.videoPlayerController?.removeListener(_onValueChanged);
     _player!.videoPlayerController?.addListener(_onValueChanged);
     await _player!.setSpeed(_config.playbackSpeed);
+
+    _cancelCountdown();
+    _endScreen = false;
 
     // Setting a data source resets the remote commands inside the plugin, so
     // the skip buttons have to be re-armed for every video rather than once.
@@ -624,8 +628,119 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           await _player?.play();
         }
       case PlaybackRepeat.off:
-        if (_config.autoplayNext) await playNext();
+        _startEndScreen();
     }
+  }
+
+  // ---------------------------------------------------------------- end screen
+
+  bool _endScreen = false;
+  int _countdown = 0;
+  Timer? _countdownTimer;
+
+  /// True once a video has finished and the suggestions are showing.
+  bool get showEndScreen => _endScreen;
+
+  /// Seconds left before the next video starts; zero when nothing is counting.
+  int get autoplayCountdown => _countdown;
+
+  /// What to offer when a video ends. The watch page falls back to its own
+  /// up-next rail when the queue is empty.
+  List<VideoBrief> get endScreenSuggestions => _queue.take(4).toList();
+
+  /// Shows the suggestions, and counts down only when there is something to
+  /// play next and the user has asked for autoplay. Ending on a still frame
+  /// with no explanation is what the countdown replaces.
+  void _startEndScreen() {
+    _endScreen = true;
+    _cancelCountdown();
+    if (_config.autoplayNext && hasNext) {
+      _countdown = 10;
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        _countdown--;
+        if (_countdown <= 0) {
+          timer.cancel();
+          _countdownTimer = null;
+          _endScreen = false;
+          unawaited(playNext());
+        }
+        notifyListeners();
+      });
+    }
+    notifyListeners();
+  }
+
+  /// Stops the countdown but leaves the suggestions up, so a cancelled
+  /// autoplay still lets you pick something.
+  void cancelAutoplay() {
+    _cancelCountdown();
+    notifyListeners();
+  }
+
+  /// Clears the end screen, for replaying or picking a suggestion.
+  void dismissEndScreen() {
+    _cancelCountdown();
+    _endScreen = false;
+    notifyListeners();
+  }
+
+  void _cancelCountdown() {
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
+    _countdown = 0;
+  }
+
+  // ------------------------------------------------------------ stats overlay
+
+  bool _showStats = false;
+  bool get showStats => _showStats;
+
+  void toggleStats() {
+    _showStats = !_showStats;
+    notifyListeners();
+  }
+
+  /// What YouTube's "Stats for nerds" panel reports, as far as this player
+  /// exposes it. Buffer health is the gap between what has downloaded and
+  /// where playback is, which is the number worth watching when a stream
+  /// stutters.
+  Map<String, String> get stats {
+    final value = _player?.videoPlayerController?.value;
+    final size = value?.size;
+    final sources = _sources;
+
+    Duration buffered = Duration.zero;
+    for (final range in value?.buffered ?? const []) {
+      if (range.end > buffered) buffered = range.end;
+    }
+    final ahead = buffered - _position;
+
+    return {
+      'Video ID': _current?.id ?? '—',
+      'Resolution': size == null || size.width == 0
+          ? '—'
+          : '${size.width.round()}x${size.height.round()}',
+      'Quality': _config.preferredQuality,
+      'Delivery': _isOffline
+          ? 'Downloaded file'
+          : (sources?.isHls ?? false)
+              ? 'HLS adaptive'
+              : 'Progressive MP4',
+      'Mode': _config.audioOnly || _droppedVideo ? 'Audio only' : 'Video',
+      'Buffer health': ahead.isNegative
+          ? '0.0 s'
+          : '${(ahead.inMilliseconds / 1000).toStringAsFixed(1)} s',
+      'Position': '${clockLabel(_position)} / ${clockLabel(_duration)}',
+      'Speed': '${_config.playbackSpeed}x',
+      'Volume': '${((value?.volume ?? 1) * 100).round()}%',
+    };
+  }
+
+  /// Replays the finished video from the start.
+  Future<void> replay() async {
+    dismissEndScreen();
+    await seek(Duration.zero);
+    await _player?.play();
   }
 
   Future<void> enterPictureInPicture() async {
@@ -829,6 +944,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cancelSleepTimer();
+    _cancelCountdown();
     _player?.videoPlayerController?.removeListener(_onValueChanged);
     _player?.removeEventsListener(_onPlayerEvent);
     _player?.dispose(forceDispose: true);
