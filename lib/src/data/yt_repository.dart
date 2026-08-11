@@ -313,7 +313,17 @@ class YtRepository {
     );
   }
 
+  /// Videos in a YouTube playlist.
+  ///
+  /// Browse first: `playlists.getVideos` returns an empty stream for every
+  /// playlist measured, which is why opening a channel playlist showed nothing.
   Future<List<VideoBrief>> remotePlaylist(String playlistId, {int limit = 100}) async {
+    try {
+      final videos = await _browse.playlistVideos(playlistId);
+      if (videos.isNotEmpty) return videos.take(limit).toList();
+    } catch (e) {
+      debugPrint('AI BIT: playlist browse failed for $playlistId — $e');
+    }
     final videos = await _yt.playlists.getVideos(playlistId).take(limit).toList();
     return videos.map(VideoBrief.fromYt).toList();
   }

@@ -221,6 +221,49 @@ class YoutubeBrowseClient {
     return (number * multiplier).round();
   }
 
+  /// Videos inside a playlist.
+  ///
+  /// Needed because `playlists.getVideos` returns an empty stream — zero for
+  /// every playlist measured, the same failure as `channels.getUploads`. The
+  /// playlist page is browsed as `VL` + the playlist id, and its videos come
+  /// back as `lockupViewModel`, not `playlistVideoRenderer`.
+  Future<List<VideoBrief>> playlistVideos(String playlistId) async {
+    final json = await _post({'browseId': 'VL$playlistId'});
+
+    final lockups = <Map<String, dynamic>>[];
+    _collect(json, 'lockupViewModel', lockups);
+
+    final out = <VideoBrief>[];
+    final seen = <String>{};
+    for (final l in lockups) {
+      if (l['contentType'] != 'LOCKUP_CONTENT_TYPE_VIDEO') continue;
+      final id = l['contentId'];
+      if (id is! String || id.isEmpty || !seen.add(id)) continue;
+
+      // metadata reads as [title, channel, "715K views"].
+      final parts = <String>[];
+      _collectStrings(l['metadata'], 'content', parts);
+      if (parts.isEmpty) continue;
+
+      final views = parts.firstWhere(
+        (p) => p.toLowerCase().contains('view'),
+        orElse: () => '',
+      );
+
+      out.add(VideoBrief(
+        id: id,
+        title: parts.first,
+        author: parts.length > 1 && !parts[1].toLowerCase().contains('view')
+            ? parts[1]
+            : '',
+        channelId: '',
+        duration: _durationFromBadge(l['contentImage']),
+        viewCount: _parseCompact(views),
+      ));
+    }
+    return out;
+  }
+
   /// Playlists published by a channel.
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) async {
     final json = await _post({

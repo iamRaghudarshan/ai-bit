@@ -208,13 +208,6 @@ class _WatchPageState extends State<WatchPage>
         bottom: false,
         child: Column(
           children: [
-            // Drag-to-minimise lives on the handle only, NOT the video.
-            //
-            // Wrapping the whole player in a vertical-drag detector put every
-            // touch on the video into a gesture arena with it, and a scrub that
-            // began with any downward movement was claimed by the sheet — which
-            // is why the seek bar could not be dragged at all. The handle is a
-            // dedicated target, so the two can no longer compete.
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onVerticalDragUpdate: _onDragUpdate,
@@ -223,7 +216,18 @@ class _WatchPageState extends State<WatchPage>
                 onClose: () => Navigator.of(context).maybePop(),
               ),
             ),
-            _PlayerSurface(showPlayer: isCurrent),
+            // Dragging the video itself minimises too, which is how the real
+            // app behaves — reaching for a small handle first is not.
+            //
+            // The bottom strip is excluded because that is where the seek bar
+            // lives: putting the whole player in a vertical-drag detector meant
+            // any scrub starting with slight downward movement was claimed by
+            // the sheet, and the seek bar could not be dragged at all.
+            _DragToMinimise(
+              onUpdate: _onDragUpdate,
+              onEnd: _onDragEnd,
+              child: _PlayerSurface(showPlayer: isCurrent),
+            ),
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,
@@ -356,6 +360,58 @@ class _PlayerSurface extends StatelessWidget {
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+/// Makes the video draggable to minimise, without stealing the seek bar.
+///
+/// A plain vertical-drag detector around the player competes with the seek bar
+/// for every touch, and the sheet usually wins — which is what made the seek bar
+/// undraggable. This one refuses to start a drag that begins in the bottom
+/// strip, so the two never contend.
+class _DragToMinimise extends StatefulWidget {
+  const _DragToMinimise({
+    required this.child,
+    required this.onUpdate,
+    required this.onEnd,
+  });
+
+  final Widget child;
+  final void Function(DragUpdateDetails) onUpdate;
+  final void Function(DragEndDetails) onEnd;
+
+  @override
+  State<_DragToMinimise> createState() => _DragToMinimiseState();
+}
+
+class _DragToMinimiseState extends State<_DragToMinimise> {
+  /// Height at the bottom reserved for the seek bar and its controls.
+  static const _controlsZone = 64.0;
+
+  /// False when the gesture began over the controls, in which case every
+  /// update is ignored until the finger lifts.
+  bool _accepting = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) => GestureDetector(
+        // translucent, so taps still reach the player's own controls.
+        behavior: HitTestBehavior.translucent,
+        onVerticalDragDown: (d) {
+          _accepting = d.localPosition.dy < box.maxHeight - _controlsZone;
+        },
+        onVerticalDragUpdate: (d) {
+          if (_accepting) widget.onUpdate(d);
+        },
+        onVerticalDragEnd: (d) {
+          if (_accepting) widget.onEnd(d);
+          _accepting = false;
+        },
+        onVerticalDragCancel: () => _accepting = false,
+        child: widget.child,
       ),
     );
   }

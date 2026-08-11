@@ -206,6 +206,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
       // without the hint AVPlayer guesses from the path and gets it wrong.
       videoFormat: isHls ? BetterPlayerVideoFormat.hls : null,
+      // googlevideo URLs carry no file extension, so AVPlayer cannot infer the
+      // container. Without this hint an audio-only stream fails to open, which
+      // is what made the Audio only button look broken.
+      videoExtension: isHls
+          ? null
+          : (_config.audioOnly || _droppedVideo ? 'm4a' : 'mp4'),
       // Let better_player read the ladder's variants off the manifest, which is
       // what puts real quality and subtitle options in the overflow menu.
       useAsmsTracks: isHls,
@@ -518,7 +524,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
-      case AppLifecycleState.paused:
+      // `inactive` fires while the app is still allowed to act; `paused` fires
+      // once it is already backgrounded, where starting playback is restricted.
+      // Swapping on `paused` was too late, which is why background audio
+      // stopped rather than continuing.
+      case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
         unawaited(_dropVideoTrack());
       case AppLifecycleState.resumed:

@@ -58,15 +58,17 @@ class SettingsService extends ChangeNotifier {
   bool get backgroundPlayback => _prefs.getBool(_kBackground) ?? true;
   set backgroundPlayback(bool value) => _write(_kBackground, value);
 
-  /// Drop the video track while the screen is off and pick it back up on
-  /// unlock. Saves roughly ten times the data, since nobody is watching a
-  /// locked screen.
+  /// Switch to the audio-only stream when the app leaves the foreground.
   ///
-  /// **Off by default.** Swapping the source means building a new player item
-  /// and starting it while the app is already in the background, which iOS
-  /// restricts — and when it fails, audio stops altogether. Silent playback is
-  /// a far worse outcome than extra data, so this is opt-in.
-  bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? false;
+  /// **This is what makes background playback work at all on iOS**, not a data
+  /// optimisation. `better_player_plus` has no background lifecycle handling —
+  /// it never detaches the video layer — and iOS suspends an AVPlayer whose
+  /// AVPlayerLayer is still attached the moment the app backgrounds. An
+  /// audio-only asset has no video layer to suspend, so it keeps playing.
+  ///
+  /// It also cuts data roughly tenfold, which is a genuine bonus rather than
+  /// the point.
+  bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? true;
   set audioOnlyWhenLocked(bool value) => _write(_kLockedAudio, value);
 
   /// off / one / all.
