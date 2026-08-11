@@ -333,11 +333,7 @@ class _PlayerSurface extends StatelessWidget {
                 BetterPlayer(key: playback.playerKey, controller: player),
                 // Above the player, not below it. Underneath, every pointer was
                 // claimed by the controls before this layer saw it.
-                PlayerGestures(
-                  onSeekBy: playback.skip,
-                  onVolume: playback.setVolume,
-                  currentVolume: playback.volume,
-                ),
+                PlayerGestures(onSeekBy: playback.skip),
                 // Refreshes with the clock, so buffer health actually moves.
                 if (playback.showStats)
                   ValueListenableBuilder<Duration>(
@@ -437,8 +433,13 @@ class _DragToMinimiseState extends State<_DragToMinimise> {
   /// Height at the bottom reserved for the seek bar and its controls.
   static const _controlsZone = 64.0;
 
-  /// False when the gesture began over the controls, in which case every
+  /// False when the gesture began over the seek bar, in which case every
   /// update is ignored until the finger lifts.
+  ///
+  /// That strip is the only exception left. Brightness and volume used to take
+  /// a vertical drag on each half of the video, which made every downward
+  /// swipe ambiguous; with those gone, dragging anywhere on the picture
+  /// minimises, and only scrubbing is carved out.
   bool _accepting = false;
 
   @override

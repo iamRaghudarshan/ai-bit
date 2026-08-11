@@ -1,29 +1,26 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:screen_brightness/screen_brightness.dart';
 
 /// Transparent gesture layer over the video surface.
 ///
-/// Sits *behind* better_player's own controls in the stack, so a tap that hits
-/// a real button is consumed by the button and never reaches here. Only gestures
-/// on empty video area get through.
+/// Double-tap left or right to seek ∓10s, with a brief ripple. That is the
+/// only gesture here.
 ///
-///   * double-tap left / right — seek ∓10s, with a brief ripple
-///   * vertical drag, left half — screen brightness
-///   * vertical drag, right half — player volume
+/// Brightness and volume used to be on a vertical drag, one per half of the
+/// screen. They are gone: the watch page drags down to minimise the player,
+/// and both gestures start the same way, so every downward swipe was a
+/// coin toss between dimming the screen and dismissing the video. Losing two
+/// shortcuts is worth a drag that behaves the same way every time — the system
+/// volume buttons and Control Centre cover both anyway.
 class PlayerGestures extends StatefulWidget {
   const PlayerGestures({
     super.key,
     required this.onSeekBy,
-    required this.onVolume,
-    required this.currentVolume,
     this.enabled = true,
   });
 
   final void Function(Duration delta) onSeekBy;
-  final void Function(double volume) onVolume;
-  final double currentVolume;
   final bool enabled;
 
   @override
@@ -36,11 +33,6 @@ class _PlayerGesturesState extends State<PlayerGestures> {
   /// -1 rewind, 1 forward, 0 idle. Drives the ripple.
   int _seekSide = 0;
   Timer? _seekFade;
-
-  /// Non-null while a vertical drag is in progress.
-  _Adjust? _adjust;
-  double _startValue = 0;
-  double _liveValue = 0;
 
   @override
   void dispose() {
@@ -57,57 +49,6 @@ class _PlayerGesturesState extends State<PlayerGestures> {
     _seekFade = Timer(const Duration(milliseconds: 600), () {
       if (mounted) setState(() => _seekSide = 0);
     });
-  }
-
-  /// Height at the bottom of the video reserved for the seek bar.
-  ///
-  /// A vertical drag starting there would compete with scrubbing, and losing
-  /// that contest is why the seek bar felt unusable.
-  static const _scrubberZone = 56.0;
-
-  Future<void> _onDragStart(DragStartDetails d, BoxConstraints box) async {
-    if (d.localPosition.dy > box.maxHeight - _scrubberZone) {
-      _adjust = null;
-      return;
-    }
-    final isLeft = d.localPosition.dx < box.maxWidth / 2;
-    _adjust = isLeft ? _Adjust.brightness : _Adjust.volume;
-    if (isLeft) {
-      try {
-        _startValue = await ScreenBrightness.instance.application;
-      } catch (_) {
-        _startValue = 0.5;
-      }
-    } else {
-      _startValue = widget.currentVolume;
-    }
-    _liveValue = _startValue;
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _onDragUpdate(DragUpdateDetails d, BoxConstraints box) async {
-    final adjust = _adjust;
-    if (adjust == null) return;
-    // Full height of the surface maps to the full 0..1 range; dragging up
-    // increases, which is the convention everywhere else.
-    final delta = -d.primaryDelta! / box.maxHeight;
-    _liveValue = (_liveValue + delta).clamp(0.0, 1.0);
-
-    if (adjust == _Adjust.brightness) {
-      try {
-        await ScreenBrightness.instance.setApplicationScreenBrightness(_liveValue);
-      } catch (_) {
-        // Brightness control is unavailable on some devices; ignore rather
-        // than interrupt playback with an error.
-      }
-    } else {
-      widget.onVolume(_liveValue);
-    }
-    if (mounted) setState(() {});
-  }
-
-  void _onDragEnd() {
-    if (mounted) setState(() => _adjust = null);
   }
 
   @override
@@ -127,24 +68,16 @@ class _PlayerGesturesState extends State<PlayerGestures> {
         behavior: HitTestBehavior.translucent,
         onDoubleTapDown: (d) => _onDoubleTapDown(d, box),
         onDoubleTap: () {},
-        onVerticalDragStart: (d) => _onDragStart(d, box),
-        onVerticalDragUpdate: (d) => _onDragUpdate(d, box),
-        onVerticalDragEnd: (_) => _onDragEnd(),
-        onVerticalDragCancel: _onDragEnd,
         child: Stack(
           fit: StackFit.expand,
           children: [
             if (_seekSide != 0) _SeekRipple(side: _seekSide, step: _seekStep),
-            if (_adjust != null)
-              _LevelBadge(adjust: _adjust!, value: _liveValue),
           ],
         ),
       ),
     );
   }
 }
-
-enum _Adjust { brightness, volume }
 
 class _SeekRipple extends StatelessWidget {
   const _SeekRipple({required this.side, required this.step});
@@ -177,56 +110,6 @@ class _SeekRipple extends StatelessWidget {
               Text(
                 '${step.inSeconds} seconds',
                 style: const TextStyle(color: Colors.white, fontSize: 12),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LevelBadge extends StatelessWidget {
-  const _LevelBadge({required this.adjust, required this.value});
-
-  final _Adjust adjust;
-  final double value;
-
-  @override
-  Widget build(BuildContext context) {
-    final isBrightness = adjust == _Adjust.brightness;
-    return Center(
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.7),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isBrightness
-                    ? (value > 0.5 ? Icons.brightness_high : Icons.brightness_low)
-                    : (value == 0 ? Icons.volume_off : Icons.volume_up),
-                color: Colors.white,
-                size: 26,
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: 90,
-                child: LinearProgressIndicator(
-                  value: value,
-                  minHeight: 3,
-                  backgroundColor: Colors.white24,
-                  valueColor: const AlwaysStoppedAnimation(Colors.white),
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                '${(value * 100).round()}%',
-                style: const TextStyle(color: Colors.white, fontSize: 11),
               ),
             ],
           ),
