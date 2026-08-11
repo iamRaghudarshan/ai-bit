@@ -317,13 +317,6 @@ class _PlayerSurface extends StatelessWidget {
                 child: CircularProgressIndicator(color: AppColors.brand),
               );
             }
-            // Audio-only has no video track, so the player renders a black
-            // rectangle — which reads as a failure rather than a feature. Show
-            // the artwork instead, the way a music player does.
-            if (playback.isAudioOnly) {
-              return _AudioArtwork(video: playback.current);
-            }
-
             return Stack(
               fit: StackFit.expand,
               children: [
@@ -334,7 +327,24 @@ class _PlayerSurface extends StatelessWidget {
                   onVolume: playback.setVolume,
                   currentVolume: playback.volume,
                 ),
+                // Always mounted, including in audio mode.
+                //
+                // Returning the artwork *instead* of this widget left iOS with
+                // no render surface to attach to, so the native player failed
+                // every audio-only load with "Failed to load video: unknown
+                // error". The artwork is painted over the player, never in
+                // place of it.
                 BetterPlayer(key: playback.playerKey, controller: player),
+                // Audio-only has no picture, so the player draws a black
+                // rectangle — which reads as a failure rather than a feature.
+                // Transparent to touch, so the controls underneath still take
+                // taps for play, seek and the rest.
+                if (playback.isAudioOnly)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: _AudioArtwork(video: playback.current),
+                    ),
+                  ),
                 if (playback.isAudioOnly)
                   IgnorePointer(
                     child: Align(

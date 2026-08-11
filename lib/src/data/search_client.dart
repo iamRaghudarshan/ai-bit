@@ -49,37 +49,72 @@ class YoutubeSearchClient {
   static const filterVideosOnly = 'EgIQAQ==';
 
   /// Videos under four minutes. The Shorts feed narrows further client-side.
-  static const filterShort = 'EgIYAQ==';
-  static const filterByViewCount = 'CAMSAhAB';
+  static final filterShort = buildParams(duration: 1);
+  static final filterByViewCount = buildParams(sortBy: 3);
 
   /// Single-choice search filters, matching YouTube's own filter panel.
+  ///
+  /// The values are protobuf field numbers rather than finished `sp` strings.
+  /// Each pre-baked string encoded one field and nothing else, so sending one
+  /// replaced the rest: choosing "This week" dropped the videos-only filter and
+  /// brought back channels and playlists the parser skips, which looked like
+  /// filtering had done nothing. [buildParams] combines the choices into the
+  /// single message YouTube actually expects.
   static const filters = <SearchFilterGroup>[
     SearchFilterGroup('Sort by', [
       SearchFilterOption('Relevance', null),
-      SearchFilterOption('Upload date', 'CAI='),
-      SearchFilterOption('View count', 'CAM='),
-      SearchFilterOption('Rating', 'CAE='),
+      SearchFilterOption('Upload date', 2),
+      SearchFilterOption('View count', 3),
+      SearchFilterOption('Rating', 1),
     ]),
     SearchFilterGroup('Upload date', [
       SearchFilterOption('Any time', null),
-      SearchFilterOption('Last hour', 'EgIIAQ=='),
-      SearchFilterOption('Today', 'EgIIAg=='),
-      SearchFilterOption('This week', 'EgIIAw=='),
-      SearchFilterOption('This month', 'EgIIBA=='),
-      SearchFilterOption('This year', 'EgIIBQ=='),
+      SearchFilterOption('Last hour', 1),
+      SearchFilterOption('Today', 2),
+      SearchFilterOption('This week', 3),
+      SearchFilterOption('This month', 4),
+      SearchFilterOption('This year', 5),
     ]),
     SearchFilterGroup('Duration', [
       SearchFilterOption('Any', null),
-      SearchFilterOption('Under 4 minutes', 'EgIYAQ=='),
-      SearchFilterOption('Over 20 minutes', 'EgIYAg=='),
+      SearchFilterOption('Under 4 minutes', 1),
+      SearchFilterOption('Over 20 minutes', 2),
     ]),
     SearchFilterGroup('Type', [
-      SearchFilterOption('Video', 'EgIQAQ=='),
-      SearchFilterOption('Channel', 'EgIQAg=='),
-      SearchFilterOption('Playlist', 'EgIQAw=='),
-      SearchFilterOption('Movie', 'EgIQBA=='),
+      SearchFilterOption('Video', 1),
+      SearchFilterOption('Channel', 2),
+      SearchFilterOption('Playlist', 3),
+      SearchFilterOption('Movie', 4),
     ]),
   ];
+
+  /// Encodes the chosen filters into the `sp` parameter.
+  ///
+  /// The wire format is a two-field protobuf: field 1 is the sort order, and
+  /// field 2 is a nested message holding the upload-date, type and duration
+  /// filters as fields 1, 2 and 3. Each value is small enough to be a
+  /// single-byte varint, so the message can be written out by hand rather than
+  /// pulling in a protobuf runtime.
+  ///
+  /// Defaults to videos-only, which is what every caller wants unless the user
+  /// has explicitly asked for channels or playlists.
+  static String buildParams({
+    int? sortBy,
+    int? uploadDate,
+    int? type,
+    int? duration,
+  }) {
+    final nested = <int>[
+      if (uploadDate != null) ...[0x08, uploadDate],
+      ...[0x10, type ?? 1],
+      if (duration != null) ...[0x18, duration],
+    ];
+    final message = <int>[
+      if (sortBy != null) ...[0x08, sortBy],
+      0x12, nested.length, ...nested,
+    ];
+    return base64.encode(message);
+  }
 
   void close() => _http.close();
 
@@ -375,12 +410,13 @@ class SearchFilterGroup {
 }
 
 class SearchFilterOption {
-  const SearchFilterOption(this.label, this.params);
+  const SearchFilterOption(this.label, this.value);
 
   final String label;
 
   /// null means "no filter" — the default for that group.
-  final String? params;
+  /// Protobuf field value for this option; null means "no filter".
+  final int? value;
 }
 
 class SearchException implements Exception {

@@ -35,17 +35,21 @@ class SearchPageState extends State<SearchPage> {
   final Map<String, SearchFilterOption> _filters = {};
 
   String? get _filterParams {
-    // Only one `sp` value can be sent, so the most specific chosen filter
-    // wins — combining them needs a protobuf YouTube builds server-side.
-    for (final group in YoutubeSearchClient.filters) {
-      final chosen = _filters[group.title];
-      if (chosen?.params != null) return chosen!.params;
-    }
-    return null;
+    // Every chosen filter goes into one encoded message. Picking whichever was
+    // "most specific" and discarding the others meant a date filter quietly
+    // cancelled the videos-only default, and no two filters ever applied
+    // together.
+    if (_filters.values.every((o) => o.value == null)) return null;
+    return YoutubeSearchClient.buildParams(
+      sortBy: _filters['Sort by']?.value,
+      uploadDate: _filters['Upload date']?.value,
+      duration: _filters['Duration']?.value,
+      type: _filters['Type']?.value,
+    );
   }
 
   int get _activeFilterCount =>
-      _filters.values.where((o) => o.params != null).length;
+      _filters.values.where((o) => o.value != null).length;
 
   /// Called by the shell when the Search tab is selected. Focus cannot be
   /// requested in initState: every tab of an IndexedStack is built at startup,
@@ -219,11 +223,11 @@ class SearchPageState extends State<SearchPage> {
                             selected: _filters[group.title]?.label ==
                                     option.label ||
                                 (_filters[group.title] == null &&
-                                    option.params == null),
+                                    option.value == null),
                             showCheckmark: false,
                             onSelected: (_) {
                               setSheetState(() {
-                                if (option.params == null) {
+                                if (option.value == null) {
                                   _filters.remove(group.title);
                                 } else {
                                   _filters[group.title] = option;
@@ -237,6 +241,24 @@ class SearchPageState extends State<SearchPage> {
                   ),
                 ],
                 const SizedBox(height: 20),
+                // Choosing a chip only records the choice; the search re-runs
+                // when the sheet closes. Without a button to close it there was
+                // nothing to press after picking a filter, so it read as though
+                // filtering did nothing at all.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: () => Navigator.pop(sheetContext),
+                      child: Text(
+                        _activeFilterCount == 0
+                            ? 'Show results'
+                            : 'Show results ($_activeFilterCount filters)',
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),

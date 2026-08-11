@@ -11,6 +11,7 @@ import '../data/models.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../ui/widgets/video_controls.dart';
+import 'remote_commands.dart';
 
 /// Owns the one and only video player for the whole app.
 ///
@@ -108,6 +109,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   double get speed => _config.playbackSpeed;
 
   Timer? _sleepTimer;
+
+  /// Lock-screen skip buttons, which the player plugin leaves disabled.
+  late final RemoteCommands _remote = RemoteCommands(
+    onNext: () => unawaited(playNext()),
+    onPrevious: () => unawaited(playPrevious()),
+  );
 
   /// Position ticks, kept off [notifyListeners] on purpose.
   ///
@@ -224,6 +231,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _player!.videoPlayerController?.removeListener(_onValueChanged);
     _player!.videoPlayerController?.addListener(_onValueChanged);
     await _player!.setSpeed(_config.playbackSpeed);
+
+    // Setting a data source resets the remote commands inside the plugin, so
+    // the skip buttons have to be re-armed for every video rather than once.
+    _remote.invalidate();
+    unawaited(_remote.sync(hasPrevious: hasPrevious, hasNext: hasNext));
 
     // Carry the chosen quality across videos. The tracks only exist once the
     // manifest has been read, so this waits for them rather than firing at
