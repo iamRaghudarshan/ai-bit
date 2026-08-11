@@ -101,38 +101,55 @@ Future<void> showSleepTimerSheet(BuildContext context) {
 Future<void> showQualitySheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   final settings = context.read<SettingsService>();
-  final options = [SettingsService.autoQuality, ...playback.qualities];
+
   return showModalBottomSheet<void>(
     context: context,
-    builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _sheetHeader(context, 'Quality'),
-          if (options.length == 1)
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 0, 20, 16),
-              child: Text('Only one rendition is available for this video.'),
-            ),
-          for (final label in options)
-            ListTile(
-              title: Text(label),
-              trailing: settings.preferredQuality == label
-                  ? const Icon(Icons.check)
-                  : (playback.activeQuality == label
-                        ? const Icon(Icons.play_arrow, size: 18)
-                        : null),
-              subtitle: label == SettingsService.autoQuality
-                  ? const Text('Adjusts to your connection')
-                  : null,
-              onTap: () {
-                playback.setQuality(label);
-                Navigator.pop(context);
-              },
-            ),
-        ],
-      ),
+    // Listens rather than reading once.
+    //
+    // The HLS ladder is parsed a moment after playback starts, so a sheet
+    // opened promptly used to snapshot an empty track list and offer nothing
+    // but "Auto" — the whole video long, because it never looked again.
+    builder: (context) => AnimatedBuilder(
+      animation: playback,
+      builder: (context, _) {
+        final options = [SettingsService.autoQuality, ...playback.qualities];
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _sheetHeader(context, 'Quality'),
+              if (options.length == 1)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                  child: Text(
+                    playback.isLoading
+                        ? 'Reading the available qualities…'
+                        : 'This video is only offered in one size.',
+                  ),
+                ),
+              for (final label in options)
+                ListTile(
+                  title: Text(label),
+                  trailing: settings.preferredQuality == label
+                      ? const Icon(Icons.check)
+                      : (playback.activeQuality == label
+                            ? const Icon(Icons.play_arrow, size: 18)
+                            : null),
+                  subtitle: label == SettingsService.autoQuality
+                      ? const Text('Adjusts to your connection')
+                      : (playback.activeQuality == label
+                            ? const Text('Playing now')
+                            : null),
+                  onTap: () {
+                    playback.setQuality(label);
+                    Navigator.pop(context);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
     ),
   );
 }

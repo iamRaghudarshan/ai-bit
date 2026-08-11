@@ -138,7 +138,10 @@ class SettingsPage extends StatelessWidget {
                     ? const Icon(Icons.check)
                     : null,
                 onTap: () {
-                  settings.preferredQuality = option;
+                  // Through the controller, so a video already playing changes
+                  // now rather than at the next one. It records the preference
+                  // as part of the same call.
+                  playback.setQuality(option);
                   Navigator.pop(context);
                 },
               ),

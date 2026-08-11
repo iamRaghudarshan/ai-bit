@@ -74,7 +74,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// The rendition actually playing, or null while on Auto.
   String? get activeQuality {
     final height = _player?.betterPlayerAsmsTrack?.height ?? 0;
-    return height > 0 ? '${height}p' : null;
+    if (height > 0) return '${height}p';
+
+    // A progressive source has no track to read, so the rendition is whichever
+    // label the current URL belongs to. Without this the picker never marked
+    // anything as playing on a video with no HLS ladder.
+    final url = _player?.betterPlayerDataSource?.url;
+    final qualities = _sources?.qualities ?? const <String, String>{};
+    for (final entry in qualities.entries) {
+      if (entry.value == url) return entry.key;
+    }
+    return null;
   }
 
   bool _isOffline = false;

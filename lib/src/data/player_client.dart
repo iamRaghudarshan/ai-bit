@@ -138,6 +138,7 @@ class YoutubePlayerClient {
       hlsUrl: streaming?['hlsManifestUrl'] as String?,
       audioUrl: _bestAudio(streaming),
       muxedUrl: _bestMuxed(streaming),
+      muxedQualities: _muxedQualities(streaming),
       isLive: details?['isLiveContent'] == true || details?['isLive'] == true,
     );
   }
@@ -189,6 +190,27 @@ class YoutubePlayerClient {
 
   /// Legacy progressive stream, kept only as a last resort when no HLS ladder
   /// is offered. Capped at 360p by YouTube.
+  /// Every muxed rendition keyed by label, so a video with no HLS ladder can
+  /// still offer a real choice instead of only "Auto".
+  ///
+  /// YouTube has retired almost all of these — usually the single 360p MP4 is
+  /// all that comes back — but reporting one honest option beats reporting
+  /// none, which is what made the picker look broken.
+  static Map<String, String> _muxedQualities(Map<String, dynamic>? streaming) {
+    final formats = streaming?['formats'];
+    if (formats is! List) return const {};
+
+    final out = <String, String>{};
+    for (final f in formats) {
+      if (f is! Map) continue;
+      final url = f['url'];
+      final height = (f['height'] as num?)?.toInt() ?? 0;
+      if (url is! String || url.isEmpty || height <= 0) continue;
+      out.putIfAbsent('${height}p', () => url);
+    }
+    return out;
+  }
+
   static String? _bestMuxed(Map<String, dynamic>? streaming) {
     final formats = streaming?['formats'];
     if (formats is! List) return null;
@@ -214,6 +236,7 @@ class PlayerStreams {
     this.hlsUrl,
     this.audioUrl,
     this.muxedUrl,
+    this.muxedQualities = const {},
     this.isLive = false,
   });
 
@@ -221,6 +244,9 @@ class PlayerStreams {
   final String? hlsUrl;
   final String? audioUrl;
   final String? muxedUrl;
+
+  /// Label to URL for each muxed rendition on offer.
+  final Map<String, String> muxedQualities;
   final bool isLive;
 
   bool get hasVideo => hlsUrl != null || muxedUrl != null;

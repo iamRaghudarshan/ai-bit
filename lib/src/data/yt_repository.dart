@@ -442,7 +442,10 @@ class YtRepository {
         if (streams.muxedUrl != null) {
           return _cache(key, PlaybackSources(
             url: streams.muxedUrl!,
-            qualities: const {},
+            // Without these the picker showed only "Auto" on every video that
+            // has no HLS ladder, which reads as broken rather than as "this
+            // video only comes in one size".
+            qualities: streams.muxedQualities,
             audioOnlyUrl: streams.audioUrl,
           ));
         }
