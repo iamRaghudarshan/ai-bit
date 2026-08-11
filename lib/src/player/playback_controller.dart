@@ -145,11 +145,53 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   ///
   /// Set [recordHistory] false when stepping *backwards*, so the video being
   /// left does not get pushed onto the history it was just taken from.
+  /// Serialises loads and identifies the newest one.
+  ///
+  /// Every toggle of Audio only reloads the video, and a second toggle before
+  /// the first had finished ran two setupDataSource calls against the same
+  /// native player at once. One of them never completed, so the spinner stayed
+  /// up while the earlier source carried on playing — video "stuck loading"
+  /// with audio still running. Loads now queue, and a load that has been
+  /// superseded stops rather than fighting the newer one.
+  int _playToken = 0;
+  Future<void>? _pendingLoad;
+
   Future<void> play(
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
   }) async {
+    // Wait for any load already running, so two never touch the player at once.
+    final previous = _pendingLoad;
+    if (previous != null) {
+      try {
+        await previous;
+      } catch (_) {
+        // Its own caller reported it; this one carries on regardless.
+      }
+    }
+    final completer = Completer<void>();
+    _pendingLoad = completer.future;
+    try {
+      await _play(video, upNext: upNext, recordHistory: recordHistory);
+    } finally {
+      if (identical(_pendingLoad, completer.future)) _pendingLoad = null;
+      // Whatever happened, the spinner comes down. A load that returned early
+      // used to leave it up forever with the previous source still playing.
+      if (_loading) {
+        _loading = false;
+        notifyListeners();
+      }
+      completer.complete();
+    }
+  }
+
+  Future<void> _play(
+    VideoBrief video, {
+    List<VideoBrief> upNext = const [],
+    bool recordHistory = true,
+  }) async {
+    final token = ++_playToken;
     if (_current?.id == video.id && _player != null && _error == null) {
       // Re-tapping the currently loaded video should just resume it.
       await _player!.play();
@@ -203,11 +245,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           : await _repo.resolve(video.id);
       _sources = sources;
       _isOffline = offlinePath != null;
+      if (token != _playToken) return;
       final resumeAt = await _db.resumePosition(video.id);
       await _attach(video, sources, startAt: resumeAt);
       _loading = false;
       notifyListeners();
     } catch (e) {
+      if (token != _playToken) return;
       _loading = false;
       // Always carry the real reason. A generic "check your connection" sent
       // three rounds of debugging in the wrong direction while the connection
@@ -542,7 +586,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (video == null) return;
     final resumeAt = _position;
     _current = null;
-    await play(video, upNext: _queue.toList());
+    await play(video, upNext: _queue.toList(), recordHistory: false);
     if (resumeAt > const Duration(seconds: 3)) await seek(resumeAt);
   }
 
