@@ -24,27 +24,31 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    `PlayerNotificationManager` greys the buttons out however they are
    configured. `SkipReportingPlayer` claims both commands as available and
    forwards each tap to Flutter instead of trying to seek.
-3. The media session advertised only `ACTION_SEEK_TO`. It now advertises
+3. `setAudioAttributes(exoPlayer, true)` passed `handleAudioFocus = false`, so
+   ExoPlayer ignored audio focus: an incoming call ducked the audio while the
+   video played on underneath and ran past the end of the call. Now `false`, so
+   focus is handled and playback pauses and resumes with the call.
+4. The media session advertised only `ACTION_SEEK_TO`. It now advertises
    `ACTION_SKIP_TO_NEXT` and `ACTION_SKIP_TO_PREVIOUS` as well, via the new
    `MEDIA_SESSION_ACTIONS` constant — without this the lock screen omits the
    buttons even when the notification shows them.
 
 ## Dart
 
-4. `VideoEventType` gained `skipToNext` and `skipToPrevious`
+5. `VideoEventType` gained `skipToNext` and `skipToPrevious`
    (`lib/src/video_player/video_player_platform_interface.dart`).
-5. `method_channel_video_player.dart` parses the two new event names.
-6. `video_player.dart` gained `onSkipToNext` / `onSkipToPrevious` callbacks.
+6. `method_channel_video_player.dart` parses the two new event names.
+7. `video_player.dart` gained `onSkipToNext` / `onSkipToPrevious` callbacks.
    These are one-off signals rather than state, so they cannot ride on `value`
    the way every other event here does.
-7. `better_player_event_type.dart` gained matching `BetterPlayerEventType`
+8. `better_player_event_type.dart` gained matching `BetterPlayerEventType`
    entries, and `better_player_controller.dart` re-posts the callbacks as
    ordinary player events so a host app can listen for them alongside play and
    pause.
 
 ## iOS — `ios/.../better_player_plus/Sources/better_player_plus/BetterPlayer.swift`
 
-8. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
+9. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
    now supplied when the data source carries a `videoExtension`, via a new
    `mimeType(forExtension:)` helper. AVURLAsset otherwise works the format out
    from the path extension, and a googlevideo audio URL has none — so every
@@ -53,9 +57,14 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    audio swap possible on videos with no HLS ladder. Sources with an extension
    or a recognised type are unaffected.
 
+10. `setDataSource` now refreshes the now-playing info. It was only refreshed
+   on an explicit `play` call, and autoplaying the next video starts playback
+   inside the plugin without one — so the lock screen kept the previous
+   video's title and artwork for the whole of the next one.
+
 ## Housekeeping
 
-9. `analysis_options.yaml` included `package:analysis_lints`, which is not a
+11. `analysis_options.yaml` included `package:analysis_lints`, which is not a
    dependency of this app and failed `flutter analyze` on a missing include. It
    now includes `flutter_lints`. This is vendored source we do not lint
    ourselves.

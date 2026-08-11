@@ -13,7 +13,13 @@ import 'package:flutter/services.dart';
 /// The plugin disables them again inside its own setup for every new data
 /// source, so [sync] has to run after each video starts rather than once.
 class RemoteCommands {
-  RemoteCommands({required this.onNext, required this.onPrevious}) {
+  RemoteCommands({
+    required this.onNext,
+    required this.onPrevious,
+    required this.onInterruptionBegan,
+    required this.onInterruptionEnded,
+    required this.onOutputLost,
+  }) {
     if (_supported) _channel.setMethodCallHandler(_handle);
   }
 
@@ -21,6 +27,15 @@ class RemoteCommands {
 
   final VoidCallback onNext;
   final VoidCallback onPrevious;
+
+  /// A call, alarm or other app has taken the audio session.
+  final VoidCallback onInterruptionBegan;
+
+  /// The interruption is over and the system says it is fine to resume.
+  final VoidCallback onInterruptionEnded;
+
+  /// Headphones unplugged or Bluetooth disconnected.
+  final VoidCallback onOutputLost;
 
   /// Android's notification controls come from the plugin's own player
   /// notification, which already carries the buttons.
@@ -62,6 +77,12 @@ class RemoteCommands {
         onNext();
       case 'previous':
         onPrevious();
+      case 'interruptionBegan':
+        onInterruptionBegan();
+      case 'interruptionEnded':
+        onInterruptionEnded();
+      case 'outputLost':
+        onOutputLost();
     }
     return null;
   }

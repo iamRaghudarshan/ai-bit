@@ -26,6 +26,7 @@ Future<void> main(List<String> args) async {
   final player = YoutubePlayerClient();
   final client = http.Client();
   var failures = 0;
+  var skipped = 0;
 
   for (final id in ids) {
     stdout.writeln('\n===== $id  ${_videos[id] ?? ''} =====');
@@ -68,8 +69,22 @@ Future<void> main(List<String> args) async {
 
       if (!same || isBareAudio || !served) failures++;
     } catch (e) {
-      failures++;
-      stdout.writeln('  THREW  $e');
+      // YouTube refusing a video — age gating, a takedown, region blocking —
+      // is not this path being broken. Counting it as a failure would make the
+      // check cry wolf every time an upstream status changed.
+      final refusal = e.toString().toLowerCase();
+      final upstream = refusal.contains('inappropriate') ||
+          refusal.contains('sign in') ||
+          refusal.contains('unavailable') ||
+          refusal.contains('private') ||
+          refusal.contains('processing');
+      if (upstream) {
+        skipped++;
+        stdout.writeln('  SKIPPED  YouTube refused this video: $e');
+      } else {
+        failures++;
+        stdout.writeln('  THREW  $e');
+      }
     }
   }
 

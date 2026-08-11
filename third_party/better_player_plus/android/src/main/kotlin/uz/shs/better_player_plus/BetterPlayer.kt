@@ -469,7 +469,13 @@ internal class BetterPlayer(
         )
         surface = Surface(textureEntry.surfaceTexture())
         exoPlayer?.setVideoSurface(surface)
-        setAudioAttributes(exoPlayer, true)
+        // PATCH: was `true`, which passes handleAudioFocus = false and leaves
+        // ExoPlayer ignoring audio focus entirely — an incoming call ducked the
+        // audio while the video carried on playing underneath it, and kept
+        // going past the end of the call. Handling focus makes ExoPlayer pause
+        // for a call and resume afterwards, which is what every other player
+        // does.
+        setAudioAttributes(exoPlayer, false)
         exoPlayer?.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {

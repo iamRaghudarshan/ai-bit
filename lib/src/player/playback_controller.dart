@@ -130,7 +130,41 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   late final RemoteCommands _remote = RemoteCommands(
     onNext: () => unawaited(playNext()),
     onPrevious: () => unawaited(playPrevious()),
+    onInterruptionBegan: _pauseForInterruption,
+    onInterruptionEnded: _resumeAfterInterruption,
+    // Headphones out or Bluetooth gone: pause and stay paused. Resuming here
+    // would play out loud, which is never what was wanted.
+    onOutputLost: () {
+      _forgetInterruption();
+      unawaited(_player?.pause());
+      _playing = false;
+      notifyListeners();
+    },
   );
+
+  /// True when playback was stopped by the system rather than by the user, so
+  /// only that case resumes on its own.
+  bool _pausedByInterruption = false;
+
+  void _pauseForInterruption() {
+    if (!(_player?.isPlaying() ?? false)) return;
+    _pausedByInterruption = true;
+    _persistPosition(force: true);
+    unawaited(_player?.pause());
+    _playing = false;
+    notifyListeners();
+  }
+
+  void _resumeAfterInterruption() {
+    if (!_pausedByInterruption) return;
+    _pausedByInterruption = false;
+    unawaited(_player?.play());
+    _playing = true;
+    notifyListeners();
+  }
+
+  /// Clears the flag without resuming, for the cases that must stay paused.
+  void _forgetInterruption() => _pausedByInterruption = false;
 
   /// Position ticks, kept off [notifyListeners] on purpose.
   ///

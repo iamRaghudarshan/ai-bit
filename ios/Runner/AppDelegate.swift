@@ -38,6 +38,62 @@ import UIKit
     // the lock screen still showed seek arrows instead of the skip buttons.
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AIBitRemoteCommands") {
       setupRemoteChannel(messenger: registrar.messenger())
+      observeAudioSession()
+    }
+  }
+
+  /// Phone calls, alarms, and headphones or Bluetooth going away.
+  ///
+  /// The player plugin does not listen for any of this, so an incoming call
+  /// ducked the audio and left the video running underneath — it kept playing
+  /// through the call and carried on past the end of it, having lost the part
+  /// you were watching. Neither notification is something Flutter can observe
+  /// on its own, so they are forwarded to the app, which owns the decision.
+  private func observeAudioSession() {
+    let centre = NotificationCenter.default
+
+    centre.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: .main
+    ) { [weak self] note in
+      guard let info = note.userInfo,
+            let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let type = AVAudioSession.InterruptionType(rawValue: raw)
+      else { return }
+
+      switch type {
+      case .began:
+        self?.remote?.invokeMethod("interruptionBegan", arguments: nil)
+      case .ended:
+        // Only resume when the system says the interruption is over and it is
+        // appropriate to. Resuming regardless would start playing over the top
+        // of whatever took over.
+        let optionsRaw = info[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let options = AVAudioSession.InterruptionOptions(rawValue: optionsRaw)
+        if options.contains(.shouldResume) {
+          self?.remote?.invokeMethod("interruptionEnded", arguments: nil)
+        }
+      @unknown default:
+        break
+      }
+    }
+
+    centre.addObserver(
+      forName: AVAudioSession.routeChangeNotification,
+      object: AVAudioSession.sharedInstance(),
+      queue: .main
+    ) { [weak self] note in
+      guard let info = note.userInfo,
+            let raw = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+            let reason = AVAudioSession.RouteChangeReason(rawValue: raw)
+      else { return }
+
+      // Headphones pulled out or Bluetooth disconnected. Every audio app
+      // pauses here; carrying on means playing out loud without meaning to.
+      if reason == .oldDeviceUnavailable {
+        self?.remote?.invokeMethod("outputLost", arguments: nil)
+      }
     }
   }
 

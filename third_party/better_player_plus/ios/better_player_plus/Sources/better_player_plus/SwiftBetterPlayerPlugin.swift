@@ -224,6 +224,11 @@ extension BetterPlayerPlugin {
             player.clear()
             let dataSource = argsMap["dataSource"] as? [String: Any] ?? [:]
             dataSourceDict[textureId] = dataSource
+            // PATCH: refresh the lock screen for the new video here, not only
+            // when a "play" call arrives. Autoplaying the next video starts
+            // playback inside the plugin without one, so the lock screen kept
+            // showing the previous title and artwork for the whole video.
+            defer { setupRemoteNotification(player) }
             let assetArg = dataSource["asset"] as? String
             let uriArg = dataSource["uri"] as? String
             let key = dataSource["key"] as? String
