@@ -329,9 +329,24 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     return await File(path).exists() ? path : null;
   }
 
-  /// Waits briefly for the HLS ladder, then applies the saved quality.
+  /// Identifies the video a pending quality application belongs to.
+  ///
+  /// Each load bumps this. Without it, the loop started for one video was
+  /// still running when the next began, and whichever finished last won — so
+  /// opening a second video often played it at the previous one's rendition,
+  /// or dropped audio mode entirely.
+  int _qualityToken = 0;
+
+  /// Waits for the HLS ladder, then applies the quality this mode calls for.
   Future<void> _applyPreferredQualityWhenReady() async {
-    for (var attempt = 0; attempt < 10; attempt++) {
+    final token = ++_qualityToken;
+
+    // Roughly nine seconds. Three was not enough: a manifest fetched over a
+    // slow connection routinely arrived after the loop had already given up,
+    // which is why audio mode "came after a while" on one video and never
+    // arrived on the next.
+    for (var attempt = 0; attempt < 30; attempt++) {
+      if (token != _qualityToken) return;
       if ((_player?.betterPlayerAsmsTracks.isNotEmpty ?? false)) {
         // Worked out here, inside the loop, and not before it.
         //
@@ -345,6 +360,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
             : _config.preferredQuality;
         if (wanted == SettingsService.autoQuality) return;
         await _applyQuality(wanted);
+        if (token != _qualityToken) return;
         notifyListeners();
         return;
       }
@@ -913,6 +929,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(playNext());
       case BetterPlayerEventType.skipToPrevious:
         unawaited(playPrevious());
+      // The ladder is parsed by the time the player initialises, so this
+      // usually lands well before the polling loop notices.
+      case BetterPlayerEventType.initialized:
+        unawaited(_applyPreferredQualityWhenReady());
       case BetterPlayerEventType.play:
       case BetterPlayerEventType.pause:
         _playing = _player?.isPlaying() ?? false;
