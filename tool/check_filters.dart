@@ -4,6 +4,8 @@
 // walks the combinations that were previously impossible and reports what
 // comes back, so a change to the encoding is caught here rather than on a
 // phone.
+import 'dart:io';
+
 import 'package:ai_bit/src/data/search_client.dart';
 
 Future<void> main() async {
@@ -37,15 +39,15 @@ Future<void> main() async {
               '${durations.reduce((a, b) => a > b ? a : b)} min';
       final status = results.isEmpty ? 'EMPTY' : 'ok';
       if (results.isEmpty) failures++;
-      print('${entry.key.padRight(30)} ${entry.value ?? '-'}'
+      stdout.writeln('${entry.key.padRight(30)} ${entry.value ?? '-'}'
           '\n  $status  ${results.length} videos  $span');
     } catch (e) {
       failures++;
-      print('${entry.key.padRight(30)} THREW  $e');
+      stdout.writeln('${entry.key.padRight(30)} THREW  $e');
     }
   }
   client.close();
-  print(failures == 0
+  stdout.writeln(failures == 0
       ? '\nRESULT: every filter combination returned videos.'
       : '\nRESULT: $failures combination(s) failed.');
 }
