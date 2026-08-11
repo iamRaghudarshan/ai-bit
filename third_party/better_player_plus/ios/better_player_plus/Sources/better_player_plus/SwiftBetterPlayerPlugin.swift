@@ -12,7 +12,9 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
 
     private var dataSourceDict: [Int64: [String: Any]] = [:]
     private var timeObserverIdDict: [Int64: Any] = [:]
-    private var artworkImageDict: [Int64: MPMediaItemArtwork] = [:]
+    // PATCH: keyed by image URL, not player id — see the comment in
+    // setupRemoteCommandNotification.
+    private var artworkImageDict: [String: MPMediaItemArtwork] = [:]
     private var cacheManager: CacheManager
     private var texturesCount: Int64 = -1
     private var notificationPlayer: BetterPlayer?
@@ -138,7 +140,15 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
         ]
 
         if let imageUrl = imageUrl {
-            let key = keyForPlayer(player)
+            // PATCH: keyed by the image, not by the player.
+            //
+            // It used to key on the player's texture id. A host app that keeps
+            // one long-lived player — which is how background audio survives
+            // leaving the watch page — never changes that id, so the first
+            // video's artwork was cached under it and every later video reused
+            // it. The lock screen kept showing the first thumbnail for the rest
+            // of the session.
+            let key = imageUrl
             if let artwork = artworkImageDict[key] {
                 nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
@@ -185,7 +195,9 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
         }
         let key = keyForPlayer(player)
         if let id = timeObserverIdDict[key] { player.player.removeTimeObserver(id); timeObserverIdDict.removeValue(forKey: key) }
-        artworkImageDict.removeValue(forKey: key)
+        // Artwork is cached per image, so there is nothing player-specific to
+        // drop here. Clearing it all would only force a re-download of images
+        // the next video may well use again.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [:]
     }
 

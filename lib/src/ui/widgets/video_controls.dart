@@ -100,7 +100,13 @@ class _VideoControlsState extends State<VideoControls> {
 
   Widget _buildControls(BuildContext context, PlaybackController playback) {
     final VideoPlayerValue? value = _video?.value as VideoPlayerValue?;
-    final duration = value?.duration ?? Duration.zero;
+    // The player reports no duration until the manifest has been read, and on
+    // some sources never — which showed a total of 0:00 next to a running
+    // position. The controller already knows the length from the feed
+    // metadata, so fall back to that rather than displaying a lie.
+    final reported = value?.duration ?? Duration.zero;
+    final duration =
+        reported > Duration.zero ? reported : playback.duration;
     final position = value?.position ?? Duration.zero;
     final isLive = widget.controller.isLiveStream();
     final buffering = widget.controller.isBuffering() ?? false;

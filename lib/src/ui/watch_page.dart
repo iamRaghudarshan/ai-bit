@@ -1003,7 +1003,12 @@ class _ActionRow extends StatelessWidget {
           ),
           _ActionChip(
             icon: Icons.hd_outlined,
-            label: settings.preferredQuality,
+            // What is actually playing, falling back to the preference when
+            // nothing is loaded yet. Showing the preference regardless meant
+            // the chip read "720p" while the sheet said 360p was playing —
+            // both true, and together nonsense. A video that only offers 360p
+            // cannot honour a 720p preference, and the chip should say so.
+            label: playback.activeQuality ?? settings.preferredQuality,
             onTap: () => showQualitySheet(context),
           ),
           _ActionChip(

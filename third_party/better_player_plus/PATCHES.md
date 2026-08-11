@@ -62,9 +62,17 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    inside the plugin without one — so the lock screen kept the previous
    video's title and artwork for the whole of the next one.
 
+11. Now-playing artwork was cached in a dictionary keyed by the player's texture
+   id. A host app that keeps one long-lived player — which is how background
+   audio survives leaving the watch page — never changes that id, so the first
+   video's artwork was cached under it and every later video reused it: the
+   lock screen showed the first thumbnail for the rest of the session. It is
+   keyed by image URL now, which also means a repeated thumbnail is not
+   re-downloaded.
+
 ## Housekeeping
 
-11. `analysis_options.yaml` included `package:analysis_lints`, which is not a
+12. `analysis_options.yaml` included `package:analysis_lints`, which is not a
    dependency of this app and failed `flutter analyze` on a missing include. It
    now includes `flutter_lints`. This is vendored source we do not lint
    ourselves.
