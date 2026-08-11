@@ -183,7 +183,7 @@ class _ChannelStrip extends StatelessWidget {
                     ).colorScheme.onSurface.withValues(alpha: 0.1),
                     backgroundImage: channel.avatarUrl == null
                         ? null
-                        : CachedNetworkImageProvider(channel.avatarUrl!),
+                        : CachedNetworkImageProvider(channel.avatarUrl!, maxWidth: 120, maxHeight: 120),
                     child: channel.avatarUrl != null
                         ? null
                         : Text(

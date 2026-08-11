@@ -108,6 +108,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   double get speed => _config.playbackSpeed;
 
   Timer? _sleepTimer;
+
+  /// Position ticks, kept off [notifyListeners] on purpose.
+  ///
+  /// Everything on the watch page listens to this controller, so a per-second
+  /// notification rebuilt the up-next list, the comment preview and the
+  /// description once a second for the whole video. Only the seek bar and the
+  /// mini player's progress line actually care about the position, so they
+  /// listen here instead and the rest of the page rebuilds when something
+  /// genuinely changes.
+  final ValueNotifier<Duration> ticker = ValueNotifier(Duration.zero);
   DateTime? _sleepDeadline;
 
   /// Wall-clock remaining on the sleep timer, or null when it is off.
@@ -244,9 +254,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // Only reaches the cache manager on iOS, which is bypassed here — kept
       // because Android's ExoPlayer does use it to pick a extractor for a URL
       // with no file extension.
+      // Describe the URL that is actually being loaded, not the mode. Audio
+      // mode now stays on the video file and simply hides the picture, so
+      // claiming 'm4a' would have told ExoPlayer to expect the wrong container.
       videoExtension: isHls
           ? null
-          : (_config.audioOnly || _droppedVideo ? 'm4a' : 'mp4'),
+          : (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4'),
       // Let better_player read the ladder's variants off the manifest, which is
       // what puts real quality and subtitle options in the overflow menu.
       useAsmsTracks: isHls,
@@ -294,7 +307,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Waits briefly for the HLS ladder, then applies the saved quality.
   Future<void> _applyPreferredQualityWhenReady() async {
-    final wanted = _config.preferredQuality;
+    // Audio mode overrides the saved quality: the point is to use as little
+    // data as possible, and nothing is being looked at.
+    final wanted = (_config.audioOnly || _droppedVideo)
+        ? _lowestQuality
+        : _config.preferredQuality;
     if (wanted == SettingsService.autoQuality) return;
 
     for (var attempt = 0; attempt < 10; attempt++) {
@@ -309,8 +326,25 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   String _preferredUrl(PlaybackSources sources) {
     if (_isOffline) return sources.url;
+
+    // Audio-only deliberately keeps the HLS source rather than switching to the
+    // bare audio URL.
+    //
+    // AVURLAsset works out what it is loading from the path extension, and a
+    // googlevideo URL has none — so AVPlayer failed the audio track outright
+    // with "PlatformException(VideoError, Failed to load video: unknown
+    // error)". The HLS manifest plays because it is explicitly declared as HLS.
+    //
+    // Staying on the ladder and dropping to its smallest rendition gets the
+    // same result the user wants: no picture on screen, a fraction of the data,
+    // and playback that actually starts. The artwork view covers the surface.
+    if (_config.audioOnly && sources.isHls) return sources.url;
+
+    // No ladder to drop down: the muxed 360p file still loads, the bare audio
+    // URL does not. Only reach for the audio track when there is no video at
+    // all, which is the one case where nothing else is on offer.
     if (_config.audioOnly && sources.audioOnlyUrl != null) {
-      return sources.audioOnlyUrl!;
+      return sources.videoUnavailable ? sources.audioOnlyUrl! : sources.url;
     }
     final wanted = _config.preferredQuality;
     if (wanted != SettingsService.autoQuality) {
@@ -407,6 +441,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _config.preferredQuality = label;
     await _applyQuality(label);
     notifyListeners();
+  }
+
+  /// Label of the smallest rendition on offer, used by audio mode.
+  String get _lowestQuality {
+    final tracks = _player?.betterPlayerAsmsTracks ?? const [];
+    final heights = tracks
+        .map((t) => t.height ?? 0)
+        .where((h) => h > 0)
+        .toList()
+      ..sort();
+    return heights.isEmpty ? SettingsService.autoQuality : '${heights.first}p';
   }
 
   /// Applies [label] to whatever is loaded now.
@@ -739,6 +784,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (value == null) return;
 
     _position = value.position;
+    final wasPlaying = _playing;
+    final hadDuration = _duration;
     if (value.duration != null && value.duration! > Duration.zero) {
       _duration = value.duration!;
     }
@@ -748,8 +795,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final second = Duration(seconds: _position.inSeconds);
     if (_lastNotified != second) {
       _lastNotified = second;
-      notifyListeners();
+      ticker.value = second;
     }
+
+    // A full rebuild only for the things that change the page, not the clock.
+    if (wasPlaying != _playing || hadDuration != _duration) notifyListeners();
   }
 
   void _persistPosition({bool force = false}) {
@@ -770,6 +820,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _player?.videoPlayerController?.removeListener(_onValueChanged);
     _player?.removeEventsListener(_onPlayerEvent);
     _player?.dispose(forceDispose: true);
+    ticker.dispose();
     super.dispose();
   }
 }

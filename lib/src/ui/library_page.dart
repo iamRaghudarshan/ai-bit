@@ -220,7 +220,7 @@ class _PlaylistTile extends StatelessWidget {
                     color: Colors.white38,
                   ),
                 )
-              : CachedNetworkImage(
+              : CachedNetworkImage(memCacheWidth: 480, 
                   imageUrl: 'https://i.ytimg.com/vi/$cover/hqdefault.jpg',
                   fit: BoxFit.cover,
                   errorWidget: (_, _, _) =>

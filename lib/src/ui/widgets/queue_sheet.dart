@@ -129,7 +129,7 @@ class _QueueRow extends StatelessWidget {
         child: SizedBox(
           width: 68,
           height: 40,
-          child: CachedNetworkImage(
+          child: CachedNetworkImage(memCacheWidth: 320, 
             imageUrl: video.thumbUrl,
             fit: BoxFit.cover,
             errorWidget: (_, _, _) =>

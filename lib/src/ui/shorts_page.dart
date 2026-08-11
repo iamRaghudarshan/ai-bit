@@ -1,6 +1,8 @@
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -37,8 +39,17 @@ class ShortsPageState extends State<ShortsPage> {
   /// nothing plays — the tab is built at startup along with every other.
   bool _activated = false;
 
+  /// Debounces [_playCurrent] while a swipe is still in flight.
+  ///
+  /// Every call resolves a stream and rebuilds the native player. Flicking
+  /// through Shorts fired one per page, so several teardowns and setups
+  /// overlapped on the platform thread — which is what made the app die
+  /// mid-scroll. Now only the Short you actually stop on gets loaded.
+  Timer? _settle;
+
   @override
   void dispose() {
+    _settle?.cancel();
     _pages.dispose();
     super.dispose();
   }
@@ -87,9 +98,12 @@ class ShortsPageState extends State<ShortsPage> {
   }
 
   void _playCurrent() {
-    if (_shorts.isEmpty || !mounted) return;
-    // Shorts loop, so the queue is left empty and repeat handles the rest.
-    context.read<PlaybackController>().play(_shorts[_index]);
+    _settle?.cancel();
+    _settle = Timer(const Duration(milliseconds: 350), () {
+      if (_shorts.isEmpty || !mounted) return;
+      // Shorts loop, so the queue is left empty and repeat handles the rest.
+      context.read<PlaybackController>().play(_shorts[_index]);
+    });
   }
 
   @override
@@ -169,7 +183,7 @@ class _ShortView extends StatelessWidget {
       children: [
         // The thumbnail sits underneath always: it fills the frame while the
         // stream resolves, so a swipe never lands on a black rectangle.
-        CachedNetworkImage(
+        CachedNetworkImage(memCacheWidth: 720, 
           imageUrl: video.thumbUrl,
           fit: BoxFit.cover,
           errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),

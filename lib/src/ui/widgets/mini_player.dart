@@ -22,9 +22,6 @@ class MiniPlayer extends StatelessWidget {
 
     final theme = Theme.of(context);
     final total = playback.duration.inMilliseconds;
-    final progress = total > 0
-        ? (playback.position.inMilliseconds / total).clamp(0.0, 1.0)
-        : 0.0;
 
     return Material(
       color: theme.brightness == Brightness.dark
@@ -43,7 +40,7 @@ class MiniPlayer extends StatelessWidget {
                     padding: const EdgeInsets.all(6),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(6),
-                      child: CachedNetworkImage(
+                      child: CachedNetworkImage(memCacheWidth: 240, 
                         imageUrl: video.thumbUrl,
                         width: 78,
                         height: 46,
@@ -110,11 +107,17 @@ class MiniPlayer extends StatelessWidget {
                 ],
               ),
             ),
-            LinearProgressIndicator(
-              value: progress,
-              minHeight: 2,
-              backgroundColor: Colors.white12,
-              valueColor: const AlwaysStoppedAnimation(AppColors.brand),
+            // Only this line moves every second; the row above it does not.
+            ValueListenableBuilder<Duration>(
+              valueListenable: playback.ticker,
+              builder: (context, position, _) => LinearProgressIndicator(
+                value: total > 0
+                    ? (position.inMilliseconds / total).clamp(0.0, 1.0)
+                    : 0.0,
+                minHeight: 2,
+                backgroundColor: Colors.white12,
+                valueColor: const AlwaysStoppedAnimation(AppColors.brand),
+              ),
             ),
           ],
         ),

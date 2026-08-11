@@ -32,6 +32,10 @@ class VideoThumb extends StatelessWidget {
             CachedNetworkImage(
               imageUrl: video.thumbUrl,
               fit: BoxFit.cover,
+              // Decode to roughly the size it is drawn at. Left alone, every
+              // card holds a 1280x720 bitmap — about 3.5 MB each — and a
+              // scrolled feed runs iOS out of memory and gets the app killed.
+              memCacheWidth: 720,
               fadeInDuration: const Duration(milliseconds: 150),
               placeholder: (_, _) => const ColoredBox(color: AppColors.darkElevated),
               errorWidget: (_, _, _) => const ColoredBox(
@@ -120,7 +124,11 @@ class VideoCard extends StatelessWidget {
                   backgroundColor: _avatarColor(video.channelId),
                   foregroundImage: video.avatarUrl == null
                       ? null
-                      : CachedNetworkImageProvider(video.avatarUrl!),
+                      : CachedNetworkImageProvider(
+                          video.avatarUrl!,
+                          maxWidth: 88,
+                          maxHeight: 88,
+                        ),
                   child: Text(
                     video.author.isEmpty
                         ? '?'

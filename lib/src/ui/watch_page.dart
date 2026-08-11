@@ -485,7 +485,7 @@ class _AudioArtwork extends StatelessWidget {
         if (url != null)
           ImageFiltered(
             imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-            child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+            child: CachedNetworkImage(memCacheWidth: 720, imageUrl: url, fit: BoxFit.cover),
           ),
         const ColoredBox(color: Colors.black54),
         Center(
@@ -495,7 +495,7 @@ class _AudioArtwork extends StatelessWidget {
               if (url != null)
                 ClipRRect(
                   borderRadius: BorderRadius.circular(8),
-                  child: CachedNetworkImage(
+                  child: CachedNetworkImage(memCacheWidth: 720, 
                     imageUrl: url,
                     width: 140,
                     fit: BoxFit.cover,

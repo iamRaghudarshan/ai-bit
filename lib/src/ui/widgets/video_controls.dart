@@ -90,6 +90,15 @@ class _VideoControlsState extends State<VideoControls> {
   @override
   Widget build(BuildContext context) {
     final playback = context.watch<PlaybackController>();
+    // The clock is the only thing here that moves every second, so it rebuilds
+    // on its own rather than dragging the whole watch page along with it.
+    return ValueListenableBuilder<Duration>(
+      valueListenable: playback.ticker,
+      builder: (context, _, _) => _buildControls(context, playback),
+    );
+  }
+
+  Widget _buildControls(BuildContext context, PlaybackController playback) {
     final VideoPlayerValue? value = _video?.value as VideoPlayerValue?;
     final duration = value?.duration ?? Duration.zero;
     final position = value?.position ?? Duration.zero;

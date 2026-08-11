@@ -247,7 +247,7 @@ class _ChannelPageState extends State<ChannelPage>
                       color: AppColors.darkElevated,
                       child: Icon(Icons.playlist_play, color: Colors.white38),
                     )
-                  : CachedNetworkImage(
+                  : CachedNetworkImage(memCacheWidth: 1080, 
                       imageUrl: playlist.thumbnailUrl!,
                       fit: BoxFit.cover,
                       errorWidget: (_, _, _) =>
@@ -294,7 +294,7 @@ class _Header extends StatelessWidget {
                 backgroundColor: AppColors.darkElevated,
                 backgroundImage: info?.avatarUrl == null
                     ? null
-                    : CachedNetworkImageProvider(info!.avatarUrl!),
+                    : CachedNetworkImageProvider(info!.avatarUrl!, maxWidth: 176, maxHeight: 176),
                 child: info?.avatarUrl != null
                     ? null
                     : Text(

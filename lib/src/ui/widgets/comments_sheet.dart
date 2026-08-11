@@ -321,7 +321,7 @@ class _CommentRowState extends State<_CommentRow> {
             backgroundColor: theme.colorScheme.onSurface.withValues(alpha: 0.1),
             backgroundImage: comment.avatarUrl == null
                 ? null
-                : CachedNetworkImageProvider(comment.avatarUrl!),
+                : CachedNetworkImageProvider(comment.avatarUrl!, maxWidth: 96, maxHeight: 96),
             child: comment.avatarUrl != null
                 ? null
                 : const Icon(Icons.person, size: 16),
