@@ -116,14 +116,39 @@ class SettingsPage extends StatelessWidget {
   }
 
   void _pickQuality(BuildContext context, SettingsService settings) {
-    // Only renditions the currently loaded video actually offers are useful,
-    // so fall back to a common ladder when nothing is playing.
+    // The full ladder, not just what happens to be loaded.
+    //
+    // This used to list only the current video's renditions, so opening
+    // Settings while a progressive video was playing offered "Auto" and
+    // "360p" and nothing else — as though the app could not do better. This
+    // setting is a preference for every video, and the player already picks
+    // the nearest rendition at or below it, so a video that tops out lower
+    // simply plays lower.
+    //
+    // The on-video picker is the one that should list only what this video
+    // actually has.
     final playback = context.read<PlaybackController>();
     final options = <String>{
       SettingsService.autoQuality,
+      '2160p',
+      '1440p',
+      '1080p',
+      '720p',
+      '480p',
+      '360p',
+      '240p',
+      '144p',
+      // Anything unusual the loaded video offers that the standard ladder
+      // does not, such as the 320p some channels serve.
       ...playback.qualities,
-      if (playback.qualities.isEmpty) ...['1080p', '720p', '480p', '360p'],
-    }.toList();
+    }.toList()
+      ..sort((a, b) {
+        if (a == SettingsService.autoQuality) return -1;
+        if (b == SettingsService.autoQuality) return 1;
+        int height(String l) =>
+            int.tryParse(l.replaceAll(RegExp('[^0-9]'), '')) ?? 0;
+        return height(b).compareTo(height(a));
+      });
 
     showModalBottomSheet<void>(
       context: context,
@@ -134,6 +159,11 @@ class SettingsPage extends StatelessWidget {
             for (final option in options)
               ListTile(
                 title: Text(option),
+                subtitle: option == SettingsService.autoQuality
+                    ? const Text('Adjusts to your connection')
+                    : (playback.qualities.contains(option)
+                          ? const Text('Available on this video')
+                          : null),
                 trailing: settings.preferredQuality == option
                     ? const Icon(Icons.check)
                     : null,

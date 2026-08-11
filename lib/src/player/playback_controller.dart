@@ -626,8 +626,33 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    final url = _sources?.qualities[label];
-    if (url != null) await player.setResolution(url);
+    // A label with no number in it means nothing here; the Auto case above has
+    // already been handled.
+    if (wanted == null) return;
+
+    // Progressive sources: nearest at or below, the same rule the ladder uses.
+    // An exact-label lookup meant a preference of 1080p did nothing at all on a
+    // video whose best muxed rendition is 360p, rather than playing the 360p.
+    final available = _sources?.qualities ?? const <String, String>{};
+    if (available.isEmpty) return;
+
+    int height(String l) => int.tryParse(l.replaceAll(RegExp('[^0-9]'), '')) ?? 0;
+    final candidates = available.entries
+        .where((e) => height(e.key) > 0 && height(e.key) <= wanted)
+        .toList()
+      ..sort((a, b) => height(b.key).compareTo(height(a.key)));
+
+    // Nothing small enough: take the smallest there is rather than ignoring
+    // the request entirely.
+    final chosen = candidates.isNotEmpty
+        ? candidates.first
+        : (available.entries.toList()
+              ..sort((a, b) => height(a.key).compareTo(height(b.key))))
+            .first;
+
+    if (chosen.value != player.betterPlayerDataSource?.url) {
+      await player.setResolution(chosen.value);
+    }
   }
 
   /// Re-resolves the current video after an audio-only toggle, keeping the
