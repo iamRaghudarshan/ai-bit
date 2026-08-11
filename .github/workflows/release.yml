@@ -202,8 +202,17 @@ jobs:
           DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          # The tag is the source of truth, not a file somebody has to
+          # remember to edit. VERSION sat at 1.6.0 while four releases went
+          # out under later tags, so TestFlight showed a version that had not
+          # been true for weeks and only the build number told them apart. A
+          # workflow_dispatch run has no tag, so it falls back to the file.
+          BUILD_NAME="$(printf '%s' '${{ github.ref_name }}' | sed -E 's/^(v|android-)//')"
+          case "$BUILD_NAME" in
+            *[!0-9.]* | '') BUILD_NAME="$(cat VERSION)" ;;
+          esac
           flutter build ipa --release \
-            --build-name=$(cat VERSION) \
+            --build-name="$BUILD_NAME" \
             --build-number=${{ github.run_number }} \
             --export-options-plist=ios/ExportOptions.plist
 
@@ -267,8 +276,17 @@ jobs:
       # must not do anyway.
       - name: Build the APK
         run: |
+          # The tag is the source of truth, not a file somebody has to
+          # remember to edit. VERSION sat at 1.6.0 while four releases went
+          # out under later tags, so TestFlight showed a version that had not
+          # been true for weeks and only the build number told them apart. A
+          # workflow_dispatch run has no tag, so it falls back to the file.
+          BUILD_NAME="$(printf '%s' '${{ github.ref_name }}' | sed -E 's/^(v|android-)//')"
+          case "$BUILD_NAME" in
+            *[!0-9.]* | '') BUILD_NAME="$(cat VERSION)" ;;
+          esac
           flutter build apk --release \
-            --build-name=$(cat VERSION) \
+            --build-name="$BUILD_NAME" \
             --build-number=${{ github.run_number }}
 
       - uses: actions/upload-artifact@v4
