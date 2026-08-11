@@ -136,9 +136,26 @@ class _WatchPageState extends State<WatchPage>
       setState(() {
         _details = details;
         _related = related;
-        _video = VideoBrief.fromYt(details);
+        // Keep the avatar the feed row arrived with. VideoBrief.fromYt builds
+        // from the player response, which carries no channel thumbnail, so
+        // replacing wholesale made the picture appear and then vanish a moment
+        // later as the details landed.
+        _video = VideoBrief.fromYt(details).withAvatar(_video.avatarUrl);
         _loadingDetails = false;
       });
+      // A row that arrived without an avatar — anything opened from a source
+      // that does not carry one — gets it from the channel itself, so the
+      // header is never left showing an initial.
+      if (_video.avatarUrl == null && _video.channelId.isNotEmpty) {
+        unawaited(
+          repo.channelInfo(_video.channelId).then((info) {
+            if (mounted && info.avatarUrl != null) {
+              setState(() => _video = _video.withAvatar(info.avatarUrl));
+            }
+          }, onError: (Object _) {}),
+        );
+      }
+
       // Now that the real "up next" list exists, hand it to the queue so
       // autoplay has something to advance to.
       if (mounted && context.read<PlaybackController>().current?.id == _video.id) {
@@ -705,9 +722,19 @@ class _Header extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
                 children: [
+                  // The real avatar, with the initial only as a fallback.
+                  // This row was hardcoded to the letter and never showed a
+                  // picture at all, whatever the video carried.
                   CircleAvatar(
                     radius: 16,
                     backgroundColor: AppColors.darkElevated,
+                    foregroundImage: video.avatarUrl == null
+                        ? null
+                        : CachedNetworkImageProvider(
+                            video.avatarUrl!,
+                            maxWidth: 96,
+                            maxHeight: 96,
+                          ),
                     child: Text(
                       video.author.isEmpty
                           ? '?'

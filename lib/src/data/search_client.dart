@@ -314,13 +314,51 @@ class YoutubeSearchClient {
   }
 
   /// The channel's avatar, buried a few renderers deep in each result.
+  ///
+  /// Every `url` key used to be collected and the last one taken on the
+  /// assumption it was the largest image. It is not: the renderer also carries
+  /// the channel's own address, so results came back as `/@SomeChannel` — a
+  /// path, not a picture. Every request for it failed and every card fell back
+  /// to a coloured initial, which is why the feed showed letters.
+  ///
+  /// Only real image hosts are accepted now, and the widest is preferred.
   static String? _avatar(dynamic node) {
-    final urls = <String>[];
-    _collectStringKey(node, 'url', urls);
-    // Last entry is the largest.
-    final url = urls.isEmpty ? null : urls.last;
-    if (url == null) return null;
-    return url.startsWith('//') ? 'https:$url' : url;
+    final candidates = <MapEntry<int, String>>[];
+
+    void walk(dynamic n) {
+      if (n is Map) {
+        final url = n['url'];
+        if (url is String && _isImageUrl(url)) {
+          candidates.add(
+            MapEntry((n['width'] as num?)?.toInt() ?? 0, _https(url)),
+          );
+        }
+        for (final child in n.values) {
+          walk(child);
+        }
+      } else if (n is List) {
+        for (final child in n) {
+          walk(child);
+        }
+      }
+    }
+
+    walk(node);
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) => b.key.compareTo(a.key));
+    return candidates.first.value;
+  }
+
+  static String _https(String url) =>
+      url.startsWith('//') ? 'https:$url' : url;
+
+  /// Google serves avatars from these hosts and nothing else does.
+  static bool _isImageUrl(String url) {
+    final full = _https(url);
+    if (!full.startsWith('http')) return false;
+    return full.contains('ggpht.com') ||
+        full.contains('googleusercontent.com') ||
+        full.contains('ytimg.com');
   }
 
   /// Handles both `{simpleText: ...}` and `{runs: [{text: ...}]}` — the exact

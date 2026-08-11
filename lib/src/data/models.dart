@@ -33,6 +33,24 @@ class VideoBrief {
   /// to a coloured initial.
   final String? avatarUrl;
 
+  /// Copy with a different avatar.
+  ///
+  /// The watch page rebuilds this from the player response once details load,
+  /// and that response carries no channel thumbnail — so the avatar the feed
+  /// row already had has to be carried across rather than dropped.
+  VideoBrief withAvatar(String? url) => VideoBrief(
+        id: id,
+        title: title,
+        author: author,
+        channelId: channelId,
+        duration: duration,
+        viewCount: viewCount,
+        uploadDate: uploadDate,
+        uploadRaw: uploadRaw,
+        isLive: isLive,
+        avatarUrl: url ?? avatarUrl,
+      );
+
   /// 480x360 with letterboxing — the only thumbnail size YouTube guarantees
   /// exists for every video. `maxresdefault` 404s on a lot of older uploads.
   String get thumbUrl => 'https://i.ytimg.com/vi/$id/hqdefault.jpg';

@@ -68,6 +68,36 @@ class YoutubeBrowseClient {
   /// no guaranteed order — so it is picked out by looking for the word rather
   /// than by position. `c4TabbedHeaderRenderer` is the older shape, still
   /// returned for some channels.
+  /// Channel name and avatar out of a browse response.
+  ///
+  /// Every channel-tab response carries the page header already, so the rows
+  /// can be labelled from the same request rather than arriving blank. They
+  /// used to inherit whatever title the caller happened to pass — an empty
+  /// string when a channel was opened directly — and no avatar at all.
+  static ({String? title, String? avatar}) _headerOf(
+    Map<String, dynamic> json,
+  ) {
+    final modern = <Map<String, dynamic>>[];
+    _collect(json, 'pageHeaderViewModel', modern);
+    for (final h in modern) {
+      final title = _deepText(h['title'], 'content').nullIfEmpty;
+      final avatar = _firstThumbnail(h['image']);
+      if (title != null || avatar != null) {
+        return (title: title, avatar: avatar);
+      }
+    }
+
+    final legacy = <Map<String, dynamic>>[];
+    _collect(json, 'c4TabbedHeaderRenderer', legacy);
+    for (final h in legacy) {
+      return (
+        title: _text(h['title']).nullIfEmpty,
+        avatar: _firstThumbnail(h['avatar']),
+      );
+    }
+    return (title: null, avatar: null);
+  }
+
   Future<ChannelInfo> channel(String channelId) async {
     final json = await _post({'browseId': channelId});
 
@@ -154,6 +184,8 @@ class YoutubeBrowseClient {
       'browseId': channelId,
       'params': live ? _liveTab : _videosTab,
     });
+    final header = _headerOf(json);
+    final title = channelTitle.isNotEmpty ? channelTitle : (header.title ?? '');
 
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'lockupViewModel', lockups);
@@ -182,7 +214,8 @@ class YoutubeBrowseClient {
       out.add(VideoBrief(
         id: id,
         title: parts.first,
-        author: channelTitle,
+        author: title,
+        avatarUrl: header.avatar,
         channelId: channelId,
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),
@@ -287,6 +320,8 @@ class YoutubeBrowseClient {
     String channelTitle = '',
   }) async {
     final json = await _post({'browseId': channelId, 'params': _shortsTab});
+    final header = _headerOf(json);
+    final title = channelTitle.isNotEmpty ? channelTitle : (header.title ?? '');
 
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'shortsLockupViewModel', lockups);
@@ -305,7 +340,8 @@ class YoutubeBrowseClient {
       out.add(VideoBrief(
         id: id,
         title: titles.first,
-        author: channelTitle,
+        author: title,
+        avatarUrl: header.avatar,
         channelId: channelId,
         viewCount: _parseCompact(views),
       ));
