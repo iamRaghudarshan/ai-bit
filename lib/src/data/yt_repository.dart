@@ -259,6 +259,28 @@ class YtRepository {
   /// The browse endpoint is tried first because `channels.getUploads` returns
   /// an empty stream — zero videos for every channel measured. The package call
   /// is kept only as a fallback in case that ever starts working again.
+  /// A channel's Live tab: past and current streams.
+  Future<List<VideoBrief>> channelLive(
+    String channelId, {
+    String channelTitle = '',
+  }) async {
+    if (isPreview) return const [];
+    return _browse.channelVideos(
+      channelId,
+      channelTitle: channelTitle,
+      live: true,
+    );
+  }
+
+  /// A channel's Shorts tab.
+  Future<List<VideoBrief>> channelShorts(
+    String channelId, {
+    String channelTitle = '',
+  }) async {
+    if (isPreview) return const [];
+    return _browse.channelShorts(channelId, channelTitle: channelTitle);
+  }
+
   Future<List<VideoBrief>> channelUploads(
     String channelId, {
     int limit = 20,

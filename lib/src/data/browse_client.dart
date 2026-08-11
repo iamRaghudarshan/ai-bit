@@ -131,6 +131,14 @@ class YoutubeBrowseClient {
   /// other than "latest" is done on the fetched set instead.
   static const _videosTab = 'EgZ2aWRlb3PyBgQKAjoA';
 
+  /// `params` for the Live tab, which returns past and current streams under
+  /// the same `lockupViewModel` the Videos tab uses.
+  static const _liveTab = 'EgdzdHJlYW1z8gYECgJ6AA==';
+
+  /// `params` for the Shorts tab. These come back as `shortsLockupViewModel`
+  /// instead, so they need their own parser.
+  static const _shortsTab = 'EgZzaG9ydHPyBgUKA5oBAA==';
+
   /// A channel's uploads.
   ///
   /// Needed because `youtube_explode_dart`'s `channels.getUploads` returns an
@@ -140,8 +148,12 @@ class YoutubeBrowseClient {
   Future<List<VideoBrief>> channelVideos(
     String channelId, {
     String channelTitle = '',
+    bool live = false,
   }) async {
-    final json = await _post({'browseId': channelId, 'params': _videosTab});
+    final json = await _post({
+      'browseId': channelId,
+      'params': live ? _liveTab : _videosTab,
+    });
 
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'lockupViewModel', lockups);
@@ -265,6 +277,54 @@ class YoutubeBrowseClient {
   }
 
   /// Playlists published by a channel.
+  /// A channel's Shorts.
+  ///
+  /// The tab returns `shortsLockupViewModel`, which carries neither a duration
+  /// nor an upload date — only a title and a view count — so the rows are
+  /// thinner than the Videos tab's on purpose.
+  Future<List<VideoBrief>> channelShorts(
+    String channelId, {
+    String channelTitle = '',
+  }) async {
+    final json = await _post({'browseId': channelId, 'params': _shortsTab});
+
+    final lockups = <Map<String, dynamic>>[];
+    _collect(json, 'shortsLockupViewModel', lockups);
+
+    final out = <VideoBrief>[];
+    final seen = <String>{};
+    for (final l in lockups) {
+      final id = _shortsId(l);
+      if (id == null || !seen.add(id)) continue;
+
+      final titles = <String>[];
+      _collectStrings(l['overlayMetadata'], 'content', titles);
+      if (titles.isEmpty) continue;
+
+      final views = titles.length > 1 ? titles[1] : '';
+      out.add(VideoBrief(
+        id: id,
+        title: titles.first,
+        author: channelTitle,
+        channelId: channelId,
+        viewCount: _parseCompact(views),
+      ));
+    }
+    return out;
+  }
+
+  /// The video id sits on the tap command rather than a plain field.
+  static String? _shortsId(Map<String, dynamic> lockup) {
+    final ids = <String>[];
+    _collectStrings(lockup['onTap'], 'videoId', ids);
+    if (ids.isNotEmpty) return ids.first;
+    final entity = lockup['entityId'];
+    if (entity is String && entity.startsWith('shorts-shelf-item-')) {
+      return entity.substring('shorts-shelf-item-'.length);
+    }
+    return null;
+  }
+
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) async {
     final json = await _post({
       'browseId': channelId,

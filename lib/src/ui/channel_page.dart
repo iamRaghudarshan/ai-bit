@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -43,13 +44,19 @@ class ChannelPage extends StatefulWidget {
 
 class _ChannelPageState extends State<ChannelPage>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
+  late final TabController _tabs = TabController(length: 4, vsync: this);
 
   ChannelInfo? _info;
   List<VideoBrief> _videos = const [];
+  List<VideoBrief> _shorts = const [];
+  List<VideoBrief> _live = const [];
   List<PlaylistBrief> _playlists = const [];
   bool _loadingVideos = true;
   bool _loadingPlaylists = true;
+  // Shorts and Live are fetched alongside the rest; both tabs are commonly
+  // empty for a given channel, which is a result rather than a failure.
+  bool _loadingShorts = true;
+  bool _loadingLive = true;
   String? _error;
 
   /// YouTube's own Popular sort needs a `params` value that no longer returns
@@ -85,6 +92,30 @@ class _ChannelPageState extends State<ChannelPage>
       },
       // A missing header is survivable; the video list is the point.
       onError: (Object _) {},
+    );
+
+    repo.channelShorts(
+      widget.channelId,
+      channelTitle: widget.initialTitle ?? '',
+    ).then(
+      (shorts) {
+        if (mounted) setState(() { _shorts = shorts; _loadingShorts = false; });
+      },
+      onError: (Object _) {
+        if (mounted) setState(() => _loadingShorts = false);
+      },
+    );
+
+    repo.channelLive(
+      widget.channelId,
+      channelTitle: widget.initialTitle ?? '',
+    ).then(
+      (live) {
+        if (mounted) setState(() { _live = live; _loadingLive = false; });
+      },
+      onError: (Object _) {
+        if (mounted) setState(() => _loadingLive = false);
+      },
     );
 
     repo.channelUploads(
@@ -156,8 +187,12 @@ class _ChannelPageState extends State<ChannelPage>
             delegate: _TabBarHeader(
               TabBar(
                 controller: _tabs,
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
                 tabs: [
                   const Tab(text: 'Videos'),
+                  Tab(text: _shorts.isEmpty ? 'Shorts' : 'Shorts (${_shorts.length})'),
+                  Tab(text: _live.isEmpty ? 'Live' : 'Live (${_live.length})'),
                   Tab(
                     text: _playlists.isEmpty
                         ? 'Playlists'
@@ -171,9 +206,56 @@ class _ChannelPageState extends State<ChannelPage>
         ],
         body: TabBarView(
           controller: _tabs,
-          children: [_buildVideos(), _buildPlaylists()],
+          children: [
+            _buildVideos(),
+            _buildVideoList(
+              _shorts,
+              _loadingShorts,
+              'No Shorts',
+              'This channel has not posted any.',
+            ),
+            _buildVideoList(
+              _live,
+              _loadingLive,
+              'No streams',
+              'This channel has not gone live.',
+            ),
+            _buildPlaylists(),
+          ],
         ),
       ),
+    );
+  }
+
+  /// Plain list used by the Shorts and Live tabs, which have no sort control.
+  Widget _buildVideoList(
+    List<VideoBrief> videos,
+    bool loading,
+    String emptyTitle,
+    String emptyMessage,
+  ) {
+    if (loading) return const FeedSkeleton(count: 3);
+    if (videos.isEmpty) {
+      return EmptyState(
+        icon: Icons.videocam_off_outlined,
+        title: emptyTitle,
+        message: emptyMessage,
+      );
+    }
+    return ListView.builder(
+      itemCount: videos.length,
+      scrollCacheExtent: const ScrollCacheExtent.pixels(600),
+      addAutomaticKeepAlives: false,
+      itemBuilder: (context, i) {
+        final video = videos[i];
+        return RepaintBoundary(
+          child: VideoRow(
+            video: video,
+            onTap: () => WatchPage.open(context, video),
+            onMenu: () => showVideoMenu(context, video),
+          ),
+        );
+      },
     );
   }
 
