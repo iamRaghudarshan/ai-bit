@@ -1017,6 +1017,12 @@ class _ActionRow extends StatelessWidget {
             highlighted: sleep != null,
             onTap: () => showSleepTimerSheet(context),
           ),
+          _ActionChip(
+            icon: Icons.closed_caption_outlined,
+            label: playback.activeCaptions?.name ?? 'Captions',
+            highlighted: playback.activeCaptions != null,
+            onTap: () => showCaptionsSheet(context),
+          ),
           const CastChip(),
           _ActionChip(
             icon: Icons.analytics_outlined,

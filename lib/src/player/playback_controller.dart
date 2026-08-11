@@ -76,6 +76,40 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     return sorted;
   }
 
+  /// Caption tracks the current video offers, read off the HLS manifest.
+  ///
+  /// better_player already parses these — `useAsmsSubtitles` is on for every
+  /// ladder source — but nothing ever offered them, so a video with subtitles
+  /// played without any way to turn them on.
+  List<BetterPlayerSubtitlesSource> get captionTracks =>
+      _player?.betterPlayerSubtitlesSourceList
+          .where((s) => s.type != BetterPlayerSubtitlesSourceType.none)
+          .toList() ??
+      const [];
+
+  /// The caption track showing now, or null when they are off.
+  BetterPlayerSubtitlesSource? get activeCaptions {
+    final selected = _player?.betterPlayerSubtitlesSource;
+    if (selected == null ||
+        selected.type == BetterPlayerSubtitlesSourceType.none) {
+      return null;
+    }
+    return selected;
+  }
+
+  /// Turns captions on, or off when [track] is null.
+  Future<void> setCaptions(BetterPlayerSubtitlesSource? track) async {
+    final player = _player;
+    if (player == null) return;
+    await player.setupSubtitleSource(
+      track ??
+          BetterPlayerSubtitlesSource(
+            type: BetterPlayerSubtitlesSourceType.none,
+          ),
+    );
+    notifyListeners();
+  }
+
   /// The rendition actually playing, or null while on Auto.
   String? get activeQuality {
     final height = _player?.betterPlayerAsmsTrack?.height ?? 0;

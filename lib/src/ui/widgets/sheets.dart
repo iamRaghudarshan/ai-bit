@@ -154,6 +154,62 @@ Future<void> showQualitySheet(BuildContext context) {
   );
 }
 
+/// Caption track picker, the CC button's sheet.
+///
+/// Listens rather than reading once, for the same reason the quality sheet
+/// does: the tracks come off the manifest a moment after playback starts.
+Future<void> showCaptionsSheet(BuildContext context) {
+  final playback = context.read<PlaybackController>();
+
+  return showModalBottomSheet<void>(
+    context: context,
+    builder: (context) => AnimatedBuilder(
+      animation: playback,
+      builder: (context, _) {
+        final tracks = playback.captionTracks;
+        final active = playback.activeCaptions;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _sheetHeader(context, 'Captions'),
+              if (tracks.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                  child: Text(
+                    playback.isLoading
+                        ? 'Looking for caption tracks…'
+                        : 'This video has no captions.',
+                  ),
+                ),
+              ListTile(
+                title: const Text('Off'),
+                trailing: active == null ? const Icon(Icons.check) : null,
+                onTap: () {
+                  playback.setCaptions(null);
+                  Navigator.pop(context);
+                },
+              ),
+              for (final track in tracks)
+                ListTile(
+                  title: Text(track.name ?? 'Captions'),
+                  trailing: active?.name == track.name
+                      ? const Icon(Icons.check)
+                      : null,
+                  onTap: () {
+                    playback.setCaptions(track);
+                    Navigator.pop(context);
+                  },
+                ),
+            ],
+          ),
+        );
+      },
+    ),
+  );
+}
+
 /// "Save to…" sheet. Rebuilds its own list so a playlist created inline shows
 /// up without bouncing back to the caller.
 Future<void> showSaveToPlaylistSheet(BuildContext context, VideoBrief video) {
