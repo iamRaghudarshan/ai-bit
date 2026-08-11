@@ -99,10 +99,37 @@ class _WatchPageState extends State<WatchPage>
   List<VideoBrief> _related = const [];
   bool _loadingDetails = true;
 
+  PlaybackController? _playback;
+
   @override
   void initState() {
     super.initState();
     _start();
+    // Follow the player when it moves on by itself.
+    _playback = context.read<PlaybackController>()..addListener(_followPlayer);
+  }
+
+  /// Adopts whatever the player switched to.
+  ///
+  /// The page decides whether to show the video surface by comparing its own
+  /// video to the player's. Autoplay, the end-screen countdown and the lock
+  /// screen's skip buttons all change the player's video without telling the
+  /// page, so it stopped recognising what was playing and hid the surface
+  /// behind a spinner — the next video's audio played while the picture never
+  /// came back.
+  void _followPlayer() {
+    final current = _playback?.current;
+    if (!mounted || current == null || current.id == _video.id) return;
+    // Opening another video pushes a second watch page over this one; only the
+    // page on top should adopt the change, or the one underneath refetches
+    // details nobody is looking at.
+    if (!(ModalRoute.of(context)?.isCurrent ?? true)) return;
+    setState(() {
+      _video = current;
+      _details = null;
+      _related = const [];
+    });
+    unawaited(_loadDetails());
   }
 
   Future<void> _start() async {
@@ -169,6 +196,7 @@ class _WatchPageState extends State<WatchPage>
 
   @override
   void dispose() {
+    _playback?.removeListener(_followPlayer);
     _settle.dispose();
     super.dispose();
   }
