@@ -332,6 +332,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     VideoBrief video,
     String url, {
     required bool isHls,
+    String? extensionOverride,
   }) {
     return BetterPlayerDataSource(
       _isOffline
@@ -354,7 +355,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // claiming 'm4a' would have told ExoPlayer to expect the wrong container.
       videoExtension: isHls
           ? null
-          : (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4'),
+          : (extensionOverride ??
+              (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4')),
       // Let better_player read the ladder's variants off the manifest, which is
       // what puts real quality and subtitle options in the overflow menu.
       useAsmsTracks: isHls,
@@ -954,13 +956,50 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (!_config.audioOnlyWhenLocked || _droppedVideo) return;
     if (_config.audioOnly) return; // already at the lowest rung by choice
     final player = _player;
-    if (player == null || _current == null) return;
+    final video = _current;
+    if (player == null || video == null) return;
     if (_isOffline) return; // a local file costs no data
-    if (player.betterPlayerAsmsTracks.isEmpty) return; // nothing to step down
     if (!(player.isPlaying() ?? false)) return;
 
+    // With a ladder, step down it: cheap and playback never stops.
+    if (player.betterPlayerAsmsTracks.isNotEmpty) {
+      _droppedVideo = true;
+      await _applyQuality(_lowestQuality);
+      return;
+    }
+
+    // Without one, the muxed file is the only video source and stepping down
+    // is not possible — so the audio track is the only way to save anything,
+    // and on those videos it is most of the data. It can be loaded now that
+    // the vendored player passes a MIME type for extensionless URLs.
+    final audioUrl = _sources?.audioOnlyUrl;
+    if (audioUrl == null) return;
+
     _droppedVideo = true;
-    await _applyQuality(_lowestQuality);
+    _swappedToAudio = true;
+    await _swapSource(video, audioUrl, resumeAt: _position, extension: 'm4a');
+  }
+
+  /// True when the screen-off saving replaced the source rather than stepping
+  /// down a ladder, so unlocking knows which way to undo it.
+  bool _swappedToAudio = false;
+
+  /// Re-points the player at a different URL for the same video, keeping the
+  /// position. Used only for the screen-off audio swap.
+  Future<void> _swapSource(
+    VideoBrief video,
+    String url, {
+    required Duration resumeAt,
+    required String extension,
+  }) async {
+    final player = _player;
+    if (player == null) return;
+    final wasPlaying = player.isPlaying() ?? false;
+    await player.setupDataSource(
+      _dataSource(video, url, isHls: false, extensionOverride: extension),
+    );
+    if (resumeAt > Duration.zero) await player.seekTo(resumeAt);
+    if (wasPlaying) await player.play();
   }
 
   /// Puts the chosen quality back on unlock. Also a track selection, so the
@@ -968,7 +1007,22 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _restoreVideoTrack() async {
     if (!_droppedVideo) return;
     _droppedVideo = false;
-    if (_player == null || _current == null) return;
+    final video = _current;
+    final sources = _sources;
+    if (_player == null || video == null) return;
+
+    if (_swappedToAudio) {
+      _swappedToAudio = false;
+      if (sources != null) {
+        await _swapSource(
+          video,
+          sources.url,
+          resumeAt: _position,
+          extension: 'mp4',
+        );
+      }
+      return;
+    }
     await _applyQuality(_config.preferredQuality);
   }
 
@@ -1015,6 +1069,25 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         _persistPosition(force: true);
         unawaited(_onFinished());
       case BetterPlayerEventType.exception:
+        // If the screen-off audio swap is what broke, put the video source
+        // back rather than leaving a locked phone playing nothing. The saving
+        // is not worth losing playback over, and this cannot be seen or
+        // recovered from by the user at the time.
+        if (_swappedToAudio) {
+          _swappedToAudio = false;
+          _droppedVideo = false;
+          final video = _current;
+          final sources = _sources;
+          if (video != null && sources != null) {
+            unawaited(_swapSource(
+              video,
+              sources.url,
+              resumeAt: _position,
+              extension: 'mp4',
+            ));
+            break;
+          }
+        }
         // Carry the platform's own description through. A generic message here
         // meant a device failure could not be told apart from an expired link,
         // and there is no console to read on someone else's phone.

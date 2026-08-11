@@ -42,6 +42,17 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    ordinary player events so a host app can listen for them alongside play and
    pause.
 
+## iOS — `ios/.../better_player_plus/Sources/better_player_plus/BetterPlayer.swift`
+
+9. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
+   now supplied when the data source carries a `videoExtension`, via a new
+   `mimeType(forExtension:)` helper. AVURLAsset otherwise works the format out
+   from the path extension, and a googlevideo audio URL has none — so every
+   audio-only track failed with "Failed to load video: unknown error" while the
+   same URL served fine to any other client. This is what makes the screen-off
+   audio swap possible on videos with no HLS ladder. Sources with an extension
+   or a recognised type are unaffected.
+
 ## Housekeeping
 
 8. `analysis_options.yaml` included `package:analysis_lints`, which is not a

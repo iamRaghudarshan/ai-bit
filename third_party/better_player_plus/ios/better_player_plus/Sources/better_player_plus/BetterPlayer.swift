@@ -176,6 +176,19 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         }
     }
 
+    /// PATCH: container hint to MIME type, for URLs with no file extension.
+    static func mimeType(forExtension ext: String?) -> String? {
+        guard let ext = ext?.lowercased(), !ext.isEmpty else { return nil }
+        switch ext {
+        case "m4a", "aac": return "audio/mp4"
+        case "mp3": return "audio/mpeg"
+        case "mp4", "m4v": return "video/mp4"
+        case "m3u8": return "application/vnd.apple.mpegurl"
+        case "webm": return "video/webm"
+        default: return nil
+        }
+    }
+
     public func setDataSourceURL(_ url: URL, key: String?, certificateUrl: String?, licenseUrl: String?, headers: [AnyHashable: Any], useCache: Bool, cacheKey: String?, cacheManager: CacheManager, overriddenDuration: Int, videoExtension: String?) {
         self.overriddenDuration = 0
         var finalHeaders = headers
@@ -187,7 +200,20 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
             let _videoExt = videoExtension
             item = cacheManager.getCachingPlayerItemForNormalPlayback(url, cacheKey: _cacheKey, videoExtension: _videoExt, headers: finalHeaders as NSDictionary as! [NSObject: AnyObject]) ?? AVPlayerItem(url: url)
         } else {
-            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": finalHeaders])
+            // PATCH: tell AVFoundation what it is loading.
+            //
+            // AVURLAsset works the format out from the path extension, and a
+            // googlevideo URL has none — so an audio-only track failed every
+            // time with "Failed to load video: unknown error" while the same
+            // URL served fine to any other client. AVURLAssetOutOfBandMIMETypeKey
+            // is the documented way to supply the type out of band, and the
+            // host app already passes videoExtension for exactly this purpose
+            // on Android. Without an extension nothing changes.
+            var assetOptions: [String: Any] = ["AVURLAssetHTTPHeaderFieldsKey": finalHeaders]
+            if let mime = Self.mimeType(forExtension: videoExtension) {
+                assetOptions["AVURLAssetOutOfBandMIMETypeKey"] = mime
+            }
+            let asset = AVURLAsset(url: url, options: assetOptions)
             if let certificateUrl = certificateUrl, !certificateUrl.isEmpty {
                 let certURL = URL(string: certificateUrl)
                 let licURL = licenseUrl.flatMap { URL(string: $0) }
