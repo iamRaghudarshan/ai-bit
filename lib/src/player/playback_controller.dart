@@ -383,25 +383,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   String _preferredUrl(PlaybackSources sources) {
     if (_isOffline) return sources.url;
 
-    // Audio-only deliberately keeps the HLS source rather than switching to the
-    // bare audio URL.
+    // Audio mode never picks its own URL.
     //
-    // AVURLAsset works out what it is loading from the path extension, and a
-    // googlevideo URL has none — so AVPlayer failed the audio track outright
-    // with "PlatformException(VideoError, Failed to load video: unknown
-    // error)". The HLS manifest plays because it is explicitly declared as HLS.
-    //
-    // Staying on the ladder and dropping to its smallest rendition gets the
-    // same result the user wants: no picture on screen, a fraction of the data,
-    // and playback that actually starts. The artwork view covers the surface.
-    if (_config.audioOnly && sources.isHls) return sources.url;
+    // It plays exactly what video mode plays and covers the picture, dropping
+    // to the ladder's smallest rendition once the manifest is parsed. Choosing
+    // the bare googlevideo audio URL instead was the whole bug: AVURLAsset
+    // identifies a stream by its path extension, that URL has none, and
+    // AVPlayer refuses it. There is now no branch that can reach it — if a
+    // video plays, its audio plays, because they are the same source.
+    if (_config.audioOnly) return sources.url;
 
-    // No ladder to drop down: the muxed 360p file still loads, the bare audio
-    // URL does not. Only reach for the audio track when there is no video at
-    // all, which is the one case where nothing else is on offer.
-    if (_config.audioOnly && sources.audioOnlyUrl != null) {
-      return sources.videoUnavailable ? sources.audioOnlyUrl! : sources.url;
-    }
     final wanted = _config.preferredQuality;
     if (wanted != SettingsService.autoQuality) {
       final exact = sources.qualities[wanted];
