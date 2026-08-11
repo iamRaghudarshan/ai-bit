@@ -9,12 +9,14 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../data/download_manager.dart';
 import '../data/models.dart';
 import '../data/preview_data.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'channel_page.dart';
+import 'widgets/comments_sheet.dart';
 import 'widgets/player_gestures.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
@@ -206,18 +208,22 @@ class _WatchPageState extends State<WatchPage>
         bottom: false,
         child: Column(
           children: [
-            // The whole player area is the drag handle, matching the real app.
+            // Drag-to-minimise lives on the handle only, NOT the video.
+            //
+            // Wrapping the whole player in a vertical-drag detector put every
+            // touch on the video into a gesture arena with it, and a scrub that
+            // began with any downward movement was claimed by the sheet — which
+            // is why the seek bar could not be dragged at all. The handle is a
+            // dedicated target, so the two can no longer compete.
             GestureDetector(
-              behavior: HitTestBehavior.translucent,
+              behavior: HitTestBehavior.opaque,
               onVerticalDragUpdate: _onDragUpdate,
               onVerticalDragEnd: _onDragEnd,
-              child: Column(
-                children: [
-                  _GrabHandle(onClose: () => Navigator.of(context).maybePop()),
-                  _PlayerSurface(showPlayer: isCurrent),
-                ],
+              child: _GrabHandle(
+                onClose: () => Navigator.of(context).maybePop(),
               ),
             ),
+            _PlayerSurface(showPlayer: isCurrent),
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,
@@ -231,8 +237,13 @@ class _WatchPageState extends State<WatchPage>
                       () => _descriptionExpanded = !_descriptionExpanded,
                     ),
                   ),
-                  const _TransportRow(),
+                  _PillRow(
+                    video: _video,
+                    likeCount: _details?.engagement.likeCount,
+                  ),
                   const _ActionRow(),
+                  if (!YtRepository.isPreview)
+                    CommentsPreview(videoId: _video.id),
                   const Divider(height: 24),
                   if (_loadingDetails && _related.isEmpty)
                     const Padding(
@@ -575,60 +586,152 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Previous / rewind / play / forward / next, laid out the way every media
-/// player does it.
+/// The pill row directly under the video: Like · Dislike · Share · Download ·
+/// Save, laid out the way the real app does.
 ///
-/// The video surface has its own overlay controls, but they vanish after a few
-/// seconds and carry no notion of a queue. Track skipping needs to be reachable
-/// without waiting for an overlay to reappear.
-class _TransportRow extends StatelessWidget {
-  const _TransportRow();
+/// Like and Dislike show the counts but cannot be pressed — voting needs a
+/// signed-in Google account, and this app has none. They are drawn disabled
+/// rather than omitted, so the row reads as the familiar one and the reason is
+/// visible on tap instead of silently missing.
+class _PillRow extends StatelessWidget {
+  const _PillRow({required this.video, this.likeCount});
+
+  final VideoBrief video;
+
+  /// From the watch page's already-loaded details; null until they arrive.
+  final int? likeCount;
 
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
-    final onSurface = Theme.of(context).colorScheme.onSurface;
+    final downloads = context.watch<DownloadManager>();
+    final record = downloads.recordFor(video.id);
+    final isDownloaded = record?.isComplete ?? false;
+    final isDownloading = downloads.isActive(video.id);
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          IconButton(
-            icon: const Icon(Icons.skip_previous),
-            iconSize: 32,
-            tooltip: 'Previous',
-            // Never disabled: with no history it restarts the video, which is
-            // what the button does in every music player.
-            color: playback.hasPrevious ? onSurface : onSurface.withValues(alpha: 0.5),
-            onPressed: playback.playPrevious,
+          _Pill(
+            icon: Icons.thumb_up_outlined,
+            label: _likeLabel(context),
+            onTap: () => _explainSignIn(context, 'Liking'),
           ),
-          IconButton(
-            icon: const Icon(Icons.replay_10),
-            iconSize: 28,
-            tooltip: 'Back 10 seconds',
-            onPressed: () => playback.skip(const Duration(seconds: -10)),
+          _Pill(
+            icon: Icons.thumb_down_outlined,
+            onTap: () => _explainSignIn(context, 'Disliking'),
           ),
-          IconButton.filled(
-            icon: Icon(playback.isPlaying ? Icons.pause : Icons.play_arrow),
-            iconSize: 32,
-            tooltip: playback.isPlaying ? 'Pause' : 'Play',
-            onPressed: playback.togglePlayPause,
+          _Pill(
+            icon: Icons.reply_outlined,
+            label: 'Share',
+            onTap: () => SharePlus.instance.share(
+              ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
+            ),
           ),
-          IconButton(
-            icon: const Icon(Icons.forward_10),
-            iconSize: 28,
-            tooltip: 'Forward 10 seconds',
-            onPressed: () => playback.skip(const Duration(seconds: 10)),
+          _Pill(
+            icon: isDownloaded
+                ? Icons.download_done
+                : isDownloading
+                ? Icons.downloading
+                : Icons.download_outlined,
+            label: isDownloaded
+                ? 'Downloaded'
+                : isDownloading
+                ? 'Downloading'
+                : 'Download',
+            highlighted: isDownloaded,
+            onTap: () async {
+              final messenger = ScaffoldMessenger.of(context);
+              if (isDownloaded) {
+                await downloads.remove(video.id);
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Download removed')),
+                );
+              } else if (isDownloading) {
+                await downloads.cancel(video.id);
+              } else {
+                await downloads.enqueue(video);
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Downloading — see Library')),
+                );
+              }
+            },
           ),
-          IconButton(
-            icon: const Icon(Icons.skip_next),
-            iconSize: 32,
-            tooltip: playback.hasNext ? 'Next' : 'Nothing queued',
-            color: playback.hasNext ? onSurface : onSurface.withValues(alpha: 0.3),
-            onPressed: playback.hasNext ? playback.playNext : null,
+          _Pill(
+            icon: Icons.playlist_add,
+            label: 'Save',
+            onTap: () => showSaveToPlaylistSheet(context, video),
           ),
         ],
+      ),
+    );
+  }
+
+  String _likeLabel(BuildContext context) =>
+      likeCount == null ? 'Like' : compactCount(likeCount);
+
+  void _explainSignIn(BuildContext context, String action) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$action needs a signed-in Google account, which '
+            'AI BIT does not use.'),
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  const _Pill({
+    required this.icon,
+    required this.onTap,
+    this.label,
+    this.highlighted = false,
+  });
+
+  final IconData icon;
+  final String? label;
+  final VoidCallback onTap;
+  final bool highlighted;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = highlighted ? Colors.white : scheme.onSurface;
+
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Material(
+        color: highlighted
+            ? AppColors.brand
+            : scheme.onSurface.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: label == null ? 12 : 14,
+              vertical: 9,
+            ),
+            child: Row(
+              children: [
+                Icon(icon, size: 19, color: foreground),
+                if (label != null) ...[
+                  const SizedBox(width: 7),
+                  Text(
+                    label!,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: foreground,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

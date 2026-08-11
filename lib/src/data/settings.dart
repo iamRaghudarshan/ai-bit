@@ -59,9 +59,14 @@ class SettingsService extends ChangeNotifier {
   set backgroundPlayback(bool value) => _write(_kBackground, value);
 
   /// Drop the video track while the screen is off and pick it back up on
-  /// unlock. Nobody is watching a locked screen, and the video track is roughly
-  /// ten times the data of the audio one.
-  bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? true;
+  /// unlock. Saves roughly ten times the data, since nobody is watching a
+  /// locked screen.
+  ///
+  /// **Off by default.** Swapping the source means building a new player item
+  /// and starting it while the app is already in the background, which iOS
+  /// restricts — and when it fails, audio stops altogether. Silent playback is
+  /// a far worse outcome than extra data, so this is opt-in.
+  bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? false;
   set audioOnlyWhenLocked(bool value) => _write(_kLockedAudio, value);
 
   /// off / one / all.

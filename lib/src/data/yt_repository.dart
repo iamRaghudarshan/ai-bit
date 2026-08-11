@@ -5,6 +5,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
 import 'browse_client.dart';
+import 'comments_client.dart';
 import 'models.dart';
 import 'player_client.dart';
 import 'preview_data.dart';
@@ -23,12 +24,14 @@ class YtRepository {
     : _yt = yt.YoutubeExplode(),
       _search = YoutubeSearchClient(),
       _player = YoutubePlayerClient(),
-      _browse = YoutubeBrowseClient();
+      _browse = YoutubeBrowseClient(),
+      _comments = YoutubeCommentsClient();
 
   final yt.YoutubeExplode _yt;
   final YoutubeSearchClient _search;
   final YoutubePlayerClient _player;
   final YoutubeBrowseClient _browse;
+  final YoutubeCommentsClient _comments;
 
   /// Signed CDN URLs stay valid for roughly six hours; expire ours well before
   /// that so a long-lived app never hands a dead URL to the player.
@@ -72,6 +75,7 @@ class YtRepository {
     _search.close();
     _player.close();
     _browse.close();
+    _comments.close();
   }
 
   // ------------------------------------------------------------------ feed
@@ -178,7 +182,25 @@ class YtRepository {
     }
   }
 
-  Future<List<VideoBrief>> channelUploads(String channelId, {int limit = 20}) async {
+  /// A channel's uploads.
+  ///
+  /// The browse endpoint is tried first because `channels.getUploads` returns
+  /// an empty stream — zero videos for every channel measured. The package call
+  /// is kept only as a fallback in case that ever starts working again.
+  Future<List<VideoBrief>> channelUploads(
+    String channelId, {
+    int limit = 20,
+    String channelTitle = '',
+  }) async {
+    try {
+      final videos = await _browse.channelVideos(
+        channelId,
+        channelTitle: channelTitle,
+      );
+      if (videos.isNotEmpty) return videos.take(limit).toList();
+    } catch (e) {
+      debugPrint('AI BIT: channel videos browse failed for $channelId — $e');
+    }
     final videos = await _yt.channels.getUploads(channelId).take(limit).toList();
     return videos.map(VideoBrief.fromYt).toList();
   }
@@ -203,6 +225,13 @@ class YtRepository {
           : '${compactCount(channel.subscribersCount)} subscribers',
     );
   }
+
+  /// First page of a video's comments.
+  Future<CommentPage> comments(String videoId) => _comments.fetch(videoId);
+
+  /// A further page, using [CommentPage.continuation].
+  Future<CommentPage> moreComments(String continuation) =>
+      _comments.more(continuation);
 
   /// Playlists published by a channel.
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) =>

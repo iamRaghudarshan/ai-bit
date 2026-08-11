@@ -59,7 +59,17 @@ class _PlayerGesturesState extends State<PlayerGestures> {
     });
   }
 
+  /// Height at the bottom of the video reserved for the seek bar.
+  ///
+  /// A vertical drag starting there would compete with scrubbing, and losing
+  /// that contest is why the seek bar felt unusable.
+  static const _scrubberZone = 56.0;
+
   Future<void> _onDragStart(DragStartDetails d, BoxConstraints box) async {
+    if (d.localPosition.dy > box.maxHeight - _scrubberZone) {
+      _adjust = null;
+      return;
+    }
     final isLeft = d.localPosition.dx < box.maxWidth / 2;
     _adjust = isLeft ? _Adjust.brightness : _Adjust.volume;
     if (isLeft) {

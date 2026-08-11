@@ -124,6 +124,103 @@ class YoutubeBrowseClient {
     }
   }
 
+  /// `params` selecting a channel's Videos tab.
+  ///
+  /// Only this plain form works. The sort variants documented elsewhere
+  /// (`…YAyABMAE=` for Popular and so on) return an empty page, so ordering
+  /// other than "latest" is done on the fetched set instead.
+  static const _videosTab = 'EgZ2aWRlb3PyBgQKAjoA';
+
+  /// A channel's uploads.
+  ///
+  /// Needed because `youtube_explode_dart`'s `channels.getUploads` returns an
+  /// empty stream — measured against two channels, zero videos in both. The
+  /// channel page uses `richItemRenderer` wrapping `lockupViewModel`, with no
+  /// `videoRenderer` anywhere, which is why the package finds nothing.
+  Future<List<VideoBrief>> channelVideos(
+    String channelId, {
+    String channelTitle = '',
+  }) async {
+    final json = await _post({'browseId': channelId, 'params': _videosTab});
+
+    final lockups = <Map<String, dynamic>>[];
+    _collect(json, 'lockupViewModel', lockups);
+
+    final out = <VideoBrief>[];
+    final seen = <String>{};
+    for (final l in lockups) {
+      if (l['contentType'] != 'LOCKUP_CONTENT_TYPE_VIDEO') continue;
+      final id = l['contentId'];
+      if (id is! String || id.isEmpty || !seen.add(id)) continue;
+
+      // metadata reads as [title, "733K views", "1 day ago", …menu items].
+      final parts = <String>[];
+      _collectStrings(l['metadata'], 'content', parts);
+      if (parts.isEmpty) continue;
+
+      final views = parts.firstWhere(
+        (p) => p.toLowerCase().contains('view'),
+        orElse: () => '',
+      );
+      final age = parts.firstWhere(
+        (p) => p.toLowerCase().contains('ago') || p.toLowerCase().contains('stream'),
+        orElse: () => '',
+      );
+
+      out.add(VideoBrief(
+        id: id,
+        title: parts.first,
+        author: channelTitle,
+        channelId: channelId,
+        duration: _durationFromBadge(l['contentImage']),
+        viewCount: _parseCompact(views),
+        uploadRaw: age.isEmpty ? null : age,
+        isLive: views.toLowerCase().contains('watching'),
+      ));
+    }
+    return out;
+  }
+
+  /// Reads `12:34` out of the thumbnail's duration badge.
+  ///
+  /// Both key names are collected: the badge stores its label under `text` in
+  /// some responses and `content` in others, and looking for only one of them
+  /// left every channel video without a duration.
+  static Duration? _durationFromBadge(dynamic contentImage) {
+    final texts = <String>[];
+    _collectStrings(contentImage, 'content', texts);
+    _collectStrings(contentImage, 'text', texts);
+    for (final t in texts) {
+      if (!RegExp(r'^\d{1,2}(:\d{2}){1,2}$').hasMatch(t.trim())) continue;
+      final parts = t.trim().split(':').map(int.parse).toList();
+      return switch (parts.length) {
+        3 => Duration(hours: parts[0], minutes: parts[1], seconds: parts[2]),
+        2 => Duration(minutes: parts[0], seconds: parts[1]),
+        _ => null,
+      };
+    }
+    return null;
+  }
+
+  /// `733K views` -> 733000. The channel page abbreviates where search does
+  /// not, so the raw digits alone would be off by a factor of a thousand.
+  static int? _parseCompact(String label) {
+    final match = RegExp(
+      r'([\d.,]+)\s*([KMB])?',
+      caseSensitive: false,
+    ).firstMatch(label.trim());
+    if (match == null) return null;
+    final number = double.tryParse(match.group(1)!.replaceAll(',', ''));
+    if (number == null) return null;
+    final multiplier = switch (match.group(2)?.toUpperCase()) {
+      'K' => 1000,
+      'M' => 1000000,
+      'B' => 1000000000,
+      _ => 1,
+    };
+    return (number * multiplier).round();
+  }
+
   /// Playlists published by a channel.
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) async {
     final json = await _post({

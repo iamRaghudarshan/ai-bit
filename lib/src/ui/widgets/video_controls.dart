@@ -31,7 +31,9 @@ class VideoControls extends StatefulWidget {
 }
 
 class _VideoControlsState extends State<VideoControls> {
-  static const _hideAfter = Duration(seconds: 3);
+  // 4s rather than 3: three seconds is not long enough to notice the bar,
+  // reach for it and land a finger on it.
+  static const _hideAfter = Duration(seconds: 4);
 
   bool _visible = true;
   Timer? _hideTimer;
@@ -94,28 +96,54 @@ class _VideoControlsState extends State<VideoControls> {
     final isLive = widget.controller.isLiveStream();
     final buffering = widget.controller.isBuffering() ?? false;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: _toggle,
-      child: AnimatedOpacity(
-        opacity: _visible ? 1 : 0,
-        duration: const Duration(milliseconds: 180),
-        // Ignore pointers while hidden, otherwise invisible buttons still
-        // swallow taps meant for the gesture layer beneath.
-        child: IgnorePointer(
-          ignoring: !_visible,
-          child: ColoredBox(
-            color: Colors.black38,
-            child: Stack(
-              children: [
-                _buildCentre(playback, buffering),
-                _buildBottomBar(position, duration, isLive),
-                _buildTopBar(),
-              ],
+    final total = duration.inMilliseconds;
+    final progress = total > 0
+        ? (position.inMilliseconds / total).clamp(0.0, 1.0)
+        : 0.0;
+
+    return Stack(
+      children: [
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _toggle,
+          child: AnimatedOpacity(
+            opacity: _visible ? 1 : 0,
+            duration: const Duration(milliseconds: 180),
+            // Ignore pointers while hidden, otherwise invisible buttons still
+            // swallow taps meant for the gesture layer beneath.
+            child: IgnorePointer(
+              ignoring: !_visible,
+              child: ColoredBox(
+                color: Colors.black38,
+                child: Stack(
+                  children: [
+                    _buildCentre(playback, buffering),
+                    _buildBottomBar(position, duration, isLive),
+                    _buildTopBar(),
+                  ],
+                ),
+              ),
             ),
           ),
         ),
-      ),
+        // A hairline of progress once the controls fade, the way the real app
+        // does it — otherwise a playing video gives no sign of how far in it is
+        // without tapping first.
+        if (!_visible && !isLive)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: IgnorePointer(
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 2.5,
+                backgroundColor: Colors.white24,
+                valueColor: const AlwaysStoppedAnimation(AppColors.brand),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -187,36 +215,43 @@ class _VideoControlsState extends State<VideoControls> {
             child: isLive
                 // A live edge has nothing meaningful to scrub through.
                 ? const SizedBox(height: 24)
-                : SliderTheme(
-                    data: SliderThemeData(
-                      trackHeight: 2.5,
-                      thumbShape: const RoundSliderThumbShape(
-                        enabledThumbRadius: 6,
+                : SizedBox(
+                    // A generous strip to aim at. The default slider is a few
+                    // pixels tall, which is unusable on a phone while a video
+                    // is moving underneath it.
+                    height: 44,
+                    child: SliderTheme(
+                      data: SliderThemeData(
+                        trackHeight: _scrubbing ? 5 : 3,
+                        thumbShape: RoundSliderThumbShape(
+                          enabledThumbRadius: _scrubbing ? 9 : 7,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 22,
+                        ),
+                        activeTrackColor: AppColors.brand,
+                        inactiveTrackColor: Colors.white30,
+                        thumbColor: AppColors.brand,
+                        overlayColor: AppColors.brand.withValues(alpha: 0.25),
                       ),
-                      overlayShape: const RoundSliderOverlayShape(
-                        overlayRadius: 14,
+                      child: Slider(
+                        value: total <= 0 ? 0 : current.toDouble(),
+                        max: total <= 0 ? 1 : total,
+                        onChangeStart: (v) {
+                          _hideTimer?.cancel();
+                          setState(() {
+                            _scrubbing = true;
+                            _scrubTo = v;
+                          });
+                        },
+                        onChanged: (v) => setState(() => _scrubTo = v),
+                        onChangeEnd: (v) {
+                          widget.controller
+                              .seekTo(Duration(milliseconds: v.round()));
+                          setState(() => _scrubbing = false);
+                          _restartHideTimer();
+                        },
                       ),
-                      activeTrackColor: AppColors.brand,
-                      inactiveTrackColor: Colors.white30,
-                      thumbColor: AppColors.brand,
-                    ),
-                    child: Slider(
-                      value: total <= 0 ? 0 : current.toDouble(),
-                      max: total <= 0 ? 1 : total,
-                      onChangeStart: (v) {
-                        _hideTimer?.cancel();
-                        setState(() {
-                          _scrubbing = true;
-                          _scrubTo = v;
-                        });
-                      },
-                      onChanged: (v) => setState(() => _scrubTo = v),
-                      onChangeEnd: (v) {
-                        widget.controller
-                            .seekTo(Duration(milliseconds: v.round()));
-                        setState(() => _scrubbing = false);
-                        _restartHideTimer();
-                      },
                     ),
                   ),
           ),

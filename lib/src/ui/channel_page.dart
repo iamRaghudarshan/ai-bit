@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/theme.dart';
+import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
 import 'playlist_page.dart';
@@ -51,6 +52,17 @@ class _ChannelPageState extends State<ChannelPage>
   bool _loadingPlaylists = true;
   String? _error;
 
+  /// YouTube's own Popular sort needs a `params` value that no longer returns
+  /// anything, so this reorders the fetched page instead. Honest about what it
+  /// is: most-viewed of the videos loaded, not of all time.
+  bool _byPopular = false;
+
+  List<VideoBrief> get _sortedVideos {
+    if (!_byPopular) return _videos;
+    return _videos.toList()
+      ..sort((a, b) => (b.viewCount ?? 0).compareTo(a.viewCount ?? 0));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -75,7 +87,11 @@ class _ChannelPageState extends State<ChannelPage>
       onError: (Object _) {},
     );
 
-    repo.channelUploads(widget.channelId, limit: 30).then((videos) {
+    repo.channelUploads(
+      widget.channelId,
+      limit: 30,
+      channelTitle: widget.initialTitle ?? '',
+    ).then((videos) {
       if (mounted) {
         setState(() {
           _videos = videos;
@@ -170,17 +186,39 @@ class _ChannelPageState extends State<ChannelPage>
         message: _error ?? 'This channel has nothing to show.',
       );
     }
-    return ListView.builder(
-      padding: const EdgeInsets.only(top: 4),
-      itemCount: _videos.length,
-      itemBuilder: (context, i) {
-        final video = _videos[i];
-        return VideoRow(
-          video: video,
-          onTap: () => WatchPage.openQueue(context, _videos, startAt: i),
-          onMenu: () => showVideoMenu(context, video),
-        );
-      },
+    final videos = _sortedVideos;
+    return Column(
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+            child: SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('Latest')),
+                ButtonSegment(value: true, label: Text('Popular')),
+              ],
+              selected: {_byPopular},
+              showSelectedIcon: false,
+              onSelectionChanged: (s) =>
+                  setState(() => _byPopular = s.first),
+            ),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: videos.length,
+            itemBuilder: (context, i) {
+              final video = videos[i];
+              return VideoRow(
+                video: video,
+                onTap: () => WatchPage.openQueue(context, videos, startAt: i),
+                onMenu: () => showVideoMenu(context, video),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -292,21 +330,90 @@ class _Header extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             children: [
+              if (info != null) _SubscribeButton(channel: info!),
+              const SizedBox(width: 10),
               FilledButton.icon(
                 onPressed: () => onPlayAll(),
-                icon: const Icon(Icons.play_arrow),
+                icon: const Icon(Icons.play_arrow, size: 18),
                 label: const Text('Play all'),
               ),
-              const SizedBox(width: 10),
-              OutlinedButton.icon(
+              const SizedBox(width: 8),
+              IconButton(
                 onPressed: () => onPlayAll(shuffle: true),
                 icon: const Icon(Icons.shuffle),
-                label: const Text('Shuffle'),
+                tooltip: 'Shuffle',
               ),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Subscribe / Subscribed toggle.
+///
+/// Local only: without a Google account there is nothing to sync to, so this
+/// follows the channel on this device and drives the Subscriptions feed. It is
+/// worth having anyway — it is the only way to say "show me this channel's new
+/// videos" when the account's real subscriptions are out of reach.
+class _SubscribeButton extends StatefulWidget {
+  const _SubscribeButton({required this.channel});
+
+  final ChannelInfo channel;
+
+  @override
+  State<_SubscribeButton> createState() => _SubscribeButtonState();
+}
+
+class _SubscribeButtonState extends State<_SubscribeButton> {
+  bool? _subscribed;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  Future<void> _refresh() async {
+    final yes = await context.read<AppDatabase>().isSubscribed(
+      widget.channel.id,
+    );
+    if (mounted) setState(() => _subscribed = yes);
+  }
+
+  Future<void> _toggle() async {
+    final db = context.read<AppDatabase>();
+    final messenger = ScaffoldMessenger.of(context);
+    if (_subscribed ?? false) {
+      await db.unsubscribe(widget.channel.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Unsubscribed from ${widget.channel.title}')),
+      );
+    } else {
+      await db.subscribe(widget.channel);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Subscribed to ${widget.channel.title}')),
+      );
+    }
+    await _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subscribed = _subscribed ?? false;
+    final scheme = Theme.of(context).colorScheme;
+
+    return FilledButton(
+      onPressed: _subscribed == null ? null : _toggle,
+      style: FilledButton.styleFrom(
+        backgroundColor: subscribed
+            ? scheme.onSurface.withValues(alpha: 0.12)
+            : scheme.onSurface,
+        foregroundColor: subscribed ? scheme.onSurface : scheme.surface,
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+      ),
+      child: Text(subscribed ? 'Subscribed' : 'Subscribe'),
     );
   }
 }

@@ -24,16 +24,18 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
         await _createDownloads(db);
         await _createSearches(db);
+        await _createSubscriptions(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
         if (from < 3) await _createSearches(db);
+        if (from < 4) await _createSubscriptions(db);
       },
     );
     return AppDatabase._(db);
@@ -124,6 +126,60 @@ class AppDatabase {
         searched_at INTEGER NOT NULL
       )
     ''');
+  }
+
+  static Future<void> _createSubscriptions(Database db) async {
+    await db.execute('''
+      CREATE TABLE subscriptions (
+        channel_id   TEXT PRIMARY KEY,
+        title        TEXT NOT NULL,
+        avatar_url   TEXT,
+        subscribed_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  // ---------------------------------------------------------- subscriptions
+
+  /// Local only. Without a Google account there is nothing to sync to, so
+  /// "subscribed" means "followed on this device" — it drives the
+  /// Subscriptions feed and nothing leaves the phone.
+  Future<void> subscribe(ChannelInfo channel) => _db.insert(
+    'subscriptions',
+    {
+      'channel_id': channel.id,
+      'title': channel.title,
+      'avatar_url': channel.avatarUrl,
+      'subscribed_at': DateTime.now().millisecondsSinceEpoch,
+    },
+    conflictAlgorithm: ConflictAlgorithm.replace,
+  );
+
+  Future<void> unsubscribe(String channelId) =>
+      _db.delete('subscriptions', where: 'channel_id = ?', whereArgs: [channelId]);
+
+  Future<bool> isSubscribed(String channelId) async {
+    final rows = await _db.query(
+      'subscriptions',
+      columns: ['channel_id'],
+      where: 'channel_id = ?',
+      whereArgs: [channelId],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<List<ChannelInfo>> subscriptions() async {
+    final rows = await _db.query('subscriptions', orderBy: 'title COLLATE NOCASE');
+    return rows
+        .map(
+          (r) => ChannelInfo(
+            id: r['channel_id']! as String,
+            title: r['title']! as String,
+            avatarUrl: r['avatar_url'] as String?,
+          ),
+        )
+        .toList();
   }
 
   // --------------------------------------------------------- search history
