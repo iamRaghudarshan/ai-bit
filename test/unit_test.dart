@@ -2,6 +2,7 @@ import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
+import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -177,6 +178,52 @@ Some blurb about the video.
 
     test('is empty for a missing date', () {
       expect(formatDateTime(null), '');
+    });
+  });
+
+  group('PlaybackController.isGenuineFinish', () {
+    bool finish(Duration position, Duration duration) =>
+        PlaybackController.isGenuineFinish(
+          position: position,
+          duration: duration,
+        );
+
+    test('accepts a video that has run out', () {
+      expect(finish(const Duration(minutes: 10), const Duration(minutes: 10)),
+          isTrue);
+    });
+
+    test('accepts the last few seconds', () {
+      // The player reports the end a moment before the position catches up.
+      expect(
+        finish(const Duration(minutes: 9, seconds: 58),
+            const Duration(minutes: 10)),
+        isTrue,
+      );
+    });
+
+    test('rejects an ending reported near the start', () {
+      // Changing quality rebuilds the data source, and the outgoing player
+      // says it ended. Believing it put the end screen over a video that had
+      // just restarted from zero.
+      expect(finish(Duration.zero, const Duration(minutes: 10)), isFalse);
+      expect(
+        finish(const Duration(seconds: 30), const Duration(minutes: 10)),
+        isFalse,
+      );
+    });
+
+    test('rejects an ending reported mid-video', () {
+      expect(
+        finish(const Duration(minutes: 5), const Duration(minutes: 10)),
+        isFalse,
+      );
+    });
+
+    test('accepts when the duration is unknown', () {
+      // Nothing to compare against, and suppressing it would strand the end of
+      // a live or unmeasured stream.
+      expect(finish(const Duration(minutes: 3), Duration.zero), isTrue);
     });
   });
 

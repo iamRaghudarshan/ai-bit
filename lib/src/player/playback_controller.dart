@@ -60,15 +60,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// left the picker showing nothing but "Auto" on every HD video, because the
   /// HLS path deliberately stores an empty map.
   List<String> get qualities {
-    final tracks = _player?.betterPlayerAsmsTracks ?? const [];
-    final heights = tracks
-        .map((t) => t.height ?? 0)
-        .where((h) => h > 0)
-        .toSet()
-        .toList()
-      ..sort((a, b) => b.compareTo(a));
-    if (heights.isNotEmpty) return heights.map((h) => '${h}p').toList();
-    return _sources?.qualities.keys.toList() ?? const [];
+    // Both sources, merged. Returning the ladder *or* the muxed list meant a
+    // video that has both showed only one of them, which is why the picker
+    // looked short of options.
+    final labels = <String>{
+      for (final track in _player?.betterPlayerAsmsTracks ?? const [])
+        if ((track.height ?? 0) > 0) '${track.height}p',
+      ...?_sources?.qualities.keys,
+    };
+    final sorted = labels.toList()
+      ..sort((a, b) {
+        int height(String l) => int.tryParse(l.replaceAll(RegExp('[^0-9]'), '')) ?? 0;
+        return height(b).compareTo(height(a));
+      });
+    return sorted;
   }
 
   /// The rendition actually playing, or null while on Auto.
@@ -538,9 +543,45 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Switches rendition, and remembers the choice so every later video opens
   /// at the same quality rather than reverting to Auto.
+  /// Whether a `finished` event reflects the video actually running out.
+  ///
+  /// Rebuilding a data source — which is how the plugin changes quality on a
+  /// progressive stream — makes the outgoing player report that it ended. Taken
+  /// at face value that put the end screen over a video which had just
+  /// restarted from zero. A real finish lands within a few seconds of the
+  /// duration; anything earlier is the teardown talking.
+  ///
+  /// An unknown duration is treated as genuine, since there is nothing to
+  /// compare against and suppressing it would strand the end of the video.
+  static bool isGenuineFinish({
+    required Duration position,
+    required Duration duration,
+  }) {
+    if (duration <= Duration.zero) return true;
+    return position >= duration - const Duration(seconds: 5);
+  }
+
+  /// True while a deliberate quality change is tearing the source down, so the
+  /// events that come out of it are not mistaken for the video ending.
+  bool _switchingQuality = false;
+
   Future<void> setQuality(String label) async {
     _config.preferredQuality = label;
-    await _applyQuality(label);
+    final resumeAt = _position;
+    final wasPlaying = _player?.isPlaying() ?? false;
+    _switchingQuality = true;
+    try {
+      await _applyQuality(label);
+      // setResolution restores the position itself, but a track switch on the
+      // ladder does not move it and a failed switch can land at zero. Putting
+      // it back is cheap and covers both.
+      if (resumeAt > const Duration(seconds: 3)) {
+        await _player?.seekTo(resumeAt);
+        if (wasPlaying) await _player?.play();
+      }
+    } finally {
+      _switchingQuality = false;
+    }
     notifyListeners();
   }
 
@@ -936,6 +977,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   void _onPlayerEvent(BetterPlayerEvent event) {
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.finished:
+        // Only when the video really has run out.
+        //
+        // Changing quality on a progressive source goes through the plugin's
+        // setResolution, which tears the data source down and builds it again.
+        // The dying player reports STATE_ENDED on the way out, and that was
+        // taken at face value: the end screen appeared over a video that had
+        // just restarted from zero, while the old audio kept playing. A
+        // genuine finish happens within a few seconds of the duration.
+        if (_switchingQuality) break;
+        if (!isGenuineFinish(position: _position, duration: _duration)) break;
         _persistPosition(force: true);
         unawaited(_onFinished());
       case BetterPlayerEventType.exception:
@@ -957,7 +1008,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // The ladder is parsed by the time the player initialises, so this
       // usually lands well before the polling loop notices.
       case BetterPlayerEventType.initialized:
-        unawaited(_applyPreferredQualityWhenReady());
+        // Not while a quality change is rebuilding the source — that would
+        // re-enter the very function doing the rebuilding.
+        if (!_switchingQuality) unawaited(_applyPreferredQualityWhenReady());
       case BetterPlayerEventType.play:
       case BetterPlayerEventType.pause:
         _playing = _player?.isPlaying() ?? false;
