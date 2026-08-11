@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
@@ -19,16 +20,25 @@ class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
   @override
-  State<HomePage> createState() => _HomePageState();
+  State<HomePage> createState() => HomePageState();
 }
 
-class _HomePageState extends State<HomePage>
+class HomePageState extends State<HomePage>
     with AutomaticKeepAliveClientMixin {
   List<VideoBrief> _feed = const [];
   bool _loading = true;
   String? _error;
   int _refreshToken = 0;
   String _category = _CategoryChips.all;
+
+  /// The interest signals the visible feed was built from.
+  ///
+  /// The tab is built once at startup and kept alive, so a feed loaded before
+  /// the user had searched for anything stayed on screen for the rest of the
+  /// session — which read as "recommendations don't work". Coming back to Home
+  /// now compares the signals and refetches only when they have moved, so a
+  /// plain tab switch stays instant.
+  String _signals = '';
 
   @override
   bool get wantKeepAlive => true;
@@ -77,6 +87,7 @@ class _HomePageState extends State<HomePage>
       final seeds = await db.feedSeeds();
       final searches = await db.recentSearches();
       if (!mounted) return;
+      _signals = _signature(searches, seeds.channelIds);
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
         searches: searches,
@@ -99,6 +110,20 @@ class _HomePageState extends State<HomePage>
 
   Future<void> _refresh() async {
     _refreshToken++;
+    await _load();
+  }
+
+  static String _signature(List<String> searches, List<String> channelIds) =>
+      '${searches.join('|')}##${channelIds.join('|')}';
+
+  /// Called by the shell when Home is selected again.
+  Future<void> onTabOpened() async {
+    if (_category != _CategoryChips.all) return;
+    final db = context.read<AppDatabase>();
+    final seeds = await db.feedSeeds();
+    final searches = await db.recentSearches();
+    if (!mounted) return;
+    if (_signature(searches, seeds.channelIds) == _signals) return;
     await _load();
   }
 
@@ -171,12 +196,22 @@ class _HomePageState extends State<HomePage>
             return ListView.builder(
               padding: const EdgeInsets.only(top: 8),
               itemCount: _feed.length,
+              // Cards are tall, so the default cache extent keeps several
+              // screens of decoded thumbnails alive above and below the
+              // viewport. One screen either side is enough to scroll smoothly
+              // and holds a fraction of the images.
+              scrollCacheExtent: const ScrollCacheExtent.pixels(600.0),
+              addAutomaticKeepAlives: false,
               itemBuilder: (context, index) {
                 final video = _feed[index];
-                return VideoCard(
-                  video: video,
-                  onTap: () => WatchPage.open(context, video),
-                  onMenu: () => showVideoMenu(context, video),
+                // Each card paints into its own layer, so scrolling does not
+                // repaint the whole list on every frame.
+                return RepaintBoundary(
+                  child: VideoCard(
+                    video: video,
+                    onTap: () => WatchPage.open(context, video),
+                    onMenu: () => showVideoMenu(context, video),
+                  ),
                 );
               },
             );

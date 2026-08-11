@@ -21,6 +21,7 @@ class RootShell extends StatefulWidget {
 }
 
 class _RootShellState extends State<RootShell> {
+  final _homeKey = GlobalKey<HomePageState>();
   final _libraryKey = GlobalKey<LibraryPageState>();
   final _searchKey = GlobalKey<SearchPageState>();
   final _subsKey = GlobalKey<SubscriptionsPageState>();
@@ -38,6 +39,9 @@ class _RootShellState extends State<RootShell> {
     // Tabs are kept alive, so their initState only ever runs once — anything
     // that should happen "on arrival" has to be driven from here.
     switch (index) {
+      case 0:
+        // Searching elsewhere changes what Home should recommend.
+        _homeKey.currentState?.onTabOpened();
       case 1:
         // Shorts loads nothing until first visited: fetching a feed nobody has
         // opened wastes a request on every cold start.
@@ -61,7 +65,7 @@ class _RootShellState extends State<RootShell> {
       body: IndexedStack(
         index: _index,
         children: [
-          const HomePage(),
+          HomePage(key: _homeKey),
           ShortsPage(key: _shortsKey),
           SearchPage(key: _searchKey),
           SubscriptionsPage(key: _subsKey),

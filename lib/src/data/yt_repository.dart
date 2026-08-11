@@ -92,11 +92,19 @@ class YtRepository {
   }) async {
     if (isPreview) return _previewRows(refreshToken);
 
+    // Pull-to-refresh has to change what the interest signals return, not just
+    // the filler topic. Rotating both lists means a different search and a
+    // different channel lead the feed each time, so refreshing on an
+    // established history actually moves the page instead of rebuilding it.
+    final rotatedSearches = _rotate(searches, refreshToken);
+    final rotatedChannels = _rotate(channelIds, refreshToken);
+
     final tasks = <Future<List<VideoBrief>>>[
       // What you searched for is the strongest signal of what you want next,
       // and it is the only interest signal available without an account.
-      for (final q in searches.take(4)) _safe(() => search(q)),
-      for (final id in channelIds.take(3)) _safe(() => channelUploads(id, limit: 8)),
+      for (final q in rotatedSearches.take(4)) _safe(() => search(q)),
+      for (final id in rotatedChannels.take(3))
+        _safe(() => channelUploads(id, limit: 8)),
     ];
 
     // Top up with popular topics so a fresh install is not empty and the feed
@@ -108,7 +116,10 @@ class YtRepository {
     );
 
     final results = await Future.wait(tasks);
-    return _interleave(results);
+    // Each source returns the same ordering every time, so take a different
+    // window into it per refresh. Without this the same top result from each
+    // search sat at the top of the feed no matter how often you pulled.
+    return _interleave(results, skip: refreshToken);
   }
 
   /// Most-viewed videos across a rotating topic — the closest thing to a
@@ -656,9 +667,25 @@ class YtRepository {
 
   /// Round-robins the sections so no single channel or topic owns the top of
   /// the feed, dropping duplicates as it goes.
-  static List<VideoBrief> _interleave(List<List<VideoBrief>> sections) {
+  ///
+  /// [skip] drops the first n of each section, so a refresh shows what was
+  /// further down rather than the same head of every list.
+  static List<VideoBrief> _interleave(
+    List<List<VideoBrief>> sections, {
+    int skip = 0,
+  }) {
     final out = <VideoBrief>[];
     final seen = <String>{};
+    // Never skip so far that a short section empties out entirely.
+    final shortest = sections
+        .where((s) => s.isNotEmpty)
+        .fold(1 << 30, (m, s) => s.length < m ? s.length : m);
+    final offset = shortest == 1 << 30 ? 0 : skip % shortest;
+    if (offset > 0) {
+      sections = sections
+          .map((s) => s.length > offset ? s.sublist(offset) : s)
+          .toList();
+    }
     final longest = sections.fold(0, (m, s) => s.length > m ? s.length : m);
     for (var i = 0; i < longest; i++) {
       for (final section in sections) {
