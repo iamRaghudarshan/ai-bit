@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:better_player_plus/better_player_plus.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -315,6 +317,13 @@ class _PlayerSurface extends StatelessWidget {
                 child: CircularProgressIndicator(color: AppColors.brand),
               );
             }
+            // Audio-only has no video track, so the player renders a black
+            // rectangle — which reads as a failure rather than a feature. Show
+            // the artwork instead, the way a music player does.
+            if (playback.isAudioOnly) {
+              return _AudioArtwork(video: playback.current);
+            }
+
             return Stack(
               fit: StackFit.expand,
               children: [
@@ -451,6 +460,79 @@ class _GrabHandle extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// What the player area shows in audio-only mode.
+///
+/// An audio asset has no video track, so the player surface is simply black.
+/// Blurred artwork with the thumbnail on top makes it obvious that something is
+/// playing, and matches what every music player does.
+class _AudioArtwork extends StatelessWidget {
+  const _AudioArtwork({required this.video});
+
+  final VideoBrief? video;
+
+  @override
+  Widget build(BuildContext context) {
+    final playback = context.watch<PlaybackController>();
+    final url = video?.thumbUrl;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (url != null)
+          ImageFiltered(
+            imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+            child: CachedNetworkImage(imageUrl: url, fit: BoxFit.cover),
+          ),
+        const ColoredBox(color: Colors.black54),
+        Center(
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (url != null)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: CachedNetworkImage(
+                    imageUrl: url,
+                    width: 140,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              const SizedBox(width: 16),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.headphones, color: Colors.white, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'Audio only',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  IconButton.filled(
+                    icon: Icon(
+                      playback.isPlaying ? Icons.pause : Icons.play_arrow,
+                    ),
+                    iconSize: 30,
+                    onPressed: playback.togglePlayPause,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

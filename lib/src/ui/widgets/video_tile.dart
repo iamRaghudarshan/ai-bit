@@ -112,11 +112,15 @@ class VideoCard extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Channel initial in place of an avatar — fetching real avatars
-                // would cost one extra request per card.
+                // The channel's real avatar, which search results carry under
+                // channelThumbnailSupportedRenderers. The coloured initial is
+                // only the fallback for rows that arrive without one.
                 CircleAvatar(
                   radius: 17,
                   backgroundColor: _avatarColor(video.channelId),
+                  foregroundImage: video.avatarUrl == null
+                      ? null
+                      : CachedNetworkImageProvider(video.avatarUrl!),
                   child: Text(
                     video.author.isEmpty
                         ? '?'

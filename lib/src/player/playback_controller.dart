@@ -206,9 +206,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
       // without the hint AVPlayer guesses from the path and gets it wrong.
       videoFormat: isHls ? BetterPlayerVideoFormat.hls : null,
-      // googlevideo URLs carry no file extension, so AVPlayer cannot infer the
-      // container. Without this hint an audio-only stream fails to open, which
-      // is what made the Audio only button look broken.
+      // Only reaches the cache manager on iOS, which is bypassed here — kept
+      // because Android's ExoPlayer does use it to pick a extractor for a URL
+      // with no file extension.
       videoExtension: isHls
           ? null
           : (_config.audioOnly || _droppedVideo ? 'm4a' : 'mp4'),

@@ -16,6 +16,7 @@ class VideoBrief {
     this.uploadDate,
     this.uploadRaw,
     this.isLive = false,
+    this.avatarUrl,
   });
 
   final String id;
@@ -27,6 +28,10 @@ class VideoBrief {
   final DateTime? uploadDate;
   final String? uploadRaw;
   final bool isLive;
+
+  /// The channel's real avatar, when the response carried one. Null falls back
+  /// to a coloured initial.
+  final String? avatarUrl;
 
   /// 480x360 with letterboxing — the only thumbnail size YouTube guarantees
   /// exists for every video. `maxresdefault` 404s on a lot of older uploads.

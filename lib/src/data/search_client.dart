@@ -271,7 +271,18 @@ class YoutubeSearchClient {
       viewCount: _digits(_text(r['viewCountText'])),
       uploadRaw: _text(r['publishedTimeText']).nullIfEmpty,
       isLive: isLive,
+      avatarUrl: _avatar(r['channelThumbnailSupportedRenderers']),
     );
+  }
+
+  /// The channel's avatar, buried a few renderers deep in each result.
+  static String? _avatar(dynamic node) {
+    final urls = <String>[];
+    _collectStringKey(node, 'url', urls);
+    // Last entry is the largest.
+    final url = urls.isEmpty ? null : urls.last;
+    if (url == null) return null;
+    return url.startsWith('//') ? 'https:$url' : url;
   }
 
   /// Handles both `{simpleText: ...}` and `{runs: [{text: ...}]}` — the exact
