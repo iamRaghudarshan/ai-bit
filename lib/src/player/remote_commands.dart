@@ -43,6 +43,9 @@ class RemoteCommands {
       });
     } on PlatformException {
       // An older build without the native half; the buttons simply stay off.
+    } on MissingPluginException {
+      // Same, but for a build where the channel was never registered. This
+      // went unnoticed once already because only PlatformException was caught.
     }
   }
 

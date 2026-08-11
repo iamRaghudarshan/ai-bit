@@ -13,15 +13,7 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    let started = super.application(application, didFinishLaunchingWithOptions: launchOptions)
-
-    // Set up after super, which is what installs the Flutter view controller
-    // as the window's root and therefore the only point where its messenger
-    // is available.
-    if let controller = window?.rootViewController as? FlutterViewController {
-      setupRemoteChannel(messenger: controller.binaryMessenger)
-    }
-    return started
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
@@ -34,6 +26,18 @@ import UIKit
         RoutePickerViewFactory(),
         withId: "ai.bit/route_picker"
       )
+    }
+
+    // Registered here, off a plugin registrar, rather than from the window's
+    // root view controller.
+    //
+    // This app has a SceneDelegate, so the scene owns the window and creates
+    // it after `didFinishLaunchingWithOptions` has already returned. Reading
+    // `window?.rootViewController` there found nil, the channel was never
+    // registered, and every call from Dart hit a missing plugin — which is why
+    // the lock screen still showed seek arrows instead of the skip buttons.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "AIBitRemoteCommands") {
+      setupRemoteChannel(messenger: registrar.messenger())
     }
   }
 

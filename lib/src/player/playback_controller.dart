@@ -241,6 +241,14 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _remote.invalidate();
     unawaited(_remote.sync(hasPrevious: hasPrevious, hasNext: hasNext));
 
+    // Again shortly after. The plugin builds its now-playing info once the
+    // artwork has been fetched, and disables the skip commands as part of that
+    // — so a single re-arm at setup time can be undone a moment later.
+    Timer(const Duration(milliseconds: 1200), () {
+      _remote.invalidate();
+      unawaited(_remote.sync(hasPrevious: hasPrevious, hasNext: hasNext));
+    });
+
     // Carry the chosen quality across videos. The tracks only exist once the
     // manifest has been read, so this waits for them rather than firing at
     // setup and finding an empty list.
@@ -323,15 +331,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Waits briefly for the HLS ladder, then applies the saved quality.
   Future<void> _applyPreferredQualityWhenReady() async {
-    // Audio mode overrides the saved quality: the point is to use as little
-    // data as possible, and nothing is being looked at.
-    final wanted = (_config.audioOnly || _droppedVideo)
-        ? _lowestQuality
-        : _config.preferredQuality;
-    if (wanted == SettingsService.autoQuality) return;
-
     for (var attempt = 0; attempt < 10; attempt++) {
       if ((_player?.betterPlayerAsmsTracks.isNotEmpty ?? false)) {
+        // Worked out here, inside the loop, and not before it.
+        //
+        // Audio mode picks the smallest rendition, which is read off the track
+        // list — and that list is empty until the manifest has been parsed.
+        // Computing it up front therefore always returned "Auto" and returned
+        // early, so audio-only streamed the full-size video behind the artwork
+        // and saved no data at all.
+        final wanted = (_config.audioOnly || _droppedVideo)
+            ? _lowestQuality
+            : _config.preferredQuality;
+        if (wanted == SettingsService.autoQuality) return;
         await _applyQuality(wanted);
         notifyListeners();
         return;
