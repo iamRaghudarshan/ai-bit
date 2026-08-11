@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import 'src/core/theme.dart';
 import 'src/data/db.dart';
+import 'src/data/storage_service.dart';
 import 'src/data/download_manager.dart';
 import 'src/data/settings.dart';
 import 'src/data/yt_repository.dart';
@@ -131,6 +132,12 @@ class AiBitApp extends StatelessWidget {
             repository: context.read<YtRepository>(),
             database: context.read<AppDatabase>(),
           )..restore(),
+        ),
+        Provider<StorageService>(
+          create: (context) => StorageService(
+            context.read<AppDatabase>(),
+            context.read<DownloadManager>(),
+          ),
         ),
       ],
       child: Consumer<SettingsService>(

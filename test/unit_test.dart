@@ -1,6 +1,7 @@
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/data/models.dart';
+import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -176,6 +177,30 @@ Some blurb about the video.
 
     test('is empty for a missing date', () {
       expect(formatDateTime(null), '');
+    });
+  });
+
+  group('formatBytes', () {
+    test('reports whole bytes without a decimal', () {
+      expect(formatBytes(0), '0 B');
+      expect(formatBytes(512), '512 B');
+    });
+
+    test('steps up through the units', () {
+      expect(formatBytes(1024), '1.00 KB');
+      expect(formatBytes(1024 * 1024), '1.00 MB');
+      expect(formatBytes(1024 * 1024 * 1024), '1.00 GB');
+    });
+
+    test('drops precision as the number grows', () {
+      // A storage screen reading "1.00 GB" and "512 MB" is easier to scan than
+      // one with the same decimals everywhere.
+      expect(formatBytes(1024 * 1024 * 15), '15.0 MB');
+      expect(formatBytes(1024 * 1024 * 512), '512 MB');
+    });
+
+    test('never reports a negative size', () {
+      expect(formatBytes(-1), '0 B');
     });
   });
 

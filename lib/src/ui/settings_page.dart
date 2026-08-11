@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/settings.dart';
 import '../player/playback_controller.dart';
+import 'storage_page.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -58,6 +59,20 @@ class SettingsPage extends StatelessWidget {
             subtitle: Text(settings.preferredQuality),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickQuality(context, settings),
+          ),
+          const Divider(),
+          const _SectionLabel('Storage'),
+          ListTile(
+            leading: const Icon(Icons.sd_storage_outlined),
+            title: const Text('Storage'),
+            subtitle: const Text(
+              'See what downloads, cache and history are using, and clear any '
+              'of them.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const StoragePage()),
+            ),
           ),
           const Divider(),
           const _SectionLabel('Appearance'),

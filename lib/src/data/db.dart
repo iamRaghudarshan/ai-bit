@@ -357,6 +357,16 @@ class AppDatabase {
 
   Future<void> clearHistory() => _db.delete('history');
 
+  /// Where the database file lives, so its size can be reported in settings.
+  Future<String> get path async =>
+      kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
+
+  /// Number of watched videos, used to show what clearing history would drop.
+  Future<int> historyCount() async {
+    final rows = await _db.rawQuery('SELECT COUNT(*) AS n FROM history');
+    return (rows.first['n'] as int?) ?? 0;
+  }
+
   Future<void> _trimHistory() async {
     await _db.rawDelete('''
       DELETE FROM history WHERE video_id NOT IN (
