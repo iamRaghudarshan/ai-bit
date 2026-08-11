@@ -44,7 +44,7 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
 
 ## iOS — `ios/.../better_player_plus/Sources/better_player_plus/BetterPlayer.swift`
 
-9. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
+8. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
    now supplied when the data source carries a `videoExtension`, via a new
    `mimeType(forExtension:)` helper. AVURLAsset otherwise works the format out
    from the path extension, and a googlevideo audio URL has none — so every
@@ -55,7 +55,7 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
 
 ## Housekeeping
 
-8. `analysis_options.yaml` included `package:analysis_lints`, which is not a
+9. `analysis_options.yaml` included `package:analysis_lints`, which is not a
    dependency of this app and failed `flutter analyze` on a missing include. It
    now includes `flutter_lints`. This is vendored source we do not lint
    ourselves.
