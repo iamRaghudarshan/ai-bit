@@ -98,6 +98,22 @@ no-op so popping the watch page does not tear down the native player.
 Playback always prefers a completed download over the network — see
 `_offlineFile()`.
 
+### better_player_plus is vendored, not a pub dependency
+
+`third_party/better_player_plus` is a patched copy of 1.3.4, wired in through a
+path dependency. The published plugin hard-disables the notification and
+lock-screen skip buttons on both platforms and offers no setting for them.
+
+iOS is fixed from outside the plugin — `ios/Runner/AppDelegate.swift` reclaims
+`MPRemoteCommandCenter`, which is a process-wide singleton, and re-arms the
+commands after every video because the plugin resets them on each
+`setupDataSource`. Android has no equivalent seam, so the plugin source itself
+carries the change.
+
+`third_party/better_player_plus/PATCHES.md` lists every edit, and each one is
+marked `PATCH:` in the source. Re-apply them when upgrading; `flutter pub
+upgrade` will not.
+
 ### Downloads
 
 `lib/src/data/download_manager.dart` runs a **serial** queue; YouTube throttles

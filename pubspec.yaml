@@ -42,7 +42,17 @@ dependencies:
   cached_network_image: ^3.4.1
   intl: any
   wakelock_plus: ^1.7.0
-  better_player_plus: ^1.3.4
+  # Vendored, not from pub.
+  #
+  # The published plugin hard-disables the lock-screen and notification skip
+  # buttons — setUseNextAction(false) / setUsePreviousAction(false) on Android,
+  # and isEnabled = false on both iOS remote commands — with no configuration
+  # for either. iOS could be worked around from our own AppDelegate because
+  # MPRemoteCommandCenter is a process-wide singleton, but Android's
+  # notification and media session are private to the plugin, so the source
+  # itself has to change. See third_party/better_player_plus/PATCHES.md.
+  better_player_plus:
+    path: third_party/better_player_plus
   sqflite_common_ffi_web: ^1.1.2
   http: ^1.6.0
   gal: ^2.3.3

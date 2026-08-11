@@ -894,6 +894,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
             ? 'Playback failed. Reopen the video to try again.'
             : 'Playback failed: $detail';
         notifyListeners();
+      // Android's notification and lock-screen skip buttons, delivered by the
+      // vendored plugin. iOS routes the same taps through AppDelegate's
+      // MPRemoteCommandCenter handlers instead.
+      case BetterPlayerEventType.skipToNext:
+        unawaited(playNext());
+      case BetterPlayerEventType.skipToPrevious:
+        unawaited(playPrevious());
       case BetterPlayerEventType.play:
       case BetterPlayerEventType.pause:
         _playing = _player?.isPlaying() ?? false;

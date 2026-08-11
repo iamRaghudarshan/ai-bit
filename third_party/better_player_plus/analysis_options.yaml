@@ -1,0 +1,5 @@
+# The published package includes a lint set that is not a dependency here, so
+# analysing the app would fail on a missing include. This is vendored source we
+# do not lint ourselves; only the patches matter, and they are called out in
+# PATCHES.md.
+include: package:flutter_lints/flutter.yaml
