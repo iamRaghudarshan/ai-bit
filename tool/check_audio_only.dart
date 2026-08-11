@@ -92,8 +92,9 @@ Future<void> main(List<String> args) async {
   client.close();
   stdout.writeln(
     failures == 0
-        ? '\nRESULT: audio mode plays the same serving URL as video mode '
-            'for every video.'
+        ? '\nRESULT: audio mode plays the same serving URL as video mode for '
+            'every video YouTube served'
+            '${skipped == 0 ? '.' : ' ($skipped refused upstream).'}'
         : '\nRESULT: $failures video(s) would still fail in audio mode.',
   );
   if (failures > 0) exitCode = 1;
