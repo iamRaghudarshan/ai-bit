@@ -142,28 +142,49 @@ class YoutubePlayerClient {
     );
   }
 
-  /// Highest-bitrate audio-only track, for the data-saver and audio download
-  /// paths. Formats behind `signatureCipher` are skipped — deciphering needs
-  /// the player JS, and the clients above hand out plain URLs.
+  /// Best *playable* audio-only track, for the data-saver, screen-off and
+  /// audio-download paths.
+  ///
+  /// Deliberately not simply the highest bitrate. YouTube's top audio track is
+  /// almost always Opus in a WebM container, and iOS AVPlayer decodes neither —
+  /// picking it made "Audio only" fail outright while the video itself played
+  /// fine. AAC-in-MP4 is preferred and costs nothing worth having: on a typical
+  /// video the choice is 136 kbps Opus against 130 kbps AAC.
+  ///
+  /// Formats behind `signatureCipher` are skipped — deciphering needs the
+  /// player JS, and the clients above hand out plain URLs.
   static String? _bestAudio(Map<String, dynamic>? streaming) {
     final formats = streaming?['adaptiveFormats'];
     if (formats is! List) return null;
 
-    String? best;
-    var bestBitrate = -1;
+    String? bestCompatible;
+    var bestCompatibleBitrate = -1;
+    String? bestAny;
+    var bestAnyBitrate = -1;
+
     for (final f in formats) {
       if (f is! Map) continue;
       final mime = f['mimeType']?.toString() ?? '';
       if (!mime.startsWith('audio/')) continue;
       final url = f['url'];
       if (url is! String || url.isEmpty) continue;
+
       final bitrate = (f['bitrate'] as num?)?.toInt() ?? 0;
-      if (bitrate > bestBitrate) {
-        bestBitrate = bitrate;
-        best = url;
+      final isAac = mime.contains('mp4') && mime.contains('mp4a');
+
+      if (isAac && bitrate > bestCompatibleBitrate) {
+        bestCompatibleBitrate = bitrate;
+        bestCompatible = url;
+      }
+      if (bitrate > bestAnyBitrate) {
+        bestAnyBitrate = bitrate;
+        bestAny = url;
       }
     }
-    return best;
+
+    // Fall back to whatever exists rather than nothing: Android plays Opus
+    // happily, and a track that might work beats no audio at all.
+    return bestCompatible ?? bestAny;
   }
 
   /// Legacy progressive stream, kept only as a last resort when no HLS ladder

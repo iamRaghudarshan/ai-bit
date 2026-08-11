@@ -382,7 +382,7 @@ class YtRepository {
 
         if (audioOnly) {
           if (manifest.audioOnly.isEmpty) continue;
-          final best = manifest.audioOnly.withHighestBitrate();
+          final best = _bestPlayableAudio(manifest.audioOnly);
           return DownloadTarget(
             handle: best,
             totalBytes: best.size.totalBytes,
@@ -410,6 +410,27 @@ class YtRepository {
       }
     }
     throw StreamResolutionException(videoId, lastError);
+  }
+
+  /// Picks AAC-in-MP4 over the higher-bitrate Opus track.
+  ///
+  /// Same reasoning as [YoutubePlayerClient]: iOS decodes neither WebM nor
+  /// Opus, so a downloaded Opus file would save successfully and then refuse
+  /// to play — a worse failure than a slightly smaller bitrate.
+  static yt.AudioOnlyStreamInfo _bestPlayableAudio(
+    List<yt.AudioOnlyStreamInfo> tracks,
+  ) {
+    final aac = tracks
+        .where(
+          (t) =>
+              t.container.name.toLowerCase().contains('mp4') ||
+              t.codec.subtype.toLowerCase().contains('mp4'),
+        )
+        .toList();
+    final pool = aac.isNotEmpty ? aac : tracks;
+    return pool.reduce(
+      (a, b) => a.bitrate.compareTo(b.bitrate) >= 0 ? a : b,
+    );
   }
 
   /// Opens the byte stream for [target]. The caller writes it to disk and
