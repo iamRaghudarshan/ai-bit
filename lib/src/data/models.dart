@@ -243,6 +243,25 @@ class DownloadRecord {
   );
 }
 
+/// One choice in the download picker, with its real size.
+class DownloadOption {
+  const DownloadOption({
+    required this.audioOnly,
+    required this.label,
+    required this.detail,
+    required this.bytes,
+    required this.fileExtension,
+  });
+
+  final bool audioOnly;
+
+  /// `360p` or `Audio only`.
+  final String label;
+  final String detail;
+  final int bytes;
+  final String fileExtension;
+}
+
 /// A resolved, downloadable rendition. [handle] is the opaque upstream stream
 /// descriptor the repository needs to open a byte stream.
 class DownloadTarget {

@@ -37,6 +37,24 @@ Future<void> main(List<String> args) async {
         stdout.writeln('      ${text.substring(0, text.length.clamp(0, 70))}');
       }
 
+      // Replies: the token is paired positionally with the comment, so a
+      // mismatch shows up as the wrong thread rather than an error.
+      final withReplies =
+          page.comments.where((c) => c.repliesToken != null).toList();
+      stdout.writeln('  with reply tokens: ${withReplies.length}');
+      if (withReplies.isNotEmpty) {
+        final parent = withReplies.first;
+        final replies = await client.replies(parent.repliesToken!);
+        stdout.writeln('  replies to "${parent.author}" '
+            '(${parent.replyCount} expected): ${replies.length} fetched');
+        for (final r in replies.take(2)) {
+          final t = r.text.replaceAll('\n', ' ');
+          stdout.writeln('     ${r.author}: '
+              '${t.substring(0, t.length.clamp(0, 55))}');
+        }
+        if (replies.isEmpty) failures++;
+      }
+
       // Paging is the half that silently breaks: a wrong token returns the
       // same page forever, or nothing.
       if (page.hasMore) {
@@ -63,3 +81,4 @@ Future<void> main(List<String> args) async {
       : 'RESULT: $failures problems.');
   if (failures > 0) exitCode = 1;
 }
+

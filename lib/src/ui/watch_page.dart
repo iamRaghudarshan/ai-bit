@@ -17,7 +17,9 @@ import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'channel_page.dart';
 import 'widgets/comments_sheet.dart';
+import 'widgets/description_sheet.dart';
 import 'widgets/player_gestures.dart';
+import 'widgets/queue_sheet.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -90,7 +92,6 @@ class _WatchPageState extends State<WatchPage>
   late VideoBrief _video = widget.video;
   yt.Video? _details;
   List<VideoBrief> _related = const [];
-  bool _descriptionExpanded = false;
   bool _loadingDetails = true;
 
   @override
@@ -178,7 +179,6 @@ class _WatchPageState extends State<WatchPage>
       _video = video;
       _details = null;
       _related = const [];
-      _descriptionExpanded = false;
     });
     context.read<PlaybackController>().play(video);
     _loadDetails();
@@ -232,10 +232,8 @@ class _WatchPageState extends State<WatchPage>
                   _Header(
                     video: _video,
                     details: _details,
-                    expanded: _descriptionExpanded,
-                    onToggleDescription: () => setState(
-                      () => _descriptionExpanded = !_descriptionExpanded,
-                    ),
+                    onSeek: (to) =>
+                        context.read<PlaybackController>().seek(to),
                   ),
                   _PillRow(
                     video: _video,
@@ -473,14 +471,14 @@ class _Header extends StatelessWidget {
   const _Header({
     required this.video,
     required this.details,
-    required this.expanded,
-    required this.onToggleDescription,
+    required this.onSeek,
   });
 
   final VideoBrief video;
   final yt.Video? details;
-  final bool expanded;
-  final VoidCallback onToggleDescription;
+
+  /// Jumps the player to a chapter timestamp.
+  final void Function(Duration) onSeek;
 
   @override
   Widget build(BuildContext context) {
@@ -555,27 +553,39 @@ class _Header extends StatelessWidget {
           ),
           if (description.trim().isNotEmpty) ...[
             const SizedBox(height: 12),
-            InkWell(
-              onTap: onToggleDescription,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      description,
-                      maxLines: expanded ? null : 3,
-                      overflow: expanded ? null : TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(height: 1.45),
-                    ),
-                    Text(
-                      expanded ? 'Show less' : 'Show more',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+            // A card that opens a sheet, rather than expanding inline: a long
+            // description otherwise pushes the whole page out of reach.
+            Material(
+              color: theme.colorScheme.onSurface.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(12),
+              clipBehavior: Clip.antiAlias,
+              child: InkWell(
+                onTap: () => showDescriptionSheet(
+                  context,
+                  title: video.title,
+                  description: description,
+                  onSeek: onSeek,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 6),
+                      Text(
+                        '...more',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -651,10 +661,7 @@ class _PillRow extends StatelessWidget {
               } else if (isDownloading) {
                 await downloads.cancel(video.id);
               } else {
-                await downloads.enqueue(video);
-                messenger.showSnackBar(
-                  const SnackBar(content: Text('Downloading — see Library')),
-                );
+                showDownloadSheet(context, video);
               }
             },
           ),
@@ -773,6 +780,13 @@ class _ActionRow extends StatelessWidget {
             icon: Icons.picture_in_picture_alt_outlined,
             label: 'PiP',
             onTap: playback.enterPictureInPicture,
+          ),
+          _ActionChip(
+            icon: Icons.queue_music,
+            label: playback.queue.isEmpty
+                ? 'Queue'
+                : 'Queue (${playback.queue.length})',
+            onTap: () => showQueueSheet(context),
           ),
           _ActionChip(
             icon: settings.autoplayNext

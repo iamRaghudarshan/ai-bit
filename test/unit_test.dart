@@ -1,3 +1,4 @@
+import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,7 +30,10 @@ void main() {
     });
 
     test('zero-pads minutes once hours are shown', () {
-      expect(clockLabel(const Duration(hours: 1, minutes: 2, seconds: 3)), '1:02:03');
+      expect(
+        clockLabel(const Duration(hours: 1, minutes: 2, seconds: 3)),
+        '1:02:03',
+      );
     });
   });
 
@@ -88,6 +92,68 @@ void main() {
       expect(restored.viewCount, original.viewCount);
       expect(restored.uploadDate, original.uploadDate);
       expect(restored.isLive, isTrue);
+    });
+  });
+
+  group('parseChapters', () {
+    test('reads a normal chapter list', () {
+      final chapters = parseChapters('''
+Some blurb about the video.
+
+0:00 Intro
+1:30 The setup
+12:05 The payoff
+1:02:10 Outro
+''');
+      expect(chapters.length, 4);
+      expect(chapters.first.start, Duration.zero);
+      expect(chapters.first.title, 'Intro');
+      expect(chapters[2].start, const Duration(minutes: 12, seconds: 5));
+      expect(
+        chapters.last.start,
+        const Duration(hours: 1, minutes: 2, seconds: 10),
+      );
+    });
+
+    test('ignores a list that does not start at zero', () {
+      // YouTube itself refuses these, so accepting them would put a chapter
+      // track on a video that has none.
+      expect(parseChapters('1:00 A\n2:00 B\n3:00 C'), isEmpty);
+    });
+
+    test('ignores fewer than three timestamps', () {
+      expect(parseChapters('0:00 Intro\n1:00 End'), isEmpty);
+    });
+
+    test('ignores timestamps that go backwards', () {
+      // A tracklist for something else, not chapters for this video.
+      final chapters = parseChapters('0:00 A\n5:00 B\n2:00 C\n9:00 D');
+      expect(chapters.map((c) => c.title).toList(), ['A', 'B', 'D']);
+    });
+
+    test('handles bracketed and dash-separated forms', () {
+      final chapters = parseChapters(
+        '(0:00) - Start\n(0:45) - Middle\n(2:00) - End',
+      );
+      expect(chapters.length, 3);
+      expect(chapters[1].title, 'Middle');
+    });
+
+    test('returns nothing for a description with no timestamps', () {
+      expect(parseChapters('Just a normal description.'), isEmpty);
+    });
+  });
+
+  group('chapterAt', () {
+    test('finds the chapter covering a position', () {
+      final chapters = parseChapters('0:00 A\n1:00 B\n2:00 C');
+      expect(chapterAt(chapters, const Duration(seconds: 30))?.title, 'A');
+      expect(chapterAt(chapters, const Duration(seconds: 90))?.title, 'B');
+      expect(chapterAt(chapters, const Duration(minutes: 5))?.title, 'C');
+    });
+
+    test('returns null when there are no chapters', () {
+      expect(chapterAt(const [], Duration.zero), isNull);
     });
   });
 }

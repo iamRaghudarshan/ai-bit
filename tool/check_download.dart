@@ -33,7 +33,21 @@ Future<void> main(List<String> args) async {
           await yt.videos.streamsClient.getManifest(id, ytClients: [client]);
       if (audioOnly) {
         if (manifest.audioOnly.isEmpty) continue;
-        chosen = manifest.audioOnly.withHighestBitrate();
+        // Mirrors YtRepository._bestPlayableAudio: AAC-in-MP4 over the
+        // higher-bitrate Opus track, because iOS decodes neither WebM nor
+        // Opus. Using withHighestBitrate() here made this tool report a WebM
+        // download while the app correctly fetched AAC.
+        final aac = manifest.audioOnly
+            .where(
+              (t) =>
+                  t.container.name.toLowerCase().contains('mp4') ||
+                  t.codec.subtype.toLowerCase().contains('mp4'),
+            )
+            .toList();
+        final pool = aac.isNotEmpty ? aac : manifest.audioOnly.toList();
+        chosen = pool.reduce(
+          (a, b) => a.bitrate.compareTo(b.bitrate) >= 0 ? a : b,
+        );
       } else {
         final muxed = manifest.muxed.toList()
           ..sort((a, b) =>

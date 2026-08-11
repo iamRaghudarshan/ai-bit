@@ -13,6 +13,7 @@ class VideoComment {
     this.replyCount = 0,
     this.isPinned = false,
     this.isCreator = false,
+    this.repliesToken,
   });
 
   final String author;
@@ -26,6 +27,21 @@ class VideoComment {
   final int replyCount;
   final bool isPinned;
   final bool isCreator;
+
+  /// Token that fetches this comment's replies, when it has any.
+  final String? repliesToken;
+
+  VideoComment withReplies(String? token) => VideoComment(
+    author: author,
+    text: text,
+    avatarUrl: avatarUrl,
+    likeLabel: likeLabel,
+    publishedText: publishedText,
+    replyCount: replyCount,
+    isPinned: isPinned,
+    isCreator: isCreator,
+    repliesToken: token,
+  );
 }
 
 class CommentPage {
@@ -118,10 +134,21 @@ class YoutubeCommentsClient {
     final payloads = <Map<String, dynamic>>[];
     _collect(json, 'commentEntityPayload', payloads);
 
+    // Reply tokens live in a parallel list of commentRepliesRenderer blocks,
+    // in the same order as the comments themselves — the payloads carry no
+    // token of their own.
+    final replyTokens = _replyTokens(json);
+
     final comments = <VideoComment>[];
     for (final p in payloads) {
       final comment = _fromPayload(p);
-      if (comment != null) comments.add(comment);
+      if (comment == null) continue;
+      final index = comments.length;
+      comments.add(
+        comment.replyCount > 0 && index < replyTokens.length
+            ? comment.withReplies(replyTokens[index])
+            : comment,
+      );
     }
 
     // The older renderer shape, only when the new one gave nothing.
@@ -176,6 +203,30 @@ class YoutubeCommentsClient {
       publishedText: _text(r['publishedTimeText']).nullIfEmpty,
       isPinned: _text(r['pinnedCommentBadge']).isNotEmpty,
     );
+  }
+
+  /// Replies for one comment, using [VideoComment.repliesToken].
+  Future<List<VideoComment>> replies(String token) async {
+    final json = await _next({'continuation': token});
+    final payloads = <Map<String, dynamic>>[];
+    _collect(json, 'commentEntityPayload', payloads);
+    return payloads
+        .map(_fromPayload)
+        .whereType<VideoComment>()
+        .toList();
+  }
+
+  /// One token per comment that has replies, in document order.
+  static List<String> _replyTokens(Map<String, dynamic> json) {
+    final blocks = <Map<String, dynamic>>[];
+    _collect(json, 'commentRepliesRenderer', blocks);
+    final out = <String>[];
+    for (final b in blocks) {
+      final tokens = <String>[];
+      _collectStrings(b, 'token', tokens);
+      if (tokens.isNotEmpty) out.add(tokens.first);
+    }
+    return out;
   }
 
   /// Token for the comment section, taken from the *last* continuation in the

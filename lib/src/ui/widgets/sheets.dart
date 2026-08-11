@@ -7,6 +7,7 @@ import '../../data/db.dart';
 import '../../data/download_manager.dart';
 import '../../data/models.dart';
 import '../../data/settings.dart';
+import '../../data/yt_repository.dart';
 import '../../player/playback_controller.dart';
 import '../channel_page.dart';
 
@@ -265,6 +266,86 @@ Future<String?> showNewPlaylistDialog(BuildContext context, {String? initial}) {
   );
 }
 
+/// Download picker: what is available, and how big it is.
+///
+/// Sizes are fetched before anything is written, so the choice is made
+/// knowingly rather than discovered from a progress bar.
+Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
+  final repo = context.read<YtRepository>();
+  final downloads = context.read<DownloadManager>();
+
+  return showModalBottomSheet<void>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: FutureBuilder<List<DownloadOption>>(
+        future: repo.downloadOptions(video.id),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Padding(
+              padding: EdgeInsets.all(36),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          final options = snapshot.data ?? const <DownloadOption>[];
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _sheetHeader(context, 'Download'),
+              if (options.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 0, 20, 24),
+                  child: Text('Nothing downloadable for this video.'),
+                ),
+              for (final option in options)
+                ListTile(
+                  leading: Icon(
+                    option.audioOnly
+                        ? Icons.headphones_outlined
+                        : Icons.movie_outlined,
+                  ),
+                  title: Text(option.label),
+                  subtitle: Text(option.detail),
+                  trailing: Text(
+                    formatBytes(option.bytes),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  onTap: () async {
+                    Navigator.pop(sheetContext);
+                    await downloads.enqueue(video, audioOnly: option.audioOnly);
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Downloading — see You › Downloads'),
+                      ),
+                    );
+                  },
+                ),
+              // Say why there is no 720p option, rather than leaving its
+              // absence to look like an oversight.
+              if (options.any((o) => !o.audioOnly))
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                  child: Text(
+                    'YouTube only serves one combined video+audio file, and it '
+                    'is 360p. Higher quality exists solely as separate video '
+                    'and audio tracks, which cannot be saved as one playable '
+                    'file without re-encoding. Streaming is still up to 4K.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.6),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    ),
+  );
+}
+
 /// Long-press / overflow menu shared by every video tile.
 Future<void> showVideoMenu(
   BuildContext context,
@@ -319,33 +400,16 @@ Future<void> showVideoMenu(
                 Navigator.pop(sheetContext);
               },
             )
-          else ...[
+          else
             ListTile(
               leading: const Icon(Icons.download_outlined),
-              title: const Text('Download video'),
-              onTap: () async {
-                await downloads.enqueue(video);
-                if (!sheetContext.mounted) return;
+              title: const Text('Download'),
+              subtitle: const Text('Choose video or audio'),
+              onTap: () {
                 Navigator.pop(sheetContext);
-                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                  const SnackBar(content: Text('Downloading — see Library')),
-                );
+                showDownloadSheet(context, video);
               },
             ),
-            ListTile(
-              leading: const Icon(Icons.headphones_outlined),
-              title: const Text('Download audio only'),
-              subtitle: const Text('Much smaller, full audio quality'),
-              onTap: () async {
-                await downloads.enqueue(video, audioOnly: true);
-                if (!sheetContext.mounted) return;
-                Navigator.pop(sheetContext);
-                ScaffoldMessenger.of(sheetContext).showSnackBar(
-                  const SnackBar(content: Text('Downloading audio — see Library')),
-                );
-              },
-            ),
-          ],
           const Divider(height: 1),
           if (video.channelId.isNotEmpty)
             ListTile(

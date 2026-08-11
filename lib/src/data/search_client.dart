@@ -41,9 +41,45 @@ class YoutubeSearchClient {
     },
   };
 
-  /// `sp` parameter values. Same encoding YouTube uses in its own search URLs.
-  static const filterVideosOnly = 'EgIQAQ%3D%3D';
+  /// `sp` parameter values.
+  ///
+  /// Raw base64 with real `=` padding, **not** the URL-encoded `%3D` form seen
+  /// in browser address bars — these go in a JSON body, and the encoded version
+  /// silently returns an empty page.
+  static const filterVideosOnly = 'EgIQAQ==';
+
+  /// Videos under four minutes. The Shorts feed narrows further client-side.
+  static const filterShort = 'EgIYAQ==';
   static const filterByViewCount = 'CAMSAhAB';
+
+  /// Single-choice search filters, matching YouTube's own filter panel.
+  static const filters = <SearchFilterGroup>[
+    SearchFilterGroup('Sort by', [
+      SearchFilterOption('Relevance', null),
+      SearchFilterOption('Upload date', 'CAI='),
+      SearchFilterOption('View count', 'CAM='),
+      SearchFilterOption('Rating', 'CAE='),
+    ]),
+    SearchFilterGroup('Upload date', [
+      SearchFilterOption('Any time', null),
+      SearchFilterOption('Last hour', 'EgIIAQ=='),
+      SearchFilterOption('Today', 'EgIIAg=='),
+      SearchFilterOption('This week', 'EgIIAw=='),
+      SearchFilterOption('This month', 'EgIIBA=='),
+      SearchFilterOption('This year', 'EgIIBQ=='),
+    ]),
+    SearchFilterGroup('Duration', [
+      SearchFilterOption('Any', null),
+      SearchFilterOption('Under 4 minutes', 'EgIYAQ=='),
+      SearchFilterOption('Over 20 minutes', 'EgIYAg=='),
+    ]),
+    SearchFilterGroup('Type', [
+      SearchFilterOption('Video', 'EgIQAQ=='),
+      SearchFilterOption('Channel', 'EgIQAg=='),
+      SearchFilterOption('Playlist', 'EgIQAw=='),
+      SearchFilterOption('Movie', 'EgIQBA=='),
+    ]),
+  ];
 
   void close() => _http.close();
 
@@ -82,6 +118,113 @@ class YoutubeSearchClient {
       if (brief != null && seen.add(brief.id)) out.add(brief);
     }
     return out;
+  }
+
+  /// Shorts for the vertical feed.
+  ///
+  /// Shorts are not `videoRenderer`s and never appear in a normal search parse
+  /// — they come back as `shortsLockupViewModel`, which is why probing for
+  /// `videoRenderer`, `reelItemRenderer` and `lockupViewModel` all returned
+  /// zero. The duration filter is deliberately not used: it returns an empty
+  /// page for these queries, while an unfiltered search returns 30.
+  Future<List<VideoBrief>> searchShorts(String query) async {
+    final response = await _http
+        .post(
+          _endpoint,
+          headers: const {
+            'Content-Type': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': 'https://www.youtube.com',
+          },
+          body: jsonEncode({'context': _context, 'query': query}),
+        )
+        .timeout(const Duration(seconds: 20));
+
+    if (response.statusCode != 200) {
+      throw SearchException('YouTube returned HTTP ${response.statusCode}');
+    }
+
+    final json = jsonDecode(utf8.decode(response.bodyBytes));
+    final lockups = <Map<String, dynamic>>[];
+    _collectKey(json, 'shortsLockupViewModel', lockups);
+
+    final out = <VideoBrief>[];
+    final seen = <String>{};
+    for (final s in lockups) {
+      final ids = <String>[];
+      _collectStringKey(s, 'videoId', ids);
+      if (ids.isEmpty || !seen.add(ids.first)) continue;
+
+      // overlayMetadata carries the title and view count; accessibilityText is
+      // a single readable sentence used as the fallback.
+      final texts = <String>[];
+      _collectStringKey(s['overlayMetadata'], 'content', texts);
+      final title = texts.isNotEmpty
+          ? texts.first
+          : (s['accessibilityText'] as String? ?? '');
+      if (title.isEmpty) continue;
+
+      final views = texts.length > 1 ? texts[1] : '';
+
+      out.add(
+        VideoBrief(
+          id: ids.first,
+          title: title,
+          author: '',
+          channelId: '',
+          viewCount: _compact(views),
+        ),
+      );
+    }
+    return out;
+  }
+
+  static void _collectKey(
+    dynamic node,
+    String key,
+    List<Map<String, dynamic>> out,
+  ) {
+    if (node is Map) {
+      final hit = node[key];
+      if (hit is Map<String, dynamic>) out.add(hit);
+      for (final v in node.values) {
+        _collectKey(v, key, out);
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        _collectKey(v, key, out);
+      }
+    }
+  }
+
+  static void _collectStringKey(dynamic node, String key, List<String> out) {
+    if (node is Map) {
+      final v = node[key];
+      if (v is String && v.isNotEmpty) out.add(v);
+      for (final child in node.values) {
+        _collectStringKey(child, key, out);
+      }
+    } else if (node is List) {
+      for (final child in node) {
+        _collectStringKey(child, key, out);
+      }
+    }
+  }
+
+  /// `1.2M views` -> 1200000. Shorts abbreviate where search results do not.
+  static int? _compact(String label) {
+    final m = RegExp(r'([\d.,]+)\s*([KMB])?', caseSensitive: false)
+        .firstMatch(label.trim());
+    if (m == null) return null;
+    final n = double.tryParse(m.group(1)!.replaceAll(',', ''));
+    if (n == null) return null;
+    final mult = switch (m.group(2)?.toUpperCase()) {
+      'K' => 1000,
+      'M' => 1000000,
+      'B' => 1000000000,
+      _ => 1,
+    };
+    return (n * mult).round();
   }
 
   /// Walks the response for `videoRenderer` nodes wherever they sit.
@@ -190,6 +333,27 @@ class YoutubeSearchClient {
 
 extension on String {
   String? get nullIfEmpty => trim().isEmpty ? null : this;
+}
+
+/// A row in the search filter sheet.
+///
+/// Only one option per group can apply: YouTube encodes combinations into a
+/// single protobuf `sp` value, and a combined value cannot be built by
+/// concatenating the individual ones.
+class SearchFilterGroup {
+  const SearchFilterGroup(this.title, this.options);
+
+  final String title;
+  final List<SearchFilterOption> options;
+}
+
+class SearchFilterOption {
+  const SearchFilterOption(this.label, this.params);
+
+  final String label;
+
+  /// null means "no filter" — the default for that group.
+  final String? params;
 }
 
 class SearchException implements Exception {

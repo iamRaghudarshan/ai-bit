@@ -254,13 +254,54 @@ class _CommentsSheetState extends State<_CommentsSheet> {
   }
 }
 
-class _CommentRow extends StatelessWidget {
+class _CommentRow extends StatefulWidget {
   const _CommentRow({required this.comment, this.compact = false});
 
   final VideoComment comment;
 
   /// Single-line, for the collapsed preview card.
   final bool compact;
+
+  @override
+  State<_CommentRow> createState() => _CommentRowState();
+}
+
+class _CommentRowState extends State<_CommentRow> {
+  List<VideoComment>? _replies;
+  bool _loadingReplies = false;
+  bool _showReplies = false;
+
+  VideoComment get comment => widget.comment;
+  bool get compact => widget.compact;
+
+  /// Replies are a separate request, so they are fetched the first time the
+  /// thread is opened and kept afterwards.
+  Future<void> _toggleReplies() async {
+    if (_showReplies) {
+      setState(() => _showReplies = false);
+      return;
+    }
+    setState(() => _showReplies = true);
+    if (_replies != null || _loadingReplies) return;
+
+    setState(() => _loadingReplies = true);
+    try {
+      final replies = await context.read<YtRepository>().commentReplies(
+        comment.repliesToken!,
+      );
+      if (!mounted) return;
+      setState(() {
+        _replies = replies;
+        _loadingReplies = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _replies = const [];
+        _loadingReplies = false;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -342,21 +383,91 @@ class _CommentRow extends StatelessWidget {
                       const SizedBox(width: 16),
                       Icon(Icons.thumb_down_outlined, size: 14, color: muted),
                       if (comment.replyCount > 0) ...[
-                        const SizedBox(width: 16),
-                        Text(
-                          '${comment.replyCount} replies',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 11,
-                            color: theme.colorScheme.primary,
+                        const SizedBox(width: 12),
+                        InkWell(
+                          onTap: comment.repliesToken == null
+                              ? null
+                              : _toggleReplies,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 3,
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _showReplies
+                                      ? Icons.expand_less
+                                      : Icons.expand_more,
+                                  size: 15,
+                                  color: theme.colorScheme.primary,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(
+                                  '${comment.replyCount} replies',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ],
                     ],
                   ),
+                  if (_showReplies) _buildReplies(theme),
                 ],
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  /// Replies, indented under the comment they belong to.
+  Widget _buildReplies(ThemeData theme) {
+    if (_loadingReplies) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(0, 10, 0, 4),
+        child: SizedBox(
+          width: 16,
+          height: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    final replies = _replies ?? const <VideoComment>[];
+    if (replies.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 8),
+        child: Text(
+          'No replies could be loaded.',
+          style: theme.textTheme.bodySmall?.copyWith(fontSize: 11),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, left: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final reply in replies)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _CommentRow(comment: reply),
+            ),
+          if (replies.length < widget.comment.replyCount)
+            Text(
+              'Showing ${replies.length} of ${widget.comment.replyCount}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 10,
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+              ),
+            ),
         ],
       ),
     );

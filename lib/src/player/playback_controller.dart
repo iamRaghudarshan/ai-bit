@@ -439,6 +439,32 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Moves a queued video.
+  ///
+  /// Used with `onReorderItem`, which already accounts for the removal, so
+  /// [newIndex] is the final position and needs no adjustment.
+  void reorderQueue(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _queue.length) return;
+    final video = _queue.removeAt(oldIndex);
+    _queue.insert(newIndex.clamp(0, _queue.length), video);
+    notifyListeners();
+  }
+
+  void removeFromQueue(int index) {
+    if (index < 0 || index >= _queue.length) return;
+    _queue.removeAt(index);
+    notifyListeners();
+  }
+
+  /// Jumps straight to a queued video, dropping everything before it — the
+  /// entries you skipped past are not ones you want played next.
+  Future<void> playFromQueue(int index) async {
+    if (index < 0 || index >= _queue.length) return;
+    final video = _queue[index];
+    final rest = _queue.skip(index + 1).toList();
+    await play(video, upNext: rest);
+  }
+
   /// Decides what follows a finished video: repeat it, advance the queue, or
   /// wrap the queue around.
   Future<void> _onFinished() async {

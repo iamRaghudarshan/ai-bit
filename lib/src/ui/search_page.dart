@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../data/db.dart';
 import '../data/models.dart';
+import '../data/search_client.dart';
 import '../data/yt_repository.dart';
 import 'playlist_page.dart';
 import 'watch_page.dart';
@@ -29,6 +30,22 @@ class SearchPageState extends State<SearchPage> {
   List<VideoBrief> _results = const [];
   bool _searching = false;
   String? _error;
+
+  /// Chosen filter per group title; null entries mean "no filter".
+  final Map<String, SearchFilterOption> _filters = {};
+
+  String? get _filterParams {
+    // Only one `sp` value can be sent, so the most specific chosen filter
+    // wins — combining them needs a protobuf YouTube builds server-side.
+    for (final group in YoutubeSearchClient.filters) {
+      final chosen = _filters[group.title];
+      if (chosen?.params != null) return chosen!.params;
+    }
+    return null;
+  }
+
+  int get _activeFilterCount =>
+      _filters.values.where((o) => o.params != null).length;
 
   /// Called by the shell when the Search tab is selected. Focus cannot be
   /// requested in initState: every tab of an IndexedStack is built at startup,
@@ -79,7 +96,10 @@ class SearchPageState extends State<SearchPage> {
     if (query.trim().isEmpty) return;
     if (showSpinner && mounted) setState(() => _searching = true);
     try {
-      final results = await context.read<YtRepository>().search(query);
+      final results = await context.read<YtRepository>().search(
+        query,
+        params: _filterParams,
+      );
       if (!mounted || _controller.text.trim() != query.trim()) return;
       // Only remember searches that found something — a typo that returned
       // nothing should not shape the home feed.
@@ -149,6 +169,86 @@ class SearchPageState extends State<SearchPage> {
     _submit(suggestion);
   }
 
+  Future<void> _showFilters() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Search filters',
+                        style: Theme.of(sheetContext).textTheme.titleMedium,
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () {
+                          setSheetState(_filters.clear);
+                          setState(() {});
+                        },
+                        child: const Text('Clear'),
+                      ),
+                    ],
+                  ),
+                ),
+                for (final group in YoutubeSearchClient.filters) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 12, 20, 6),
+                    child: Text(
+                      group.title.toUpperCase(),
+                      style: Theme.of(sheetContext).textTheme.labelSmall
+                          ?.copyWith(letterSpacing: 1),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final option in group.options)
+                          ChoiceChip(
+                            label: Text(option.label),
+                            selected: _filters[group.title]?.label ==
+                                    option.label ||
+                                (_filters[group.title] == null &&
+                                    option.params == null),
+                            showCheckmark: false,
+                            onSelected: (_) {
+                              setSheetState(() {
+                                if (option.params == null) {
+                                  _filters.remove(group.title);
+                                } else {
+                                  _filters[group.title] = option;
+                                }
+                              });
+                              setState(() {});
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 20),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    // Re-run with whatever the sheet left selected.
+    if (_controller.text.trim().isNotEmpty) {
+      await _runSearch(_controller.text);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasText = _controller.text.trim().isNotEmpty;
@@ -166,6 +266,17 @@ class SearchPageState extends State<SearchPage> {
               )
             : null,
         automaticallyImplyLeading: false,
+        actions: [
+          IconButton(
+            icon: Badge(
+              isLabelVisible: _activeFilterCount > 0,
+              label: Text('$_activeFilterCount'),
+              child: const Icon(Icons.tune),
+            ),
+            tooltip: 'Filters',
+            onPressed: _showFilters,
+          ),
+        ],
         title: TextField(
           controller: _controller,
           focusNode: _focus,

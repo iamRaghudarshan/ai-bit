@@ -46,7 +46,22 @@ class _HomePageState extends State<HomePage>
     });
     try {
       final repo = context.read<YtRepository>();
-      // A chosen category is a topic search; "All" is the personalised feed.
+
+      // Trending is the closest thing available without the official Data API:
+      // several popular topics, each sorted by view count, interleaved.
+      if (_category == _CategoryChips.trending) {
+        final feed = await repo.trending(refreshToken: _refreshToken);
+        if (!mounted) return;
+        setState(() {
+          _feed = feed;
+          _loading = false;
+          _error = feed.isEmpty ? 'Nothing trending came back.' : null;
+        });
+        return;
+      }
+
+      // Any other chosen category is a topic search; "All" is the
+      // personalised feed.
       if (_category != _CategoryChips.all) {
         final feed = await repo.search(_category, sortByViews: true);
         if (!mounted) return;
@@ -177,8 +192,10 @@ class _CategoryChips extends StatelessWidget {
   const _CategoryChips({required this.selected, required this.onSelected});
 
   static const all = 'All';
+  static const trending = 'Trending';
   static const _categories = [
     all,
+    trending,
     'Music',
     'Gaming',
     'News',

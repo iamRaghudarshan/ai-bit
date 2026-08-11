@@ -113,12 +113,72 @@ class YtRepository {
 
   /// Most-viewed videos across a rotating topic — the closest thing to a
   /// "Trending" tab available without the official Data API.
-  Future<List<VideoBrief>> trending({int refreshToken = 0}) =>
-      search(_rotate(_coldStartTopics, refreshToken).first, sortByViews: true);
+  Future<List<VideoBrief>> trending({int refreshToken = 0}) async {
+    if (isPreview) return _previewRows(refreshToken);
+    final topics = _rotate(_coldStartTopics, refreshToken);
+    final results = await Future.wait(
+      topics.take(3).map((t) => _safe(() => search(t, sortByViews: true))),
+    );
+    return _interleave(results);
+  }
+
+  /// Vertical-video feed for the Shorts tab.
+  ///
+  /// YouTube exposes no Shorts feed this app can reach: the channel Shorts tab
+  /// returns nothing, and search yields no `reelItemRenderer`. Shorts do come
+  /// back from an ordinary search — as `shortsLockupViewModel`, a renderer
+  /// nothing else here parses — so the feed is assembled from several topic
+  /// searches, led by whatever the user has been searching for.
+  ///
+  /// The selection is therefore ours rather than YouTube's algorithm. It is
+  /// shuffled so the tab is not identical on every visit.
+  Future<List<VideoBrief>> shortsFeed({
+    List<String> searches = const [],
+    int refreshToken = 0,
+  }) async {
+    if (isPreview) return _previewRows(refreshToken);
+
+    // Lead with the user's own interests, then broad topics.
+    final topics = <String>[
+      ...searches.take(2),
+      ..._rotate(_shortsTopics, refreshToken).take(3),
+    ];
+
+    final results = await Future.wait(
+      topics.map((t) => _safeShorts(() => _search.searchShorts('$t shorts'))),
+    );
+    return _interleave(results)..shuffle();
+  }
+
+  Future<List<VideoBrief>> _safeShorts(
+    Future<List<VideoBrief>> Function() task,
+  ) async {
+    try {
+      return await task();
+    } catch (e) {
+      debugPrint('AI BIT: shorts section failed — $e');
+      return const [];
+    }
+  }
+
+  static const _shortsTopics = [
+    'funny',
+    'satisfying',
+    'life hack',
+    'football',
+    'cooking',
+    'dance',
+    'animals',
+    'science',
+  ];
 
   // ---------------------------------------------------------------- search
 
-  Future<List<VideoBrief>> search(String query, {bool sortByViews = false}) async {
+  Future<List<VideoBrief>> search(
+    String query, {
+    bool sortByViews = false,
+    String? params,
+  }) async {
     if (isPreview) {
       // Only ever real matches against the sample set. Returning everything on
       // a miss made search look like it was ignoring the query.
@@ -136,9 +196,10 @@ class YtRepository {
     // package's own parser cannot read YouTube's current search response.
     return _search.search(
       query,
-      params: sortByViews
-          ? YoutubeSearchClient.filterByViewCount
-          : YoutubeSearchClient.filterVideosOnly,
+      params: params ??
+          (sortByViews
+              ? YoutubeSearchClient.filterByViewCount
+              : YoutubeSearchClient.filterVideosOnly),
     );
   }
 
@@ -232,6 +293,10 @@ class YtRepository {
   /// A further page, using [CommentPage.continuation].
   Future<CommentPage> moreComments(String continuation) =>
       _comments.more(continuation);
+
+  /// Replies to one comment.
+  Future<List<VideoComment>> commentReplies(String token) =>
+      _comments.replies(token);
 
   /// Playlists published by a channel.
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) =>
@@ -460,6 +525,47 @@ class YtRepository {
     return pool.reduce(
       (a, b) => a.bitrate.compareTo(b.bitrate) >= 0 ? a : b,
     );
+  }
+
+  /// What can actually be downloaded for [videoId], with real sizes.
+  ///
+  /// Both are resolved together so the picker can show sizes before the user
+  /// commits, rather than after a transfer has started.
+  ///
+  /// There is no HD option, and that is a YouTube constraint rather than a
+  /// missing feature: the only single-file video stream still served is the
+  /// legacy 360p MP4. Everything above it exists solely as separate video-only
+  /// and audio-only tracks, or as MPEG-TS HLS segments that iOS will not play
+  /// from disk — both need a muxer to become a playable file. Streaming is
+  /// unaffected and still goes to 2160p.
+  Future<List<DownloadOption>> downloadOptions(String videoId) async {
+    final results = await Future.wait([
+      _optionOrNull(videoId, audioOnly: false),
+      _optionOrNull(videoId, audioOnly: true),
+    ]);
+    return results.whereType<DownloadOption>().toList();
+  }
+
+  Future<DownloadOption?> _optionOrNull(
+    String videoId, {
+    required bool audioOnly,
+  }) async {
+    try {
+      final target = await downloadTarget(videoId, audioOnly: audioOnly);
+      return DownloadOption(
+        audioOnly: audioOnly,
+        label: audioOnly ? 'Audio only' : target.quality,
+        detail: audioOnly
+            ? 'Best audio, no video'
+            : 'Video with sound',
+        bytes: target.totalBytes,
+        fileExtension: target.fileExtension,
+      );
+    } catch (e) {
+      debugPrint('AI BIT: no ${audioOnly ? 'audio' : 'video'} download for '
+          '$videoId — $e');
+      return null;
+    }
   }
 
   /// Opens the byte stream for [target]. The caller writes it to disk and

@@ -3,14 +3,13 @@ import 'package:flutter/material.dart';
 import 'home_page.dart';
 import 'library_page.dart';
 import 'search_page.dart';
+import 'shorts_page.dart';
 import 'subscriptions_page.dart';
 import 'widgets/mini_player.dart';
 
-/// Bottom-nav shell.
-///
-/// Four destinations rather than YouTube's five: theirs includes a Shorts tab
-/// and a create (+) button. Shorts is not built yet, and there is nothing to
-/// upload to without an account, so a button for it would be decoration.
+/// Bottom-nav shell, matching YouTube's five destinations with one swap:
+/// theirs has a create (+) button in the middle, which needs an account to
+/// upload to, so Search takes that slot instead.
 ///
 /// Tabs are kept alive in an [IndexedStack] so switching away from the feed and
 /// back does not refetch it.
@@ -25,31 +24,45 @@ class _RootShellState extends State<RootShell> {
   final _libraryKey = GlobalKey<LibraryPageState>();
   final _searchKey = GlobalKey<SearchPageState>();
   final _subsKey = GlobalKey<SubscriptionsPageState>();
+  final _shortsKey = GlobalKey<ShortsPageState>();
   int _index = 0;
 
   void _onTabSelected(int index) {
+    final previous = _index;
     setState(() => _index = index);
+
+    // Shorts autoplays, so leaving the tab has to stop it — otherwise a Short
+    // keeps playing underneath the Home feed.
+    if (previous == 1 && index != 1) _shortsKey.currentState?.onTabClosed();
+
     // Tabs are kept alive, so their initState only ever runs once — anything
     // that should happen "on arrival" has to be driven from here.
     switch (index) {
       case 1:
-        _searchKey.currentState?.focusInput();
+        // Shorts loads nothing until first visited: fetching a feed nobody has
+        // opened wastes a request on every cold start.
+        _shortsKey.currentState?.onTabOpened();
       case 2:
-        // A subscription may have been added from a channel page since the
-        // last visit.
-        _subsKey.currentState?.reload();
+        _searchKey.currentState?.focusInput();
       case 3:
+        _subsKey.currentState?.reload();
+      case 4:
         _libraryKey.currentState?.reload();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Shorts is full-bleed and has its own controls; the mini player would sit
+    // on top of its action rail.
+    final isShorts = _index == 1;
+
     return Scaffold(
       body: IndexedStack(
         index: _index,
         children: [
           const HomePage(),
+          ShortsPage(key: _shortsKey),
           SearchPage(key: _searchKey),
           SubscriptionsPage(key: _subsKey),
           LibraryPage(key: _libraryKey),
@@ -58,7 +71,7 @@ class _RootShellState extends State<RootShell> {
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const MiniPlayer(),
+          if (!isShorts) const MiniPlayer(),
           const Divider(height: 1),
           NavigationBar(
             selectedIndex: _index,
@@ -70,6 +83,11 @@ class _RootShellState extends State<RootShell> {
                 label: 'Home',
               ),
               NavigationDestination(
+                icon: Icon(Icons.smart_display_outlined),
+                selectedIcon: Icon(Icons.smart_display),
+                label: 'Shorts',
+              ),
+              NavigationDestination(
                 icon: Icon(Icons.search_outlined),
                 selectedIcon: Icon(Icons.search),
                 label: 'Search',
@@ -77,7 +95,7 @@ class _RootShellState extends State<RootShell> {
               NavigationDestination(
                 icon: Icon(Icons.subscriptions_outlined),
                 selectedIcon: Icon(Icons.subscriptions),
-                label: 'Subscriptions',
+                label: 'Subs',
               ),
               NavigationDestination(
                 icon: Icon(Icons.video_library_outlined),
