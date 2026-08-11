@@ -188,7 +188,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       final offlinePath = await _offlineFile(video.id);
       final sources = offlinePath != null
           ? PlaybackSources(url: offlinePath, qualities: const {})
-          : await _repo.resolve(video.id, audioOnly: _config.audioOnly);
+          // Resolved in full even in audio mode.
+          //
+          // Asking the repository for audio-only handed back the bare
+          // googlevideo audio URL as the only source — no HLS ladder, no
+          // progressive file. AVURLAsset works out its format from the path
+          // extension and that URL has none, so AVPlayer failed the load
+          // outright: "Failed to load video: unknown error". Every later fix
+          // was operating on sources that had already been narrowed to the one
+          // URL that cannot play.
+          //
+          // Audio mode is a player-side concern: same stream as video, lowest
+          // rendition, picture covered.
+          : await _repo.resolve(video.id);
       _sources = sources;
       _isOffline = offlinePath != null;
       final resumeAt = await _db.resumePosition(video.id);
@@ -816,69 +828,37 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Swaps to the audio-only rendition while nothing can be seen.
+  /// Drops to the smallest rendition while nothing can be seen.
   ///
-  /// Video is roughly ten times the data of audio, and none of it is being
-  /// looked at behind a locked screen. Position is carried across so the swap
-  /// is inaudible.
+  /// Video is many times the data of audio and none of it is being looked at
+  /// behind a locked screen.
+  ///
+  /// This used to swap the source to the bare audio URL, which does not load
+  /// at all — AVURLAsset identifies a stream by its path extension and a
+  /// googlevideo audio URL has none, so locking the screen tore down working
+  /// playback and replaced it with a failure. Selecting a lower rung of the
+  /// ladder already loaded costs nearly as little, and playback never stops:
+  /// there is no reload, no gap and no position to restore.
   Future<void> _dropVideoTrack() async {
     if (!_config.audioOnlyWhenLocked || _droppedVideo) return;
-    if (_config.audioOnly) return; // already audio by choice
+    if (_config.audioOnly) return; // already at the lowest rung by choice
     final player = _player;
-    final sources = _sources;
-    final video = _current;
-    if (player == null || sources == null || video == null) return;
+    if (player == null || _current == null) return;
     if (_isOffline) return; // a local file costs no data
-    final audioUrl = sources.audioOnlyUrl;
-    if (audioUrl == null) return;
+    if (player.betterPlayerAsmsTracks.isEmpty) return; // nothing to step down
     if (!(player.isPlaying() ?? false)) return;
 
-    final resumeAt = _position;
     _droppedVideo = true;
-    await _swapSource(video, audioUrl, resumeAt: resumeAt, isHls: false);
+    await _applyQuality(_lowestQuality);
   }
 
+  /// Puts the chosen quality back on unlock. Also a track selection, so the
+  /// picture returns without interrupting the audio.
   Future<void> _restoreVideoTrack() async {
     if (!_droppedVideo) return;
-    final player = _player;
-    final sources = _sources;
-    final video = _current;
     _droppedVideo = false;
-    if (player == null || sources == null || video == null) return;
-
-    final wasPlaying = player.isPlaying() ?? false;
-    await _swapSource(
-      video,
-      _preferredUrl(sources),
-      resumeAt: _position,
-      isHls: sources.isHls,
-      autoPlay: wasPlaying,
-    );
-  }
-
-  /// Re-points the existing player at a different URL for the same video,
-  /// preserving position. Cheaper and less jarring than a full [play].
-  Future<void> _swapSource(
-    VideoBrief video,
-    String url, {
-    required Duration resumeAt,
-    required bool isHls,
-    bool autoPlay = true,
-  }) async {
-    final player = _player;
-    if (player == null) return;
-    try {
-      await player.setupDataSource(_dataSource(video, url, isHls: isHls));
-      // Live has no meaningful position to restore — it always resumes at the
-      // edge, and seeking backwards into a live window is not wanted here.
-      if (!(_sources?.isLive ?? false) && resumeAt > const Duration(seconds: 2)) {
-        await player.seekTo(resumeAt);
-      }
-      if (autoPlay) await player.play();
-      await player.setSpeed(_config.playbackSpeed);
-    } catch (e) {
-      debugPrint('AI BIT: track swap failed — $e');
-    }
+    if (_player == null || _current == null) return;
+    await _applyQuality(_config.preferredQuality);
   }
 
   // --------------------------------------------------------- sleep timer
