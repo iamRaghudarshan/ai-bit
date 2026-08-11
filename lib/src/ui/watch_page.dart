@@ -641,7 +641,11 @@ class _Header extends StatelessWidget {
             metaLine([
               if (video.viewCount != null) '${compactCount(video.viewCount)} views',
               if (likes != null) '${compactCount(likes)} likes',
-              timeAgo(video.uploadDate, raw: video.uploadRaw),
+              // Full date here rather than "3 days ago": the watch page is
+              // where the exact upload time is actually wanted.
+              formatDateTime(video.uploadDate).isNotEmpty
+                  ? formatDateTime(video.uploadDate)
+                  : timeAgo(video.uploadDate, raw: video.uploadRaw),
             ]),
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurface.withValues(alpha: 0.6),

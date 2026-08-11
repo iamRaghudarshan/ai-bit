@@ -106,7 +106,7 @@ class SettingsPage extends StatelessWidget {
     final playback = context.read<PlaybackController>();
     final options = <String>{
       SettingsService.autoQuality,
-      ...playback.qualities.keys,
+      ...playback.qualities,
       if (playback.qualities.isEmpty) ...['1080p', '720p', '480p', '360p'],
     }.toList();
 

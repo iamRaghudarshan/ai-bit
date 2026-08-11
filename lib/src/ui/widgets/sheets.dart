@@ -101,7 +101,7 @@ Future<void> showSleepTimerSheet(BuildContext context) {
 Future<void> showQualitySheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   final settings = context.read<SettingsService>();
-  final options = [SettingsService.autoQuality, ...playback.qualities.keys];
+  final options = [SettingsService.autoQuality, ...playback.qualities];
   return showModalBottomSheet<void>(
     context: context,
     builder: (context) => SafeArea(
@@ -120,6 +120,11 @@ Future<void> showQualitySheet(BuildContext context) {
               title: Text(label),
               trailing: settings.preferredQuality == label
                   ? const Icon(Icons.check)
+                  : (playback.activeQuality == label
+                        ? const Icon(Icons.play_arrow, size: 18)
+                        : null),
+              subtitle: label == SettingsService.autoQuality
+                  ? const Text('Adjusts to your connection')
                   : null,
               onTap: () {
                 playback.setQuality(label);

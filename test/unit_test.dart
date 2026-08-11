@@ -156,4 +156,42 @@ Some blurb about the video.
       expect(chapterAt(const [], Duration.zero), isNull);
     });
   });
+
+  group('formatDateTime', () {
+    test('renders dd-MM-yyyy with a 12-hour clock', () {
+      expect(
+        formatDateTime(DateTime(2026, 8, 5, 15, 56)),
+        '05-08-2026 03:56 PM',
+      );
+      expect(
+        formatDateTime(DateTime(2026, 12, 25, 9, 5)),
+        '25-12-2026 09:05 AM',
+      );
+    });
+
+    test('renders both midnights as 12, not 00', () {
+      expect(formatDateTime(DateTime(2026, 1, 1, 0, 30)), '01-01-2026 12:30 AM');
+      expect(formatDateTime(DateTime(2026, 1, 1, 12, 30)), '01-01-2026 12:30 PM');
+    });
+
+    test('is empty for a missing date', () {
+      expect(formatDateTime(null), '');
+    });
+  });
+
+  group('timeAgo', () {
+    test('passes through a human phrase', () {
+      expect(timeAgo(null, raw: '3 days ago'), '3 days ago');
+    });
+
+    test('never prints a raw ISO timestamp', () {
+      // This is what showed on the watch page as
+      // "2026-08-05 15:56:39.000Z" instead of anything readable.
+      final result = timeAgo(
+        DateTime.now().subtract(const Duration(days: 2)),
+        raw: '2026-08-05 15:56:39.000Z',
+      );
+      expect(result, '2 days ago');
+    });
+  });
 }

@@ -50,7 +50,30 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   List<VideoBrief> get queue => List.unmodifiable(_queue);
 
   PlaybackSources? _sources;
-  Map<String, String> get qualities => _sources?.qualities ?? const {};
+
+  /// Selectable qualities, best first.
+  ///
+  /// With HLS the renditions are not URLs we hold — better_player parses the
+  /// ladder off the manifest into tracks. Reading `_sources.qualities` alone
+  /// left the picker showing nothing but "Auto" on every HD video, because the
+  /// HLS path deliberately stores an empty map.
+  List<String> get qualities {
+    final tracks = _player?.betterPlayerAsmsTracks ?? const [];
+    final heights = tracks
+        .map((t) => t.height ?? 0)
+        .where((h) => h > 0)
+        .toSet()
+        .toList()
+      ..sort((a, b) => b.compareTo(a));
+    if (heights.isNotEmpty) return heights.map((h) => '${h}p').toList();
+    return _sources?.qualities.keys.toList() ?? const [];
+  }
+
+  /// The rendition actually playing, or null while on Auto.
+  String? get activeQuality {
+    final height = _player?.betterPlayerAsmsTrack?.height ?? 0;
+    return height > 0 ? '${height}p' : null;
+  }
 
   bool _isOffline = false;
 
@@ -156,9 +179,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     } catch (e) {
       _loading = false;
+      // Always carry the real reason. A generic "check your connection" sent
+      // three rounds of debugging in the wrong direction while the connection
+      // was fine.
       _error = e is StreamResolutionException
           ? e.toString()
-          : 'Could not start playback. Check your connection and try again.';
+          : 'Could not start playback: $e';
       notifyListeners();
     }
   }
@@ -188,6 +214,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _player!.videoPlayerController?.removeListener(_onValueChanged);
     _player!.videoPlayerController?.addListener(_onValueChanged);
     await _player!.setSpeed(_config.playbackSpeed);
+
+    // Carry the chosen quality across videos. The tracks only exist once the
+    // manifest has been read, so this waits for them rather than firing at
+    // setup and finding an empty list.
+    unawaited(_applyPreferredQualityWhenReady());
   }
 
   /// Builds the data source for one URL of [video]. Shared by the initial load
@@ -202,7 +233,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           ? BetterPlayerDataSourceType.file
           : BetterPlayerDataSourceType.network,
       url,
-      liveStream: (_sources?.isLive ?? false) || video.isLive,
+      // Audio-only is never live: the audio track is a finite file even for a
+      // live video, and declaring it live gives the player an item with no
+      // duration to seek in.
+      liveStream: !isAudioOnly &&
+          ((_sources?.isLive ?? false) || video.isLive),
       // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
       // without the hint AVPlayer guesses from the path and gets it wrong.
       videoFormat: isHls ? BetterPlayerVideoFormat.hls : null,
@@ -255,6 +290,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final path = await _db.completedDownloadPath(videoId);
     if (path == null) return null;
     return await File(path).exists() ? path : null;
+  }
+
+  /// Waits briefly for the HLS ladder, then applies the saved quality.
+  Future<void> _applyPreferredQualityWhenReady() async {
+    final wanted = _config.preferredQuality;
+    if (wanted == SettingsService.autoQuality) return;
+
+    for (var attempt = 0; attempt < 10; attempt++) {
+      if ((_player?.betterPlayerAsmsTracks.isNotEmpty ?? false)) {
+        await _applyQuality(wanted);
+        notifyListeners();
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
   }
 
   String _preferredUrl(PlaybackSources sources) {
@@ -351,18 +401,46 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Switches rendition. [label] must be a key of [qualities], or
-  /// [SettingsService.autoQuality] to go back to the default ladder.
+  /// Switches rendition, and remembers the choice so every later video opens
+  /// at the same quality rather than reverting to Auto.
   Future<void> setQuality(String label) async {
-    final sources = _sources;
-    if (sources == null) return;
     _config.preferredQuality = label;
-    final url = label == SettingsService.autoQuality
-        ? sources.url
-        : sources.qualities[label];
-    if (url == null) return;
-    await _player?.setResolution(url);
+    await _applyQuality(label);
     notifyListeners();
+  }
+
+  /// Applies [label] to whatever is loaded now.
+  ///
+  /// HLS renditions are switched by selecting a track; a progressive source has
+  /// separate URLs per quality instead.
+  Future<void> _applyQuality(String label) async {
+    final player = _player;
+    if (player == null) return;
+
+    if (label == SettingsService.autoQuality) {
+      // An empty default track hands the choice back to the bitrate ladder.
+      if (player.betterPlayerAsmsTracks.isNotEmpty) {
+        await player.setTrack(BetterPlayerAsmsTrack.defaultTrack());
+      }
+      return;
+    }
+
+    final wanted = int.tryParse(label.replaceAll(RegExp('[^0-9]'), ''));
+    if (wanted != null && player.betterPlayerAsmsTracks.isNotEmpty) {
+      // Nearest at or below the request, so asking for 1080p on a video that
+      // tops out at 720p plays 720p rather than silently doing nothing.
+      final candidates = player.betterPlayerAsmsTracks
+          .where((t) => (t.height ?? 0) > 0 && (t.height ?? 0) <= wanted)
+          .toList()
+        ..sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
+      if (candidates.isNotEmpty) {
+        await player.setTrack(candidates.first);
+        return;
+      }
+    }
+
+    final url = _sources?.qualities[label];
+    if (url != null) await player.setResolution(url);
   }
 
   /// Re-resolves the current video after an audio-only toggle, keeping the

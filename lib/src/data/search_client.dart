@@ -256,9 +256,12 @@ class YoutubeSearchClient {
     final title = _text(r['title']);
     if (title.isEmpty) return null;
 
-    final isLive =
-        _text(r['badges']).toLowerCase().contains('live') ||
-        (r['thumbnailOverlays']?.toString().contains('LIVE') ?? false);
+    // Matching 'LIVE' anywhere in the stringified overlays was far too loose:
+    // it fires on unrelated style enums, so ordinary videos were marked live.
+    // A live video is then handed to the player as a live stream, which has no
+    // duration and cannot be seeked -- and setting up an audio-only source that
+    // way threw, which is what "Could not start playback" was.
+    final isLive = _isLiveBadge(r);
 
     return VideoBrief(
       id: id,
@@ -305,6 +308,19 @@ class YoutubeSearchClient {
       return buffer.toString();
     }
     return '';
+  }
+
+  /// True only when YouTube actually says the video is live.
+  static bool _isLiveBadge(Map<String, dynamic> r) {
+    final badges = <String>[];
+    _collectStringKey(r['badges'], 'style', badges);
+    _collectStringKey(r['badges'], 'label', badges);
+    if (badges.any((b) => b.toUpperCase().contains('LIVE_NOW'))) return true;
+
+    // The overlay carries an explicit style rather than free text.
+    final styles = <String>[];
+    _collectStringKey(r['thumbnailOverlays'], 'style', styles);
+    return styles.any((s) => s.toUpperCase() == 'LIVE');
   }
 
   static String? _channelId(Map<String, dynamic> r) {

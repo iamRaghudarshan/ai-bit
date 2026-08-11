@@ -32,7 +32,12 @@ String clockLabel(Duration? d) {
 /// `2 days ago`. YouTube already hands us a pre-rendered string for search
 /// results (`uploadDateRaw`), so prefer that when present.
 String timeAgo(DateTime? date, {String? raw}) {
-  if (raw != null && raw.isNotEmpty && raw != 'null') return raw;
+  // YouTube's "raw" field is sometimes a relative phrase ("2 days ago") and
+  // sometimes a raw ISO timestamp, which was being printed verbatim as
+  // "2026-08-05 15:56:39.000Z". Only pass through the human wording.
+  if (raw != null && raw.isNotEmpty && raw != 'null' && !_looksLikeTimestamp(raw)) {
+    return raw;
+  }
   if (date == null) return '';
   final diff = DateTime.now().difference(date);
   if (diff.inDays >= 365) return _plural(diff.inDays ~/ 365, 'year');
@@ -45,6 +50,22 @@ String timeAgo(DateTime? date, {String? raw}) {
 }
 
 String _plural(int n, String unit) => '$n ${n == 1 ? unit : '${unit}s'} ago';
+
+bool _looksLikeTimestamp(String value) =>
+    RegExp(r'^\d{4}-\d{2}-\d{2}').hasMatch(value.trim());
+
+/// `05-08-2026 03:56 PM` — the format asked for, and unambiguous in a way
+/// `08/05/2026` is not.
+String formatDateTime(DateTime? date) {
+  if (date == null) return '';
+  final local = date.toLocal();
+  final hour24 = local.hour;
+  final hour = hour24 % 12 == 0 ? 12 : hour24 % 12;
+  final period = hour24 < 12 ? 'AM' : 'PM';
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(local.day)}-${two(local.month)}-${local.year} '
+      '${two(hour)}:${two(local.minute)} $period';
+}
 
 /// Joins the non-empty parts of a metadata line with the usual dot separator.
 String metaLine(Iterable<String> parts) =>
