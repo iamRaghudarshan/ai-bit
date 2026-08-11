@@ -43,8 +43,9 @@ class SettingsPage extends StatelessWidget {
             value: settings.audioOnlyWhenLocked,
             title: const Text('Drop video when the screen is off'),
             subtitle: const Text(
-              'Switches to the audio track on lock and back to video on unlock, '
-              'keeping your place. Cuts data use by roughly ten times.',
+              'Drops to the smallest size while the screen is off and restores '
+              'it on unlock, without interrupting playback. Videos offered in '
+              'only one size are unaffected.',
             ),
             onChanged: (value) => settings.audioOnlyWhenLocked = value,
           ),

@@ -366,7 +366,6 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     VideoBrief video,
     String url, {
     required bool isHls,
-    String? extensionOverride,
   }) {
     return BetterPlayerDataSource(
       _isOffline
@@ -389,8 +388,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // claiming 'm4a' would have told ExoPlayer to expect the wrong container.
       videoExtension: isHls
           ? null
-          : (extensionOverride ??
-              (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4')),
+          : (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4'),
       // Let better_player read the ladder's variants off the manifest, which is
       // what puts real quality and subtitle options in the overflow menu.
       useAsmsTracks: isHls,
@@ -961,12 +959,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
-      // `inactive` fires while the app is still allowed to act; `paused` fires
-      // once it is already backgrounded, where starting playback is restricted.
-      // Swapping on `paused` was too late, which is why background audio
-      // stopped rather than continuing.
-      case AppLifecycleState.inactive:
+      // Not `inactive`. That fires for anything that merely covers the app —
+      // a notification banner, Control Centre, the app switcher — and dropping
+      // the rendition for each of them made the picture visibly churn between
+      // sizes during ordinary use. `hidden` and `paused` mean the app really
+      // has gone away.
+      //
+      // This used to need `inactive` because it swapped the data source, which
+      // has to happen while the app can still act. It is a track selection
+      // now, and those are fine once backgrounded.
       case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
         unawaited(_dropVideoTrack());
       case AppLifecycleState.resumed:
         unawaited(_restoreVideoTrack());
@@ -990,50 +993,25 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (!_config.audioOnlyWhenLocked || _droppedVideo) return;
     if (_config.audioOnly) return; // already at the lowest rung by choice
     final player = _player;
-    final video = _current;
-    if (player == null || video == null) return;
+    if (player == null || _current == null) return;
     if (_isOffline) return; // a local file costs no data
+
+    // Only ever a track selection, never a new data source.
+    //
+    // Swapping the source here rebuilt the player, and this fires on far more
+    // than a locked screen — the app switcher, Control Centre, even a
+    // notification banner all raise `inactive`. Minimising the app therefore
+    // stopped playback and came back at zero, which is the one thing this app
+    // exists to avoid. Selecting a lower rung costs nothing and never
+    // interrupts.
+    //
+    // Videos with no ladder simply keep playing at full size. No saving is
+    // worth losing background playback over.
+    if (player.betterPlayerAsmsTracks.isEmpty) return;
     if (!(player.isPlaying() ?? false)) return;
 
-    // With a ladder, step down it: cheap and playback never stops.
-    if (player.betterPlayerAsmsTracks.isNotEmpty) {
-      _droppedVideo = true;
-      await _applyQuality(_lowestQuality);
-      return;
-    }
-
-    // Without one, the muxed file is the only video source and stepping down
-    // is not possible — so the audio track is the only way to save anything,
-    // and on those videos it is most of the data. It can be loaded now that
-    // the vendored player passes a MIME type for extensionless URLs.
-    final audioUrl = _sources?.audioOnlyUrl;
-    if (audioUrl == null) return;
-
     _droppedVideo = true;
-    _swappedToAudio = true;
-    await _swapSource(video, audioUrl, resumeAt: _position, extension: 'm4a');
-  }
-
-  /// True when the screen-off saving replaced the source rather than stepping
-  /// down a ladder, so unlocking knows which way to undo it.
-  bool _swappedToAudio = false;
-
-  /// Re-points the player at a different URL for the same video, keeping the
-  /// position. Used only for the screen-off audio swap.
-  Future<void> _swapSource(
-    VideoBrief video,
-    String url, {
-    required Duration resumeAt,
-    required String extension,
-  }) async {
-    final player = _player;
-    if (player == null) return;
-    final wasPlaying = player.isPlaying() ?? false;
-    await player.setupDataSource(
-      _dataSource(video, url, isHls: false, extensionOverride: extension),
-    );
-    if (resumeAt > Duration.zero) await player.seekTo(resumeAt);
-    if (wasPlaying) await player.play();
+    await _applyQuality(_lowestQuality);
   }
 
   /// Puts the chosen quality back on unlock. Also a track selection, so the
@@ -1041,22 +1019,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _restoreVideoTrack() async {
     if (!_droppedVideo) return;
     _droppedVideo = false;
-    final video = _current;
-    final sources = _sources;
-    if (_player == null || video == null) return;
-
-    if (_swappedToAudio) {
-      _swappedToAudio = false;
-      if (sources != null) {
-        await _swapSource(
-          video,
-          sources.url,
-          resumeAt: _position,
-          extension: 'mp4',
-        );
-      }
-      return;
-    }
+    if (_player == null || _current == null) return;
     await _applyQuality(_config.preferredQuality);
   }
 
@@ -1103,28 +1066,6 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         _persistPosition(force: true);
         unawaited(_onFinished());
       case BetterPlayerEventType.exception:
-        // If the screen-off audio swap is what broke, put the video source
-        // back rather than leaving a locked phone playing nothing. The saving
-        // is not worth losing playback over, and this cannot be seen or
-        // recovered from by the user at the time.
-        if (_swappedToAudio) {
-          _swappedToAudio = false;
-          _droppedVideo = false;
-          final video = _current;
-          final sources = _sources;
-          if (video != null && sources != null) {
-            unawaited(_swapSource(
-              video,
-              sources.url,
-              resumeAt: _position,
-              extension: 'mp4',
-            ));
-            break;
-          }
-        }
-        // Carry the platform's own description through. A generic message here
-        // meant a device failure could not be told apart from an expired link,
-        // and there is no console to read on someone else's phone.
         final detail = event.parameters?['exception']?.toString();
         _error = detail == null || detail.isEmpty
             ? 'Playback failed. Reopen the video to try again.'
