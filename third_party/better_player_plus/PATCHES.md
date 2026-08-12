@@ -33,6 +33,15 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    `MEDIA_SESSION_ACTIONS` constant — without this the lock screen omits the
    buttons even when the notification shows them.
 
+14. `buildMediaSource` inferred the content type with
+   `lastPathSegment.split(".")[1]`, which throws IndexOutOfBoundsException on
+   any URL whose last path segment has no dot — and a googlevideo stream URL
+   has no file extension. Every progressive (non-HLS) video failed to start on
+   Android with "IndexOutOfBoundsException: Index: 1, Size: 1". It now takes the
+   text after the final dot when there is one and an empty string otherwise,
+   which infers CONTENT_TYPE_OTHER — the correct progressive source. This is
+   the Android counterpart of the iOS out-of-band MIME patch.
+
 ## Dart
 
 5. `VideoEventType` gained `skipToNext` and `skipToPrevious`

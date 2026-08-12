@@ -399,11 +399,19 @@ internal class BetterPlayer(
     ): MediaSource {
         val type: Int
         if (formatHint == null) {
-            var lastPathSegment = uri?.lastPathSegment
-            if (lastPathSegment == null) {
-                lastPathSegment = ""
-            }
-            type = Util.inferContentTypeForExtension(lastPathSegment.split(".")[1])
+            // PATCH: the original did `lastPathSegment.split(".")[1]`, which
+            // throws IndexOutOfBoundsException on any URL whose last segment has
+            // no dot — and a googlevideo stream URL never has a file extension.
+            // Every progressive (non-HLS) video therefore failed to start with
+            // "IndexOutOfBoundsException: Index: 1, Size: 1", the Android twin of
+            // the iOS no-extension problem. Take the text after the final dot
+            // when there is one, otherwise none — inferContentTypeForExtension
+            // returns CONTENT_TYPE_OTHER for an empty string, which is the
+            // correct progressive source.
+            val lastPathSegment = uri?.lastPathSegment ?: ""
+            val dot = lastPathSegment.lastIndexOf('.')
+            val extension = if (dot >= 0) lastPathSegment.substring(dot + 1) else ""
+            type = Util.inferContentTypeForExtension(extension)
         } else {
             type = when (formatHint) {
                 FORMAT_SS -> C.CONTENT_TYPE_SS
