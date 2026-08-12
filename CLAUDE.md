@@ -75,6 +75,34 @@ the browser preview:
 D:/flutter/bin/flutter.bat run -d chrome --web-port 5555
 ```
 
+## What is built
+
+Playback: single long-lived player, background audio, PiP, speed, sleep timer,
+quality picker (HLS ladder where one exists, muxed renditions where not),
+captions, an audio-only mode that plays the video stream with the picture
+covered, and a screen-off saving mode that steps down the ladder.
+
+Browsing: home feed built from search history, Shorts, search with completions
+and combinable filters, channel pages (Videos, Shorts, Live, Playlists),
+comments with replies, watch history, local playlists, subscriptions, queue.
+
+Offline: serial download queue, audio-only downloads, HD downloads (two files
+joined by FFmpeg), MP3 conversion, and a storage screen that measures and
+clears downloads, cache and history separately.
+
+Platform: lock-screen and notification transport controls including skip,
+AirPlay via the system route picker, call and Bluetooth interruption handling.
+
+Deliberately absent, with reasons: Google Sign-In (declined; would put a real
+account behind a ToS-violating client), Chromecast (needs the Cast SDK and a
+receiver id), live chat, channel About (YouTube returns no parseable data for
+it), and pasting non-YouTube links — Instagram and the rest serve a login wall
+to anonymous clients, so there is nothing to extract.
+
+**Not publishable.** Guideline 5.2.2 forbids exactly this, and repeated
+submissions risk the developer account. TestFlight internal testing and
+sideloaded APKs are the distribution model.
+
 ## Architecture
 
 ### Stream resolution is the fragile core
@@ -185,18 +213,6 @@ A cross-cutting `kIsWeb` concern threads through several files. In a browser:
 
 When touching these paths, keep the iOS/Android behaviour the source of truth
 and the web branch clearly subordinate.
-
-### Vendored player plugin
-
-`third_party/better_player_plus` is a **patched copy** of 1.3.4, wired in by a
-path dependency in `pubspec.yaml`. It is not a fork with its own history.
-
-Every edit is marked `PATCH:` in the source and listed in
-`third_party/better_player_plus/PATCHES.md`. They cover the lock-screen and
-notification skip buttons (disabled outright upstream, on both platforms),
-Android audio focus, iOS out-of-band MIME types for extensionless URLs, and two
-staleness bugs in the now-playing info. **`flutter pub upgrade` will not
-reapply any of them** — re-apply by hand from PATCHES.md when bumping.
 
 ### Navigation
 
