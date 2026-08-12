@@ -211,6 +211,17 @@ internal class BetterPlayer(
         imageUrl: String?, notificationChannelName: String?,
         activityName: String
     ) {
+        // PATCH: tear the previous notification down before building another.
+        //
+        // This runs for every data source, and each run built a fresh
+        // PlayerNotificationManager, event listener and one-second refresh
+        // handler while leaving the last set alive. Their adapters capture the
+        // title and artwork of the video they were made for, so with one
+        // long-lived player the old ones kept rewriting the notification with
+        // the previous video's details — the same flicker seen on the iOS lock
+        // screen, plus a handler leaked per video.
+        disposeRemoteNotifications()
+
         BetterPlayerForegroundService.start(context, title, activityName)
         val mediaDescriptionAdapter: MediaDescriptionAdapter = object : MediaDescriptionAdapter {
             override fun getCurrentContentTitle(player: Player): String {

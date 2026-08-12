@@ -46,6 +46,12 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    ordinary player events so a host app can listen for them alongside play and
    pause.
 
+11b. `stopOtherUpdateListener` skipped the current player's own time observer
+   and then wiped the dictionary, losing the handle without removing it. Each
+   observer rewrites the now-playing title and artwork it captured once a
+   second, so every video left one running and pressing next changed the lock
+   screen only for a stale observer to change it straight back.
+
 ## iOS — `ios/.../better_player_plus/Sources/better_player_plus/BetterPlayer.swift`
 
 9. `AVURLAsset` was built with headers only. `AVURLAssetOutOfBandMIMETypeKey` is
@@ -70,9 +76,16 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    keyed by image URL now, which also means a repeated thumbnail is not
    re-downloaded.
 
+12. `setupPlayerNotification` runs for every data source and built a fresh
+   `PlayerNotificationManager`, event listener and one-second refresh handler
+   each time while leaving the previous set alive. Their adapters capture the
+   title and artwork of the video they were built for, so the old ones kept
+   rewriting the notification with the previous video's details, and a handler
+   leaked per video. It now disposes the previous set first.
+
 ## Housekeeping
 
-12. `analysis_options.yaml` included `package:analysis_lints`, which is not a
+13. `analysis_options.yaml` included `package:analysis_lints`, which is not a
    dependency of this app and failed `flutter analyze` on a missing include. It
    now includes `flutter_lints`. This is vendored source we do not lint
    ourselves.

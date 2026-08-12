@@ -202,8 +202,17 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
     }
 
     private func stopOtherUpdateListener(_ player: BetterPlayer) {
-        let currentPlayerKey = keyForPlayer(player)
-        for (textureId, timeObserver) in timeObserverIdDict where textureId != currentPlayerKey {
+        // PATCH: removes this player's observer too, not only other players'.
+        //
+        // It used to skip the current player and then wipe the dictionary,
+        // which loses the handle without ever removing the observer. Each
+        // observer captures the title and artwork of the video it was created
+        // for and rewrites them once a second, so with one long-lived player —
+        // which is how this app keeps background audio alive — every video
+        // left another one running. Pressing next changed the lock screen and
+        // a stale observer changed it straight back: the flicker between the
+        // new thumbnail and the old one.
+        for (textureId, timeObserver) in timeObserverIdDict {
             if let playerToRemoveListener = players[textureId] {
                 playerToRemoveListener.player.removeTimeObserver(timeObserver)
             }
