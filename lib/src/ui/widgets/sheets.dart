@@ -356,7 +356,7 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
     context: context,
     builder: (sheetContext) => SafeArea(
       child: FutureBuilder<List<DownloadOption>>(
-        future: repo.downloadOptions(video.id),
+        future: repo.downloadOptions(video.id, allowFfmpeg: downloads.canProcess),
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
             return const Padding(
@@ -379,7 +379,9 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
                 ListTile(
                   leading: Icon(
                     option.audioOnly
-                        ? Icons.headphones_outlined
+                        ? (option.quality == 'MP3'
+                            ? Icons.audiotrack_outlined
+                            : Icons.headphones_outlined)
                         : Icons.movie_outlined,
                   ),
                   title: Text(option.label),
@@ -390,7 +392,11 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
                   ),
                   onTap: () async {
                     Navigator.pop(sheetContext);
-                    await downloads.enqueue(video, audioOnly: option.audioOnly);
+                    await downloads.enqueue(
+                      video,
+                      audioOnly: option.audioOnly,
+                      quality: option.quality,
+                    );
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
@@ -399,23 +405,24 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
                     );
                   },
                 ),
-              // Say why there is no 720p option, rather than leaving its
-              // absence to look like an oversight.
-              if (options.any((o) => !o.audioOnly))
+              // Only shown where the device cannot join tracks, so the absence
+              // of HD entries does not read as a bug.
+              if (options.isNotEmpty && !downloads.canProcess)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
                   child: Text(
-                    'YouTube only serves one combined video+audio file, and it '
-                    'is 360p. Higher quality exists solely as separate video '
-                    'and audio tracks, which cannot be saved as one playable '
-                    'file without re-encoding. Streaming is still up to 4K.',
+                    'Only 360p and audio can be saved on this device. Higher '
+                    'quality needs the media library, which is unavailable '
+                    'here. Streaming is still up to 4K.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(
-                        context,
-                      ).colorScheme.onSurface.withValues(alpha: 0.6),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withValues(alpha: 0.6),
                     ),
                   ),
                 ),
+              const SizedBox(height: 8),
             ],
           );
         },

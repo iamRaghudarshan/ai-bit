@@ -141,6 +141,7 @@ class _DownloadTile extends StatelessWidget {
                       await downloads.enqueue(
                         record.video,
                         audioOnly: record.audioOnly,
+                        quality: record.quality,
                       );
                     case 'cancel':
                       await downloads.cancel(record.video.id);

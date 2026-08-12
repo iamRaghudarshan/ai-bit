@@ -512,6 +512,7 @@ class YtRepository {
     bool audioOnly = false,
     bool hd = false,
     bool toMp3 = false,
+    int? requestedHeight,
   }) async {
     Object? lastError;
     for (final client in _clientChain) {
@@ -548,7 +549,18 @@ class YtRepository {
             ..sort((a, b) =>
                 b.videoResolution.height.compareTo(a.videoResolution.height));
           if (videos.isNotEmpty) {
-            final video = videos.first;
+            // The requested height exactly where it exists, otherwise the
+            // nearest below it, otherwise the best there is — so a picker entry
+            // always resolves to something rather than failing.
+            final video = requestedHeight == null
+                ? videos.first
+                : (videos.firstWhere(
+                    (v) => v.videoResolution.height == requestedHeight,
+                    orElse: () => videos.firstWhere(
+                      (v) => v.videoResolution.height <= requestedHeight,
+                      orElse: () => videos.last,
+                    ),
+                  ));
             final audio = _bestPlayableAudio(manifest.audioOnly);
             return DownloadTarget(
               handle: video,
@@ -603,45 +615,98 @@ class YtRepository {
     );
   }
 
-  /// What can actually be downloaded for [videoId], with real sizes.
+  /// Every rendition that can actually be downloaded, with real sizes, so the
+  /// picker shows the choice before anything transfers.
   ///
-  /// Both are resolved together so the picker can show sizes before the user
-  /// commits, rather than after a transfer has started.
-  ///
-  /// There is no HD option, and that is a YouTube constraint rather than a
-  /// missing feature: the only single-file video stream still served is the
-  /// legacy 360p MP4. Everything above it exists solely as separate video-only
-  /// and audio-only tracks, or as MPEG-TS HLS segments that iOS will not play
-  /// from disk — both need a muxer to become a playable file. Streaming is
-  /// unaffected and still goes to 2160p.
-  Future<List<DownloadOption>> downloadOptions(String videoId) async {
-    final results = await Future.wait([
-      _optionOrNull(videoId, audioOnly: false),
-      _optionOrNull(videoId, audioOnly: true),
-    ]);
-    return results.whereType<DownloadOption>().toList();
-  }
-
-  Future<DownloadOption?> _optionOrNull(
+  /// One combined 360p file needs no processing. Everything above it is a
+  /// video-only track joined to audio, and audio can be converted to MP3 —
+  /// both need FFmpeg, so they are only offered when [allowFfmpeg] is true and
+  /// flagged with `needsFfmpeg` either way.
+  Future<List<DownloadOption>> downloadOptions(
     String videoId, {
-    required bool audioOnly,
+    required bool allowFfmpeg,
   }) async {
-    try {
-      final target = await downloadTarget(videoId, audioOnly: audioOnly);
-      return DownloadOption(
-        audioOnly: audioOnly,
-        label: audioOnly ? 'Audio only' : target.quality,
-        detail: audioOnly
-            ? 'Best audio, no video'
-            : 'Video with sound',
-        bytes: target.totalBytes,
-        fileExtension: target.fileExtension,
-      );
-    } catch (e) {
-      debugPrint('AI BIT: no ${audioOnly ? 'audio' : 'video'} download for '
-          '$videoId — $e');
-      return null;
+    for (final client in _clientChain) {
+      try {
+        final manifest = await _yt.videos.streamsClient.getManifest(
+          videoId,
+          ytClients: [client],
+        );
+
+        final options = <DownloadOption>[];
+        final audio = manifest.audioOnly.isEmpty
+            ? null
+            : _bestPlayableAudio(manifest.audioOnly);
+        final audioBytes = audio?.size.totalBytes ?? 0;
+
+        // HD renditions, tallest first, only where they can be joined.
+        if (allowFfmpeg && audio != null) {
+          final videos = manifest.videoOnly
+              .where((v) => v.container.name == 'mp4')
+              .toList()
+            ..sort((a, b) =>
+                b.videoResolution.height.compareTo(a.videoResolution.height));
+          final seen = <int>{};
+          for (final v in videos) {
+            final h = v.videoResolution.height;
+            if (h <= 360 || !seen.add(h)) continue;
+            options.add(DownloadOption(
+              audioOnly: false,
+              quality: '${h}p',
+              label: '${h}p',
+              detail: 'Video with sound, joined on device',
+              bytes: v.size.totalBytes + audioBytes,
+              fileExtension: 'mp4',
+              needsFfmpeg: true,
+            ));
+          }
+        }
+
+        // The one combined file, which always works.
+        final muxed = manifest.muxed.toList()
+          ..sort((a, b) =>
+              b.videoResolution.height.compareTo(a.videoResolution.height));
+        if (muxed.isNotEmpty) {
+          final m = muxed.first;
+          options.add(DownloadOption(
+            audioOnly: false,
+            quality: m.qualityLabel,
+            label: m.qualityLabel,
+            detail: 'Video with sound',
+            bytes: m.size.totalBytes,
+            fileExtension: m.container.name,
+          ));
+        }
+
+        // Audio, and MP3 where it can be converted.
+        if (audio != null) {
+          options.add(DownloadOption(
+            audioOnly: true,
+            quality: 'Audio',
+            label: 'Audio only',
+            detail: 'Best audio, no video',
+            bytes: audioBytes,
+            fileExtension: audio.container.name,
+          ));
+          if (allowFfmpeg) {
+            options.add(DownloadOption(
+              audioOnly: true,
+              quality: 'MP3',
+              label: 'MP3',
+              detail: 'Audio converted for older players',
+              bytes: audioBytes,
+              fileExtension: 'mp3',
+              needsFfmpeg: true,
+            ));
+          }
+        }
+
+        if (options.isNotEmpty) return options;
+      } catch (e) {
+        debugPrint('AI BIT: download options failed for $videoId — $e');
+      }
     }
+    return const [];
   }
 
   /// Opens the byte stream for [target]. The caller writes it to disk and

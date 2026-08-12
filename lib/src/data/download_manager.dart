@@ -8,7 +8,6 @@ import 'package:share_plus/share_plus.dart';
 
 import 'db.dart';
 import 'models.dart';
-import 'settings.dart';
 import 'media_processor.dart';
 import 'yt_repository.dart';
 
@@ -20,7 +19,6 @@ class DownloadManager extends ChangeNotifier {
   DownloadManager({
     required YtRepository repository,
     required AppDatabase database,
-    required this.settings,
     MediaProcessor? processor,
   })  : _repo = repository,
         _db = database,
@@ -30,10 +28,6 @@ class DownloadManager extends ChangeNotifier {
 
   final YtRepository _repo;
   final AppDatabase _db;
-
-  /// Read when a transfer starts, so changing the HD or MP3 choice applies to
-  /// the next download rather than only to a restarted app.
-  final SettingsService settings;
   final MediaProcessor _processor;
 
   /// Written to disk every ~1MB rather than every chunk — SQLite writes are
@@ -85,7 +79,17 @@ class DownloadManager extends ChangeNotifier {
 
   /// Queues [video] for download. Re-queuing something already downloaded is a
   /// no-op; re-queuing a failed one retries it.
-  Future<void> enqueue(VideoBrief video, {bool audioOnly = false}) async {
+  /// Whether HD joins and MP3 conversion are possible on this platform, so the
+  /// picker can offer or gray them out.
+  bool get canProcess => _processor.isSupported;
+
+  /// Queues [video] at the chosen [quality] — one of the specs from
+  /// [YtRepository.downloadOptions]: `360p`, `1080p`, `Audio`, `MP3`.
+  Future<void> enqueue(
+    VideoBrief video, {
+    bool audioOnly = false,
+    String quality = '360p',
+  }) async {
     final existing = _records[video.id];
     if (existing != null && existing.isComplete) return;
     if (existing != null && isActive(video.id)) return;
@@ -95,7 +99,9 @@ class DownloadManager extends ChangeNotifier {
       video: video,
       // Extension is corrected once the rendition is known.
       filePath: '${directory.path}/${video.id}.tmp',
-      quality: audioOnly ? 'Audio' : '',
+      // The requested spec is stored here so the transfer — and a later retry
+      // or a restore after restart — knows exactly what to fetch.
+      quality: quality,
       audioOnly: audioOnly,
       totalBytes: 0,
       receivedBytes: 0,
@@ -133,11 +139,19 @@ class DownloadManager extends ChangeNotifier {
     IOSink? sink;
     File? file;
     try {
+      final spec = queued.quality;
+      final wantMp3 = queued.audioOnly && spec == 'MP3';
+      final height = int.tryParse(spec.replaceAll(RegExp('[^0-9]'), ''));
+      final wantHd = !queued.audioOnly &&
+          height != null &&
+          height > 360 &&
+          _processor.isSupported;
       final target = await _repo.downloadTarget(
         id,
         audioOnly: queued.audioOnly,
-        hd: !queued.audioOnly && settings.downloadHd && _processor.isSupported,
-        toMp3: queued.audioOnly && settings.downloadMp3 && _processor.isSupported,
+        hd: wantHd,
+        toMp3: wantMp3 && _processor.isSupported,
+        requestedHeight: wantHd ? height : null,
       );
       final directory = await _downloadDirectory();
       final path = '${directory.path}/$id.${target.fileExtension}';

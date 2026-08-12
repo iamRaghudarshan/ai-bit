@@ -270,19 +270,29 @@ class DownloadRecord {
 class DownloadOption {
   const DownloadOption({
     required this.audioOnly,
+    required this.quality,
     required this.label,
     required this.detail,
     required this.bytes,
     required this.fileExtension,
+    this.needsFfmpeg = false,
   });
 
   final bool audioOnly;
+
+  /// The spec the download acts on and persists: `360p`, `1080p`, `Audio` or
+  /// `MP3`. What the user picked, distinct from the human [label].
+  final String quality;
 
   /// `360p` or `Audio only`.
   final String label;
   final String detail;
   final int bytes;
   final String fileExtension;
+
+  /// Whether this rendition has to be joined or converted after downloading,
+  /// so the picker can gray it out where the native library is missing.
+  final bool needsFfmpeg;
 }
 
 /// A resolved, downloadable rendition. [handle] is the opaque upstream stream

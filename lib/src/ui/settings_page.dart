@@ -62,30 +62,6 @@ class SettingsPage extends StatelessWidget {
             onTap: () => _pickQuality(context, settings),
           ),
           const Divider(),
-          const _SectionLabel('Downloads'),
-          SwitchListTile(
-            value: settings.downloadHd,
-            title: const Text('Download in HD'),
-            subtitle: const Text(
-              'Saves the best quality available, up to 4K. YouTube serves HD '
-              'as separate video and audio, so this fetches both and joins '
-              'them — several times the data, and a few seconds at the end.',
-            ),
-            isThreeLine: true,
-            onChanged: (value) => settings.downloadHd = value,
-          ),
-          SwitchListTile(
-            value: settings.downloadMp3,
-            title: const Text('Save audio as MP3'),
-            subtitle: const Text(
-              'For car stereos and older players. YouTube serves AAC, which '
-              'everything modern reads, so converting re-encodes it — leave '
-              'this off unless something refuses the .m4a files.',
-            ),
-            isThreeLine: true,
-            onChanged: (value) => settings.downloadMp3 = value,
-          ),
-          const Divider(),
           const _SectionLabel('Storage'),
           ListTile(
             leading: const Icon(Icons.sd_storage_outlined),
