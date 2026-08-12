@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
@@ -117,7 +118,12 @@ class FfmpegMediaProcessor implements MediaProcessor {
 
   Future<bool> _run(String command, String outputPath) async {
     try {
-      final session = await FFmpegKit.execute(command);
+      // Bounded, so a stuck FFmpeg process cannot leave a download reporting
+      // "loading" forever. A remux of even a long video is seconds; five
+      // minutes is far past any legitimate run and short enough that a hang
+      // surfaces as a failed post-process rather than a frozen queue.
+      final session = await FFmpegKit.execute(command)
+          .timeout(const Duration(minutes: 5));
       final code = await session.getReturnCode();
       if (ReturnCode.isSuccess(code)) return true;
 
@@ -125,6 +131,11 @@ class FfmpegMediaProcessor implements MediaProcessor {
           '${await session.getFailStackTrace()}');
       // Half-written output is worse than none: it would be saved as a
       // playable download and then refuse to open.
+      final partial = File(outputPath);
+      if (partial.existsSync()) await partial.delete();
+      return false;
+    } on TimeoutException {
+      debugPrint('AI BIT: ffmpeg timed out — keeping the pre-processed file');
       final partial = File(outputPath);
       if (partial.existsSync()) await partial.delete();
       return false;
