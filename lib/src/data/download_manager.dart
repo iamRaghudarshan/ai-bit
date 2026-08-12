@@ -9,7 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'db.dart';
 import 'models.dart';
 import 'settings.dart';
-import 'media_muxer.dart';
+import 'media_processor.dart';
 import 'yt_repository.dart';
 
 /// Saves videos to device storage and keeps the UI informed about progress.
@@ -21,8 +21,12 @@ class DownloadManager extends ChangeNotifier {
     required YtRepository repository,
     required AppDatabase database,
     required this.settings,
+    MediaProcessor? processor,
   })  : _repo = repository,
-        _db = database;
+        _db = database,
+        // Injected so the native dependency can be swapped or stubbed; the
+        // manager only ever talks to the interface.
+        _processor = processor ?? const FfmpegMediaProcessor();
 
   final YtRepository _repo;
   final AppDatabase _db;
@@ -30,7 +34,7 @@ class DownloadManager extends ChangeNotifier {
   /// Read when a transfer starts, so changing the HD or MP3 choice applies to
   /// the next download rather than only to a restarted app.
   final SettingsService settings;
-  final MediaMuxer _muxer = const MediaMuxer();
+  final MediaProcessor _processor;
 
   /// Written to disk every ~1MB rather than every chunk — SQLite writes are
   /// cheap but not free, and the bar only needs to move smoothly.
@@ -132,8 +136,8 @@ class DownloadManager extends ChangeNotifier {
       final target = await _repo.downloadTarget(
         id,
         audioOnly: queued.audioOnly,
-        hd: !queued.audioOnly && settings.downloadHd && _muxer.isSupported,
-        toMp3: queued.audioOnly && settings.downloadMp3 && _muxer.isSupported,
+        hd: !queued.audioOnly && settings.downloadHd && _processor.isSupported,
+        toMp3: queued.audioOnly && settings.downloadMp3 && _processor.isSupported,
       );
       final directory = await _downloadDirectory();
       final path = '${directory.path}/$id.${target.fileExtension}';
@@ -331,7 +335,7 @@ class DownloadManager extends ChangeNotifier {
       await sink.close();
 
       final merged = '$videoPath.merged.mp4';
-      final ok = await _muxer.mux(
+      final ok = await _processor.mux(
         videoPath: videoPath,
         audioPath: audioPath,
         outputPath: merged,
@@ -356,7 +360,7 @@ class DownloadManager extends ChangeNotifier {
   }) async {
     final source = '$videoPath.src';
     await File(videoPath).rename(source);
-    final ok = await _muxer.toMp3(sourcePath: source, outputPath: videoPath);
+    final ok = await _processor.toMp3(sourcePath: source, outputPath: videoPath);
     if (!ok) {
       // Put the original back, so a failed conversion still leaves something
       // playable behind — everything reads AAC anyway.

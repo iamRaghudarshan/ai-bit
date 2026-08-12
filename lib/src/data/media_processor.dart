@@ -4,6 +4,60 @@ import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
 import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 import 'package:flutter/foundation.dart';
 
+/// Post-processing a finished download needs.
+///
+/// An interface rather than a concrete class so the heavy native dependency
+/// stays replaceable. FFmpeg is ~70-100 MB of the installed app and is the
+/// only reason it is there; if a lighter remuxer appears, or the feature is
+/// dropped, only the implementation changes. [DownloadManager] never names
+/// FFmpeg — it asks for a processor and reports what it could not do.
+///
+/// Implementations must not throw. A download that has already transferred is
+/// worth keeping even when the processing step fails, so every method returns
+/// a bool and leaves the input untouched on failure.
+abstract class MediaProcessor {
+  /// Whether this processor can do anything on the current platform.
+  bool get isSupported;
+
+  /// Combines separate video and audio files into one at [outputPath].
+  Future<bool> mux({
+    required String videoPath,
+    required String audioPath,
+    required String outputPath,
+  });
+
+  /// Re-encodes an audio file to MP3.
+  Future<bool> toMp3({
+    required String sourcePath,
+    required String outputPath,
+  });
+}
+
+/// A processor that declines everything.
+///
+/// Used on platforms with no native library, and by tests that must not touch
+/// the filesystem. Downloads fall back to the combined 360p stream, which is
+/// exactly the behaviour before any of this existed.
+class UnavailableMediaProcessor implements MediaProcessor {
+  const UnavailableMediaProcessor();
+
+  @override
+  bool get isSupported => false;
+
+  @override
+  Future<bool> mux({
+    required String videoPath,
+    required String audioPath,
+    required String outputPath,
+  }) async => false;
+
+  @override
+  Future<bool> toMp3({
+    required String sourcePath,
+    required String outputPath,
+  }) async => false;
+}
+
 /// Joins separate video and audio files, and converts audio to MP3.
 ///
 /// YouTube retired combined streams above 360p: 1080p and 4K exist only as
@@ -15,10 +69,11 @@ import 'package:flutter/foundation.dart';
 /// in the right formats for an MP4 container, so the join is a remux that
 /// takes seconds and loses no quality. MP3 is the exception: it is a different
 /// codec to the AAC YouTube serves, so it genuinely has to be re-encoded.
-class MediaMuxer {
-  const MediaMuxer();
+class FfmpegMediaProcessor implements MediaProcessor {
+  const FfmpegMediaProcessor();
 
   /// True on the platforms the native library ships for.
+  @override
   bool get isSupported =>
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.iOS ||
@@ -28,6 +83,7 @@ class MediaMuxer {
   ///
   /// Returns false rather than throwing, so a failed join can fall back to
   /// keeping the video-only file instead of losing the whole download.
+  @override
   Future<bool> mux({
     required String videoPath,
     required String audioPath,
@@ -45,6 +101,7 @@ class MediaMuxer {
   }
 
   /// Re-encodes [sourcePath] to MP3 at [outputPath].
+  @override
   Future<bool> toMp3({
     required String sourcePath,
     required String outputPath,

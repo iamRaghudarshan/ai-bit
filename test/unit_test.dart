@@ -1,6 +1,7 @@
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/data/models.dart';
+import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -224,6 +225,53 @@ Some blurb about the video.
       // Nothing to compare against, and suppressing it would strand the end of
       // a live or unmeasured stream.
       expect(finish(const Duration(minutes: 3), Duration.zero), isTrue);
+    });
+  });
+
+  group('MediaProcessor', () {
+    test('an unavailable processor declines rather than throwing', () async {
+      // The contract the download manager relies on: a finished transfer is
+      // never lost because post-processing could not run.
+      const processor = UnavailableMediaProcessor();
+      expect(processor.isSupported, isFalse);
+      expect(
+        await processor.mux(videoPath: 'v', audioPath: 'a', outputPath: 'o'),
+        isFalse,
+      );
+      expect(
+        await processor.toMp3(sourcePath: 's', outputPath: 'o'),
+        isFalse,
+      );
+    });
+  });
+
+  group('DownloadTarget', () {
+    test('counts both files when a join is needed', () {
+      const target = DownloadTarget(
+        handle: 'video',
+        totalBytes: 100,
+        quality: '1080p',
+        fileExtension: 'mp4',
+        audioOnly: false,
+        audioHandle: 'audio',
+        audioBytes: 25,
+      );
+      expect(target.needsMux, isTrue);
+      // The progress bar has to know about both, or it stalls at the end of
+      // the video file and then jumps when the audio starts.
+      expect(target.downloadBytes, 125);
+    });
+
+    test('a single-file download needs no join', () {
+      const target = DownloadTarget(
+        handle: 'muxed',
+        totalBytes: 100,
+        quality: '360p',
+        fileExtension: 'mp4',
+        audioOnly: false,
+      );
+      expect(target.needsMux, isFalse);
+      expect(target.downloadBytes, 100);
     });
   });
 
