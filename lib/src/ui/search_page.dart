@@ -36,6 +36,9 @@ class SearchPageState extends State<SearchPage> {
   /// appeared. It belongs to the typing state, not to whether a search
   /// happens to have returned anything.
   bool _showSuggestions = false;
+
+  /// What you have searched for before, newest first.
+  List<String> _history = const [];
   List<VideoBrief> _results = const [];
   bool _searching = false;
   String? _error;
@@ -64,7 +67,11 @@ class SearchPageState extends State<SearchPage> {
   /// requested in initState: every tab of an IndexedStack is built at startup,
   /// so doing it there stole the keyboard while Home was still showing.
   void focusInput() {
-    if (mounted) _focus.requestFocus();
+    if (!mounted) return;
+    _focus.requestFocus();
+    // Anything searched from elsewhere — a channel page, a shared link —
+    // should be in the list by the time the tab is opened.
+    unawaited(_loadHistory());
   }
 
   @override
@@ -74,6 +81,12 @@ class SearchPageState extends State<SearchPage> {
     // Dismissing the keyboard means you have finished typing, so the
     // completions make way for the results rather than sitting over them.
     _focus.addListener(_onFocusChanged);
+    unawaited(_loadHistory());
+  }
+
+  Future<void> _loadHistory() async {
+    final history = await context.read<AppDatabase>().searchHistory();
+    if (mounted) setState(() => _history = history);
   }
 
   void _onFocusChanged() {
@@ -175,6 +188,9 @@ class SearchPageState extends State<SearchPage> {
       _showSuggestions = false;
     });
     await _runSearch(query);
+    // The list is what you see when the box is cleared, so it has to include
+    // what was just searched.
+    await _loadHistory();
   }
 
   Future<void> _openById(String videoId) async {
@@ -352,6 +368,55 @@ class SearchPageState extends State<SearchPage> {
 
   Widget _buildBody(bool hasText) {
     if (!hasText) {
+      // Your own searches, rather than a paragraph explaining how to search.
+      // An empty box is where you are most likely to want something you
+      // looked for before.
+      if (_history.isNotEmpty) {
+        return ListView.builder(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          itemCount: _history.length + 1,
+          itemBuilder: (context, index) {
+            if (index == 0) {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 8, 4),
+                child: Row(
+                  children: [
+                    Text(
+                      'Recent searches',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () async {
+                        await context.read<AppDatabase>().clearSearchHistory();
+                        await _loadHistory();
+                      },
+                      child: const Text('Clear all'),
+                    ),
+                  ],
+                ),
+              );
+            }
+            final query = _history[index - 1];
+            return ListTile(
+              leading: const Icon(Icons.history, size: 20),
+              title: Text(query, maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: IconButton(
+                icon: const Icon(Icons.close, size: 18),
+                tooltip: 'Remove',
+                onPressed: () async {
+                  await context.read<AppDatabase>().deleteSearch(query);
+                  await _loadHistory();
+                },
+              ),
+              onTap: () {
+                _controller.text = query;
+                _submit(query);
+              },
+            );
+          },
+        );
+      }
       return EmptyState(
         icon: Icons.search,
         title: 'Search YouTube',

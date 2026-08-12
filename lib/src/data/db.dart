@@ -205,6 +205,25 @@ class AppDatabase {
     ''');
   }
 
+  /// Removes one remembered search.
+  Future<void> deleteSearch(String query) =>
+      _db.delete('searches', where: 'query = ?', whereArgs: [query]);
+
+  /// Recent searches, newest first, for the search screen's own list.
+  ///
+  /// Separate from [recentSearches], which orders by hit count because the
+  /// feed wants your strongest interests. A history list wants the most
+  /// recent thing you typed at the top.
+  Future<List<String>> searchHistory({int limit = 15}) async {
+    final rows = await _db.query(
+      'searches',
+      columns: ['query'],
+      orderBy: 'searched_at DESC',
+      limit: limit,
+    );
+    return rows.map((r) => r['query']! as String).toList();
+  }
+
   /// Recent searches, most-repeated first, for feeding recommendations.
   Future<List<String>> recentSearches({int limit = 5}) async {
     final rows = await _db.query(
