@@ -30,16 +30,16 @@ Future<void> main(List<String> args) async {
             .where((x) => x.videoResolution.height == h)
             .first;
         final mb = ((v.size.totalBytes + (audio ?? 0)) / 1048576).toStringAsFixed(1);
-        stdout.writeln('  ${h}p'.padRight(10) + '$mb MB  (HD, joined)');
+        stdout.writeln('  ${'${h}p'.padRight(8)} $mb MB  (HD, joined)');
       }
       if (m.muxed.isNotEmpty) {
         final mx = m.muxed.withHighestBitrate();
-        stdout.writeln('  ${mx.qualityLabel}'.padRight(10) +
-            '${(mx.size.totalBytes / 1048576).toStringAsFixed(1)} MB  (combined)');
+        final mb = (mx.size.totalBytes / 1048576).toStringAsFixed(1);
+        stdout.writeln('  ${mx.qualityLabel.padRight(8)} $mb MB  (combined)');
       }
       if (audio != null) {
-        stdout.writeln('  audio'.padRight(10) +
-            '${(audio / 1048576).toStringAsFixed(1)} MB');
+        final mb = (audio / 1048576).toStringAsFixed(1);
+        stdout.writeln('  ${'audio'.padRight(8)} $mb MB');
       }
     } catch (e) {
       stdout.writeln('  ${e.toString().split('\n').first}');
