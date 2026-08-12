@@ -224,11 +224,10 @@ class YtRepository {
           .take(6)
           .toList();
     }
-    try {
-      return await _yt.search.getQuerySuggestions(query);
-    } catch (_) {
-      return const [];
-    }
+    // Ours, not the package's: its getQuerySuggestions fails the same way its
+    // search does, and the failure was swallowed here — so the suggestion list
+    // was always empty and nothing ever said why.
+    return _search.suggestions(query);
   }
 
   // --------------------------------------------------------------- details

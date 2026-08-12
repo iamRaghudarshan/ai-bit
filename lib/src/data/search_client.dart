@@ -118,6 +118,43 @@ class YoutubeSearchClient {
 
   void close() => _http.close();
 
+  /// Query completions for the search box.
+  ///
+  /// Replaces `youtube_explode_dart`'s `getQuerySuggestions`, which fails the
+  /// same way its search does — the extension-on-dynamic `getT` bug — and the
+  /// caller swallowed the error, so the suggestion list was silently always
+  /// empty.
+  ///
+  /// This is the endpoint the site itself uses. `client=firefox` asks for
+  /// plain JSON: `["kannada", ["kannada song", …]]`. The default response is
+  /// JSONP wrapped in `window.google.ac.h(...)`, which would have to be
+  /// unwrapped by hand.
+  Future<List<String>> suggestions(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return const [];
+
+    final uri = Uri.https('suggestqueries.google.com', '/complete/search', {
+      'client': 'firefox',
+      'ds': 'yt', // YouTube's corpus, not the web's
+      'q': trimmed,
+    });
+
+    try {
+      final response = await _http.get(uri).timeout(const Duration(seconds: 4));
+      if (response.statusCode != 200) return const [];
+
+      final decoded = jsonDecode(response.body);
+      if (decoded is! List || decoded.length < 2) return const [];
+      final entries = decoded[1];
+      if (entries is! List) return const [];
+
+      return entries.whereType<String>().take(10).toList();
+    } catch (_) {
+      // A dead suggestion service must not stop anyone searching.
+      return const [];
+    }
+  }
+
   Future<List<VideoBrief>> search(String query, {String? params}) async {
     final response = await _http
         .post(

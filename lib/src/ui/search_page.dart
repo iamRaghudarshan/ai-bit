@@ -27,6 +27,15 @@ class SearchPageState extends State<SearchPage> {
 
   Timer? _debounce;
   List<String> _suggestions = const [];
+
+  /// Whether the completion list is on screen.
+  ///
+  /// It used to be shown only when there were no results — but the same
+  /// debounce that fetches the completions also runs the search, so results
+  /// arrived a moment later and hid them again. In practice the list never
+  /// appeared. It belongs to the typing state, not to whether a search
+  /// happens to have returned anything.
+  bool _showSuggestions = false;
   List<VideoBrief> _results = const [];
   bool _searching = false;
   String? _error;
@@ -62,12 +71,22 @@ class SearchPageState extends State<SearchPage> {
   void initState() {
     super.initState();
     _controller.addListener(_onTyped);
+    // Dismissing the keyboard means you have finished typing, so the
+    // completions make way for the results rather than sitting over them.
+    _focus.addListener(_onFocusChanged);
+  }
+
+  void _onFocusChanged() {
+    if (!_focus.hasFocus && _showSuggestions) {
+      setState(() => _showSuggestions = false);
+    }
   }
 
   @override
   void dispose() {
     _debounce?.cancel();
     _controller.dispose();
+    _focus.removeListener(_onFocusChanged);
     _focus.dispose();
     super.dispose();
   }
@@ -78,6 +97,7 @@ class SearchPageState extends State<SearchPage> {
     if (query.trim().isEmpty) {
       setState(() {
         _suggestions = const [];
+        _showSuggestions = false;
         _results = const [];
         _error = null;
         _searching = false;
@@ -91,7 +111,12 @@ class SearchPageState extends State<SearchPage> {
       final repo = context.read<YtRepository>();
       final suggestions = await repo.suggestions(query);
       if (!mounted || _controller.text != query) return;
-      setState(() => _suggestions = suggestions);
+      setState(() {
+        _suggestions = suggestions;
+        // Only while the box still has focus: results are what you want to
+        // see once you have stopped typing.
+        _showSuggestions = _focus.hasFocus && suggestions.isNotEmpty;
+      });
       await _runSearch(query, showSpinner: _results.isEmpty);
     });
   }
@@ -145,7 +170,10 @@ class SearchPageState extends State<SearchPage> {
       await _openById(videoId);
       return;
     }
-    setState(() => _suggestions = const []);
+    setState(() {
+      _suggestions = const [];
+      _showSuggestions = false;
+    });
     await _runSearch(query);
   }
 
@@ -348,7 +376,7 @@ class SearchPageState extends State<SearchPage> {
         ),
       );
     }
-    if (_results.isEmpty && _suggestions.isNotEmpty) {
+    if (_showSuggestions && _suggestions.isNotEmpty) {
       return ListView.builder(
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         itemCount: _suggestions.length,
