@@ -1,6 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -244,16 +243,13 @@ class _ChannelPageState extends State<ChannelPage>
     }
     return ListView.builder(
       itemCount: videos.length,
-      scrollCacheExtent: const ScrollCacheExtent.pixels(600),
       addAutomaticKeepAlives: false,
       itemBuilder: (context, i) {
         final video = videos[i];
-        return RepaintBoundary(
-          child: VideoRow(
-            video: video,
-            onTap: () => WatchPage.open(context, video),
-            onMenu: () => showVideoMenu(context, video),
-          ),
+        return VideoRow(
+          video: video,
+          onTap: () => WatchPage.open(context, video),
+          onMenu: () => showVideoMenu(context, video),
         );
       },
     );

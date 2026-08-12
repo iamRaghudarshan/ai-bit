@@ -250,8 +250,13 @@ class _WatchPageState extends State<WatchPage>
 
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
-    final isCurrent = playback.current?.id == _video.id;
+    // `select`, not `watch`: this build needs one boolean, and watching the
+    // whole controller rebuilt the entire page — description, comment preview
+    // and up-next list — on every play, pause, quality change and caption
+    // toggle. It now rebuilds only when the answer actually changes.
+    final isCurrent = context.select<PlaybackController, bool>(
+      (playback) => playback.current?.id == _video.id,
+    );
 
     // Fades the page out slightly as it is dragged away, so minimising reads
     // as a transition rather than a stutter.

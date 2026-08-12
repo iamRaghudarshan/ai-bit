@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
@@ -200,18 +199,15 @@ class HomePageState extends State<HomePage>
               // screens of decoded thumbnails alive above and below the
               // viewport. One screen either side is enough to scroll smoothly
               // and holds a fraction of the images.
-              scrollCacheExtent: const ScrollCacheExtent.pixels(600.0),
               addAutomaticKeepAlives: false,
               itemBuilder: (context, index) {
                 final video = _feed[index];
-                // Each card paints into its own layer, so scrolling does not
-                // repaint the whole list on every frame.
-                return RepaintBoundary(
-                  child: VideoCard(
-                    video: video,
-                    onTap: () => WatchPage.open(context, video),
-                    onMenu: () => showVideoMenu(context, video),
-                  ),
+                // No RepaintBoundary here: ListView.builder already gives
+                // every child one, and a second is pure overhead.
+                return VideoCard(
+                  video: video,
+                  onTap: () => WatchPage.open(context, video),
+                  onMenu: () => showVideoMenu(context, video),
                 );
               },
             );
