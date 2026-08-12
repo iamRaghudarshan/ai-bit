@@ -117,9 +117,23 @@ class _WatchPageState extends State<WatchPage>
   /// page, so it stopped recognising what was playing and hid the surface
   /// behind a spinner — the next video's audio played while the picture never
   /// came back.
+  /// False until the player has actually reached this page's video.
+  ///
+  /// The listener is attached before [_start]'s own `play` has landed, so a
+  /// notification in that window still carries the *previous* video — and
+  /// following it would make the page adopt whatever was playing before,
+  /// fetch its details, then flip back a moment later.
+  bool _following = false;
+
   void _followPlayer() {
     final current = _playback?.current;
-    if (!mounted || current == null || current.id == _video.id) return;
+    if (!mounted || current == null) return;
+    if (current.id == _video.id) {
+      // The player is on our video: anything after this is a real move.
+      _following = true;
+      return;
+    }
+    if (!_following) return;
     // Opening another video pushes a second watch page over this one; only the
     // page on top should adopt the change, or the one underneath refetches
     // details nobody is looking at.
