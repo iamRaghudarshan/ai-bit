@@ -69,6 +69,31 @@ class SettingsService extends ChangeNotifier {
   /// It also cuts data roughly tenfold, which is a genuine bonus rather than
   /// the point.
   bool get audioOnlyWhenLocked => _prefs.getBool(_kLockedAudio) ?? true;
+
+  static const _kDownloadHd = 'download_hd';
+  static const _kDownloadMp3 = 'download_mp3';
+
+  /// Download the best video available rather than the 360p combined file.
+  ///
+  /// Off by default: an HD download fetches two files and joins them, so it
+  /// costs several times the data and a little time at the end. That should be
+  /// asked for rather than assumed.
+  bool get downloadHd => _prefs.getBool(_kDownloadHd) ?? false;
+  set downloadHd(bool value) {
+    _prefs.setBool(_kDownloadHd, value);
+    notifyListeners();
+  }
+
+  /// Convert downloaded audio to MP3 instead of leaving it as AAC.
+  ///
+  /// Off by default: AAC is what YouTube serves and every player reads it, so
+  /// converting is a re-encode that costs quality for compatibility with older
+  /// hardware.
+  bool get downloadMp3 => _prefs.getBool(_kDownloadMp3) ?? false;
+  set downloadMp3(bool value) {
+    _prefs.setBool(_kDownloadMp3, value);
+    notifyListeners();
+  }
   set audioOnlyWhenLocked(bool value) => _write(_kLockedAudio, value);
 
   /// off / one / all.

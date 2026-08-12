@@ -131,6 +131,7 @@ class AiBitApp extends StatelessWidget {
           create: (context) => DownloadManager(
             repository: context.read<YtRepository>(),
             database: context.read<AppDatabase>(),
+            settings: context.read<SettingsService>(),
           )..restore(),
         ),
         Provider<StorageService>(

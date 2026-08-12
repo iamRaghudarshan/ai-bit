@@ -510,6 +510,8 @@ class YtRepository {
   Future<DownloadTarget> downloadTarget(
     String videoId, {
     bool audioOnly = false,
+    bool hd = false,
+    bool toMp3 = false,
   }) async {
     Object? lastError;
     for (final client in _clientChain) {
@@ -525,10 +527,39 @@ class YtRepository {
           return DownloadTarget(
             handle: best,
             totalBytes: best.size.totalBytes,
-            quality: 'Audio',
-            fileExtension: best.container.name,
+            quality: toMp3 ? 'MP3' : 'Audio',
+            // The download lands as whatever YouTube served; the extension only
+            // becomes .mp3 once the conversion has actually run.
+            fileExtension: toMp3 ? 'mp3' : best.container.name,
             audioOnly: true,
+            toMp3: toMp3,
           );
+        }
+
+        // HD: video-only and audio-only, joined after both arrive.
+        //
+        // YouTube retired combined streams above 360p, so this is the only way
+        // to get 1080p or better. Both tracks are copied into one container
+        // without re-encoding, which is quick and loses nothing.
+        if (hd && manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
+          final videos = manifest.videoOnly
+              .where((v) => v.container.name == 'mp4')
+              .toList()
+            ..sort((a, b) =>
+                b.videoResolution.height.compareTo(a.videoResolution.height));
+          if (videos.isNotEmpty) {
+            final video = videos.first;
+            final audio = _bestPlayableAudio(manifest.audioOnly);
+            return DownloadTarget(
+              handle: video,
+              totalBytes: video.size.totalBytes,
+              quality: video.qualityLabel,
+              fileExtension: 'mp4',
+              audioOnly: false,
+              audioHandle: audio,
+              audioBytes: audio.size.totalBytes,
+            );
+          }
         }
 
         final muxed = manifest.muxed.toList()
@@ -615,8 +646,12 @@ class YtRepository {
 
   /// Opens the byte stream for [target]. The caller writes it to disk and
   /// tracks progress.
-  Stream<List<int>> downloadBytes(DownloadTarget target) =>
-      _yt.videos.streamsClient.get(target.handle as yt.StreamInfo);
+  /// Bytes for one half of a download. [audio] selects the separate audio
+  /// track that HD downloads have to fetch alongside the video.
+  Stream<List<int>> downloadBytes(DownloadTarget target, {bool audio = false}) {
+    final handle = audio ? target.audioHandle : target.handle;
+    return _yt.videos.streamsClient.get(handle! as yt.StreamInfo);
+  }
 
   PlaybackSources _cache(String key, PlaybackSources sources) {
     _streamCache[key] = (sources: sources, at: DateTime.now());

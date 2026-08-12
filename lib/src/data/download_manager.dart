@@ -8,6 +8,8 @@ import 'package:share_plus/share_plus.dart';
 
 import 'db.dart';
 import 'models.dart';
+import 'settings.dart';
+import 'media_muxer.dart';
 import 'yt_repository.dart';
 
 /// Saves videos to device storage and keeps the UI informed about progress.
@@ -15,12 +17,20 @@ import 'yt_repository.dart';
 /// Transfers run one at a time: YouTube throttles concurrent downloads from a
 /// single manifest, and a serial queue keeps the progress numbers honest.
 class DownloadManager extends ChangeNotifier {
-  DownloadManager({required YtRepository repository, required AppDatabase database})
-    : _repo = repository,
-      _db = database;
+  DownloadManager({
+    required YtRepository repository,
+    required AppDatabase database,
+    required this.settings,
+  })  : _repo = repository,
+        _db = database;
 
   final YtRepository _repo;
   final AppDatabase _db;
+
+  /// Read when a transfer starts, so changing the HD or MP3 choice applies to
+  /// the next download rather than only to a restarted app.
+  final SettingsService settings;
+  final MediaMuxer _muxer = const MediaMuxer();
 
   /// Written to disk every ~1MB rather than every chunk — SQLite writes are
   /// cheap but not free, and the bar only needs to move smoothly.
@@ -119,7 +129,12 @@ class DownloadManager extends ChangeNotifier {
     IOSink? sink;
     File? file;
     try {
-      final target = await _repo.downloadTarget(id, audioOnly: queued.audioOnly);
+      final target = await _repo.downloadTarget(
+        id,
+        audioOnly: queued.audioOnly,
+        hd: !queued.audioOnly && settings.downloadHd && _muxer.isSupported,
+        toMp3: queued.audioOnly && settings.downloadMp3 && _muxer.isSupported,
+      );
       final directory = await _downloadDirectory();
       final path = '${directory.path}/$id.${target.fileExtension}';
       file = File(path);
@@ -136,7 +151,7 @@ class DownloadManager extends ChangeNotifier {
         filePath: path,
         quality: target.quality,
         audioOnly: target.audioOnly,
-        totalBytes: target.totalBytes,
+        totalBytes: target.downloadBytes,
         receivedBytes: 0,
         status: DownloadStatus.running,
       );
@@ -170,6 +185,18 @@ class DownloadManager extends ChangeNotifier {
       await sink.flush();
       await sink.close();
       sink = null;
+
+      // HD arrives as two files; join them before the download counts as done.
+      if (target.needsMux) {
+        received = await _fetchAndJoin(
+          id: id,
+          target: target,
+          videoPath: file.path,
+          received: received,
+        );
+      } else if (target.toMp3) {
+        received = await _convertToMp3(id: id, videoPath: file.path);
+      }
 
       _update(
         _records[id]!.copyWith(
@@ -277,6 +304,69 @@ class DownloadManager extends ChangeNotifier {
   /// Downloads live in Application Support, not Documents — they are app data
   /// the user manages through this screen, not files to expose over iTunes
   /// file sharing.
+  /// Downloads the audio track next to an already-fetched video file and
+  /// combines them, returning the byte count to report.
+  ///
+  /// A failed join keeps the video-only file rather than throwing the whole
+  /// download away — a silent 1080p video is a poor result, but losing a
+  /// finished transfer over a remux is worse.
+  Future<int> _fetchAndJoin({
+    required String id,
+    required DownloadTarget target,
+    required String videoPath,
+    required int received,
+  }) async {
+    final audioPath = '$videoPath.audio';
+    final audioFile = File(audioPath);
+    final sink = audioFile.openWrite();
+    var total = received;
+
+    try {
+      await for (final chunk in _repo.downloadBytes(target, audio: true)) {
+        sink.add(chunk);
+        total += chunk.length;
+        _update(_records[id]!.copyWith(receivedBytes: total));
+      }
+      await sink.flush();
+      await sink.close();
+
+      final merged = '$videoPath.merged.mp4';
+      final ok = await _muxer.mux(
+        videoPath: videoPath,
+        audioPath: audioPath,
+        outputPath: merged,
+      );
+      if (ok) {
+        await File(videoPath).delete();
+        await File(merged).rename(videoPath);
+      }
+    } catch (e) {
+      debugPrint('AI BIT: HD join failed for $id — $e');
+      await sink.close();
+    } finally {
+      if (audioFile.existsSync()) await audioFile.delete();
+    }
+    return total;
+  }
+
+  /// Re-encodes a downloaded audio track to MP3 in place.
+  Future<int> _convertToMp3({
+    required String id,
+    required String videoPath,
+  }) async {
+    final source = '$videoPath.src';
+    await File(videoPath).rename(source);
+    final ok = await _muxer.toMp3(sourcePath: source, outputPath: videoPath);
+    if (!ok) {
+      // Put the original back, so a failed conversion still leaves something
+      // playable behind — everything reads AAC anyway.
+      await File(source).rename(videoPath);
+    } else if (File(source).existsSync()) {
+      await File(source).delete();
+    }
+    return await File(videoPath).length();
+  }
+
   Future<Directory> _downloadDirectory() async {
     final base = await getApplicationSupportDirectory();
     final directory = Directory('${base.path}/downloads');

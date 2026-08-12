@@ -294,6 +294,9 @@ class DownloadTarget {
     required this.quality,
     required this.fileExtension,
     required this.audioOnly,
+    this.audioHandle,
+    this.audioBytes = 0,
+    this.toMp3 = false,
   });
 
   final Object handle;
@@ -301,6 +304,25 @@ class DownloadTarget {
   final String quality;
   final String fileExtension;
   final bool audioOnly;
+
+  /// Audio track to join to [handle] after both have downloaded.
+  ///
+  /// Above 360p YouTube only serves video and audio separately, so anything
+  /// HD arrives as two files that have to be combined. Null when [handle] is
+  /// already complete on its own.
+  final Object? audioHandle;
+
+  /// Size of [audioHandle], counted into the progress so the bar reflects
+  /// everything being fetched rather than jumping when the second file starts.
+  final int audioBytes;
+
+  /// Re-encode the audio to MP3 once downloaded.
+  final bool toMp3;
+
+  bool get needsMux => audioHandle != null;
+
+  /// Total across both files.
+  int get downloadBytes => totalBytes + audioBytes;
 }
 
 /// Everything needed to hand a video to the player.

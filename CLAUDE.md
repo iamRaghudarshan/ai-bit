@@ -122,6 +122,19 @@ deletes its partial file rather than leaving a truncated video that half-plays.
 Anything caught mid-transfer at startup is marked failed by `restore()` so it is
 retried deliberately.
 
+### HD downloads need two files joined
+
+`lib/src/data/media_muxer.dart` wraps FFmpeg. YouTube retired combined streams
+above 360p, so anything HD is a video-only track plus a separate audio track:
+`downloadTarget(hd: true)` returns both, the manager fetches them in turn, and
+the muxer copies them into one MP4 without re-encoding. A failed join keeps the
+video-only file rather than discarding a finished transfer.
+
+MP3 is the one real re-encode — YouTube serves AAC, so the conversion is a
+genuine quality loss and exists only for players that refuse `.m4a`. Both are
+off by default; both are no-ops where the native library is unavailable, and
+downloads fall back to the 360p combined file.
+
 ### Persistence
 
 `lib/src/data/db.dart` — SQLite at schema **version 2**. Adding a table means

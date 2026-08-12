@@ -57,6 +57,7 @@ dependencies:
   http: ^1.6.0
   gal: ^2.3.3
   share_plus: ^13.3.0
+  ffmpeg_kit_flutter_new: ^4.6.2
 
 dev_dependencies:
   flutter_test:
