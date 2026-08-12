@@ -191,6 +191,12 @@ jobs:
           need image_picker NSPhotoLibraryUsageDescription NSCameraUsageDescription
           need record NSMicrophoneUsageDescription
           need geolocator NSLocationWhenInUseUsageDescription
+          # FFmpeg links AVFoundation's capture APIs for joining HD downloads.
+          # Nothing here opens a camera or a microphone, but Apple scans the
+          # linked binary rather than the code paths taken and rejects the
+          # upload without both strings. Caught here it costs nothing; caught
+          # at upload it costs a build number and a round trip.
+          need ffmpeg_kit_flutter_new NSCameraUsageDescription NSMicrophoneUsageDescription
           exit $fail
 
       - name: Build the signed app

@@ -235,6 +235,12 @@ track selections where a ladder exists; only a progressive source needs
 `setResolution`, and that is a full rebuild which also makes the outgoing
 player report that it ended.
 
+**Apple scans the linked binary, not your code.** Upload has been rejected
+twice with error 90683 for purpose strings the app never needed: `gal` links
+photo-library reads, FFmpeg links AVFoundation capture. Adding a dependency
+means checking what it links, and the release workflow's purpose-string step
+should gain a line for it — a rejection costs a build number and a round trip.
+
 **Check both platforms.** iOS and Android needed entirely different fixes for
 the same symptom every time: lock-screen skip, call interruptions, notification
 staleness. One working says nothing about the other.

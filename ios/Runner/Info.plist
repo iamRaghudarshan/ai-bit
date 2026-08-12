@@ -64,6 +64,20 @@
 	<string>AI BIT saves videos you download into your Photos library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>AI BIT needs photo library access to save downloaded videos. It never reads or uploads your photos.</string>
+	<!-- The same rule caught us a second time, with FFmpeg. It is linked for
+	     joining HD video and audio downloads, and it references AVFoundation's
+	     capture APIs — so the scanner demands camera and microphone strings even
+	     though no screen in this app opens either. Both are declared honestly
+	     rather than invented: the app has no camera or recording feature, and
+	     saying otherwise in a string users can read would be a lie.
+
+	     The microphone key is here pre-emptively. Only the camera one was
+	     rejected, but the same binary references both, and finding out costs
+	     another upload and another build number. -->
+	<key>NSCameraUsageDescription</key>
+	<string>AI BIT does not use the camera. This declaration is required because the media library that joins downloaded video and audio links Apple's capture APIs.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AI BIT does not record audio. This declaration is required because the media library that joins downloaded video and audio links Apple's capture APIs.</string>
 	<!-- Answers App Store Connect's export-compliance question at build time.
 	     Without it every uploaded build stops at "Missing Compliance" and waits
 	     for someone to click through the web form before testers can install
