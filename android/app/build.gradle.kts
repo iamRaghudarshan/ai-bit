@@ -27,9 +27,26 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // Signed with the debug key: this is a personal, sideloaded /
+            // TestFlight app that is never published, so there is no upload key.
             signingConfig = signingConfigs.getByName("debug")
+
+            // R8 off, deliberately.
+            //
+            // The release build crashed on launch on a real device with
+            // "NoSuchMethodException: androidx.work.impl.WorkDatabase_Impl
+            // .<init>": R8 stripped the no-arg constructor that WorkManager —
+            // pulled in by the vendored better_player_plus for its cache and
+            // image workers — creates by reflection at startup. iOS was
+            // unaffected because R8 is Android-only, which is why that platform
+            // always worked while Android died before drawing a frame.
+            //
+            // Shrinking and obfuscation earn nothing on an app that is
+            // sideloaded and never shipped to a store, and every plugin that
+            // instantiates something by reflection is one keep-rule away from
+            // the same crash. Turning R8 off removes the whole category.
+            isMinifyEnabled = false
+            isShrinkResources = false
         }
     }
 }

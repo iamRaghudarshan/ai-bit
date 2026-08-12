@@ -251,6 +251,15 @@ track selections where a ladder exists; only a progressive source needs
 `setResolution`, and that is a full rebuild which also makes the outgoing
 player report that it ended.
 
+**Release Android builds run with R8 off.** The release build crashed on
+launch on-device with `NoSuchMethodException: WorkDatabase_Impl.<init>` — R8
+stripped a constructor WorkManager (pulled in by the vendored player for its
+cache/image workers) creates by reflection. `isMinifyEnabled = false` in
+`android/app/build.gradle.kts` fixes it; do not re-enable shrinking on a
+sideloaded app. iOS is unaffected because R8 is Android-only, which is the
+general shape here: an Android-only crash with iOS fine points at the Android
+build config or a plugin's native side, not shared Dart.
+
 **Apple scans the linked binary, not your code.** Upload has been rejected
 twice with error 90683 for purpose strings the app never needed: `gal` links
 photo-library reads, FFmpeg links AVFoundation capture. Adding a dependency
