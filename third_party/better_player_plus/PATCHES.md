@@ -46,8 +46,11 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    session token was never handed to the PlayerNotificationManager. So during
    ordinary background playback no session existed and the notification was a
    plain, controls-less one — the lock screen showed no play/pause or skip at
-   all. `setupPlayerNotification` now creates the session if needed and calls
-   `setMediaSessionToken`, turning it into a MediaStyle media notification.
+   all. `setupPlayerNotification` now creates the session if it does not exist, so
+   the refresh handler and event listener have a live session to push playback
+   state and metadata into — which is what the system's lock-screen media
+   widget binds to. (setMediaSessionToken is not used: media3's overload wants
+   a token type MediaSessionCompat does not provide.)
 
 ## Dart
 
