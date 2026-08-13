@@ -146,13 +146,24 @@ class DownloadManager extends ChangeNotifier {
           height != null &&
           height > 360 &&
           _processor.isSupported;
-      final target = await _repo.downloadTarget(
-        id,
-        audioOnly: queued.audioOnly,
-        hd: wantHd,
-        toMp3: wantMp3 && _processor.isSupported,
-        requestedHeight: wantHd ? height : null,
-      );
+      // Bounded: downloads resolve through youtube_explode's getManifest,
+      // which can hang on a device when YouTube changes its player. Without a
+      // limit the row spins at 0% forever with no way to tell why. On timeout
+      // it fails visibly instead.
+      final target = await _repo
+          .downloadTarget(
+            id,
+            audioOnly: queued.audioOnly,
+            hd: wantHd,
+            toMp3: wantMp3 && _processor.isSupported,
+            requestedHeight: wantHd ? height : null,
+          )
+          .timeout(
+            const Duration(seconds: 45),
+            onTimeout: () => throw TimeoutException(
+              'Could not resolve this video for download.',
+            ),
+          );
       final directory = await _downloadDirectory();
       final path = '${directory.path}/$id.${target.fileExtension}';
       file = File(path);
@@ -182,11 +193,31 @@ class DownloadManager extends ChangeNotifier {
       var lastWrite = 0;
 
       final completer = Completer<void>();
+
+      // Fails the download if no bytes arrive for a stretch, so a stalled
+      // connection surfaces as an error rather than an endless spinner. Reset
+      // on every chunk.
+      Timer? stall;
+      void armStall() {
+        stall?.cancel();
+        stall = Timer(const Duration(seconds: 40), () {
+          if (!completer.isCompleted) {
+            completer.completeError(
+              TimeoutException('Download stalled — no data received.'),
+            );
+          }
+        });
+      }
+
+      armStall();
       _activeSubscription = _repo.downloadBytes(target).listen(
         (chunk) {
           sink!.add(chunk);
           received += chunk.length;
-          if (received - lastWrite >= _progressWriteInterval) {
+          armStall();
+          // Update on the first chunk too, so the bar moves off zero at once
+          // rather than only after the first megabyte.
+          if (lastWrite == 0 || received - lastWrite >= _progressWriteInterval) {
             lastWrite = received;
             _update(_records[id]!.copyWith(receivedBytes: received));
             unawaited(
@@ -199,7 +230,11 @@ class DownloadManager extends ChangeNotifier {
         cancelOnError: true,
       );
 
-      await completer.future;
+      try {
+        await completer.future;
+      } finally {
+        stall?.cancel();
+      }
       await sink.flush();
       await sink.close();
       sink = null;
@@ -230,9 +265,15 @@ class DownloadManager extends ChangeNotifier {
       if (file != null && await file.exists()) {
         await file.delete().catchError((_) => file!);
       }
-      final message = e is StreamResolutionException
-          ? 'YouTube would not serve this video for download.'
-          : 'Download failed. Check your connection and retry.';
+      // Carry the real reason so a hang that now times out reads as a
+      // timeout, not a vague "check your connection".
+      final message = switch (e) {
+        StreamResolutionException() =>
+          'YouTube would not serve this video for download.',
+        TimeoutException(:final message?) => message,
+        TimeoutException() => 'Download timed out.',
+        _ => 'Download failed. Check your connection and retry.',
+      };
       _update(
         _records[id]!.copyWith(status: DownloadStatus.failed, error: message),
       );
