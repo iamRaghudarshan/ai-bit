@@ -42,6 +42,13 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    which infers CONTENT_TYPE_OTHER — the correct progressive source. This is
    the Android counterpart of the iOS out-of-band MIME patch.
 
+15. `setupMediaSession` was only called when entering PiP, and the media
+   session token was never handed to the PlayerNotificationManager. So during
+   ordinary background playback no session existed and the notification was a
+   plain, controls-less one — the lock screen showed no play/pause or skip at
+   all. `setupPlayerNotification` now creates the session if needed and calls
+   `setMediaSessionToken`, turning it into a MediaStyle media notification.
+
 ## Dart
 
 5. `VideoEventType` gained `skipToNext` and `skipToPrevious`

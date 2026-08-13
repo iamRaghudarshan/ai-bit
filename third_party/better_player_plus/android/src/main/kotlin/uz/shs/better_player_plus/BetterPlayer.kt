@@ -343,6 +343,18 @@ internal class BetterPlayer(
             }
         }
 
+        // PATCH: give the notification a media-session token so it becomes a
+        // MediaStyle notification with lock-screen transport controls.
+        //
+        // setupMediaSession was only ever called when entering PiP, so during
+        // ordinary background playback no session existed and the token was
+        // never set on the notification manager. The result posted a plain,
+        // controls-less notification: the lock screen showed no play/pause or
+        // skip at all. Creating the session here and handing its token over is
+        // what turns it into a real media notification.
+        val session = mediaSession ?: setupMediaSession(context)
+        session?.let { playerNotificationManager?.setMediaSessionToken(it.sessionToken) }
+
         refreshHandler = Handler(Looper.getMainLooper())
         refreshRunnable = Runnable {
             val playbackState: PlaybackStateCompat = if (exoPlayer?.isPlaying == true) {
