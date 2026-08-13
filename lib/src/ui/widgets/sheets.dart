@@ -104,6 +104,8 @@ Future<void> showQualitySheet(BuildContext context) {
 
   return showModalBottomSheet<void>(
     context: context,
+    // A full HLS ladder is nine entries, more than a half-height sheet fits.
+    isScrollControlled: true,
     // Listens rather than reading once.
     //
     // The HLS ladder is parsed a moment after playback starts, so a sheet
@@ -128,24 +130,32 @@ Future<void> showQualitySheet(BuildContext context) {
                         : 'This video is only offered in one size.',
                   ),
                 ),
-              for (final label in options)
-                ListTile(
-                  title: Text(label),
-                  trailing: settings.preferredQuality == label
-                      ? const Icon(Icons.check)
-                      : (playback.activeQuality == label
-                            ? const Icon(Icons.play_arrow, size: 18)
-                            : null),
-                  subtitle: label == SettingsService.autoQuality
-                      ? const Text('Adjusts to your connection')
-                      : (playback.activeQuality == label
-                            ? const Text('Playing now')
-                            : null),
-                  onTap: () {
-                    playback.setQuality(label);
-                    Navigator.pop(context);
-                  },
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final label in options)
+                      ListTile(
+                        title: Text(label),
+                        trailing: settings.preferredQuality == label
+                            ? const Icon(Icons.check)
+                            : (playback.activeQuality == label
+                                  ? const Icon(Icons.play_arrow, size: 18)
+                                  : null),
+                        subtitle: label == SettingsService.autoQuality
+                            ? const Text('Adjusts to your connection')
+                            : (playback.activeQuality == label
+                                  ? const Text('Playing now')
+                                  : null),
+                        onTap: () {
+                          playback.setQuality(label);
+                          Navigator.pop(context);
+                        },
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         );
@@ -163,6 +173,8 @@ Future<void> showCaptionsSheet(BuildContext context) {
 
   return showModalBottomSheet<void>(
     context: context,
+    // A video can carry many caption languages, more than a half-sheet fits.
+    isScrollControlled: true,
     builder: (context) => AnimatedBuilder(
       animation: playback,
       builder: (context, _) {
@@ -183,25 +195,34 @@ Future<void> showCaptionsSheet(BuildContext context) {
                         : 'This video has no captions.',
                   ),
                 ),
-              ListTile(
-                title: const Text('Off'),
-                trailing: active == null ? const Icon(Icons.check) : null,
-                onTap: () {
-                  playback.setCaptions(null);
-                  Navigator.pop(context);
-                },
-              ),
-              for (final track in tracks)
-                ListTile(
-                  title: Text(track.name ?? 'Captions'),
-                  trailing: active?.name == track.name
-                      ? const Icon(Icons.check)
-                      : null,
-                  onTap: () {
-                    playback.setCaptions(track);
-                    Navigator.pop(context);
-                  },
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
+                    ListTile(
+                      title: const Text('Off'),
+                      trailing:
+                          active == null ? const Icon(Icons.check) : null,
+                      onTap: () {
+                        playback.setCaptions(null);
+                        Navigator.pop(context);
+                      },
+                    ),
+                    for (final track in tracks)
+                      ListTile(
+                        title: Text(track.name ?? 'Captions'),
+                        trailing: active?.name == track.name
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () {
+                          playback.setCaptions(track);
+                          Navigator.pop(context);
+                        },
+                      ),
+                  ],
                 ),
+              ),
             ],
           ),
         );
@@ -354,6 +375,11 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
 
   return showModalBottomSheet<void>(
     context: context,
+    // A tall video can offer eight renditions plus the footer, more than a
+    // half-height sheet fits. Without this the list overflowed and dragging it
+    // dismissed the sheet instead of scrolling. Scroll-controlled lets the
+    // sheet grow and the list scroll inside it.
+    isScrollControlled: true,
     builder: (sheetContext) => SafeArea(
       child: FutureBuilder<List<DownloadOption>>(
         future: repo.downloadOptions(video.id, allowFfmpeg: downloads.canProcess),
@@ -370,6 +396,13 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               _sheetHeader(context, 'Download'),
+              // The header stays put; the renditions scroll under it, capped so
+              // the sheet never grows past most of the screen.
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
               if (options.isEmpty)
                 const Padding(
                   padding: EdgeInsets.fromLTRB(20, 0, 20, 24),
@@ -423,6 +456,9 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
                   ),
                 ),
               const SizedBox(height: 8),
+                  ],
+                ),
+              ),
             ],
           );
         },
