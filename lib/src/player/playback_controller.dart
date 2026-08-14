@@ -374,7 +374,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
     _player!.videoPlayerController?.removeListener(_onValueChanged);
     _player!.videoPlayerController?.addListener(_onValueChanged);
-    await _player!.setSpeed(_config.playbackSpeed);
+    // Prefer a speed remembered for this channel, falling back to the global
+    // default. Applied here so it takes effect the moment the video loads.
+    final channelSpeed = _config.speedForChannel(video.channelId);
+    await _player!.setSpeed(channelSpeed ?? _config.playbackSpeed);
 
     _cancelCountdown();
     _endScreen = false;
@@ -609,6 +612,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> setSpeed(double value) async {
     _config.playbackSpeed = value;
+    final channel = _current?.channelId;
+    if (channel != null) _config.setSpeedForChannel(channel, value);
     await _player?.setSpeed(value);
     notifyListeners();
   }

@@ -60,6 +60,37 @@ class SettingsService extends ChangeNotifier {
   bool get kidsMode => _prefs.getBool(_kKidsMode) ?? false;
   set kidsMode(bool value) => _write(_kKidsMode, value);
 
+  static const _kAmoled = 'amoled_black';
+
+  /// Pure-black backgrounds in dark mode, which switch OLED pixels fully off.
+  bool get amoledBlack => _prefs.getBool(_kAmoled) ?? false;
+  set amoledBlack(bool value) => _write(_kAmoled, value);
+
+  static const _kAccent = 'accent_color';
+
+  /// Brand accent as an ARGB int. Defaults to the YouTube-ish red.
+  int get accentColor => _prefs.getInt(_kAccent) ?? 0xFFFF0033;
+  set accentColor(int value) => _write(_kAccent, value);
+
+  static const _kRememberSpeed = 'remember_speed_per_channel';
+
+  /// Remember the playback speed chosen for each channel, and reapply it the
+  /// next time one of that channel's videos plays.
+  bool get rememberSpeedPerChannel =>
+      _prefs.getBool(_kRememberSpeed) ?? false;
+  set rememberSpeedPerChannel(bool value) => _write(_kRememberSpeed, value);
+
+  /// Reads the remembered speed for [channelId], or null if none.
+  double? speedForChannel(String channelId) {
+    if (!rememberSpeedPerChannel || channelId.isEmpty) return null;
+    return _prefs.getDouble('speed_ch_$channelId');
+  }
+
+  void setSpeedForChannel(String channelId, double speed) {
+    if (channelId.isEmpty) return;
+    _prefs.setDouble('speed_ch_$channelId', speed);
+  }
+
   /// When false the player pauses as the app leaves the foreground, matching
   /// stock YouTube behaviour.
   bool get backgroundPlayback => _prefs.getBool(_kBackground) ?? true;

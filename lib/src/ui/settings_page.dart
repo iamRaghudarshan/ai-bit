@@ -61,6 +61,15 @@ class SettingsPage extends StatelessWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickQuality(context, settings),
           ),
+          SwitchListTile(
+            value: settings.rememberSpeedPerChannel,
+            title: const Text('Remember speed per channel'),
+            subtitle: const Text(
+              'Reapply the playback speed you last used for a channel when '
+              'another of its videos plays.',
+            ),
+            onChanged: (value) => settings.rememberSpeedPerChannel = value,
+          ),
           const Divider(),
           const _SectionLabel('Storage'),
           ListTile(
@@ -99,6 +108,24 @@ class SettingsPage extends StatelessWidget {
               ],
             ),
           ),
+          SwitchListTile(
+            value: settings.amoledBlack,
+            title: const Text('AMOLED black'),
+            subtitle: const Text(
+              'Pure-black backgrounds in dark mode, which switch OLED pixels '
+              'fully off to save battery.',
+            ),
+            onChanged: (value) => settings.amoledBlack = value,
+          ),
+          ListTile(
+            title: const Text('Accent colour'),
+            subtitle: const Text('Used for highlights and the brand tint.'),
+            trailing: CircleAvatar(
+              radius: 12,
+              backgroundColor: Color(settings.accentColor),
+            ),
+            onTap: () => _pickAccent(context, settings),
+          ),
           const Divider(),
           const _SectionLabel('About'),
           const ListTile(
@@ -112,6 +139,56 @@ class SettingsPage extends StatelessWidget {
             isThreeLine: true,
           ),
         ],
+      ),
+    );
+  }
+
+  void _pickAccent(BuildContext context, SettingsService settings) {
+    // A small palette rather than a full colour wheel: enough to personalise,
+    // simple to tap.
+    const options = <(String, int)>[
+      ('Red', 0xFFFF0033),
+      ('Blue', 0xFF3B82F6),
+      ('Green', 0xFF22C55E),
+      ('Purple', 0xFF8B5CF6),
+      ('Orange', 0xFFF97316),
+      ('Pink', 0xFFEC4899),
+      ('Teal', 0xFF14B8A6),
+      ('Amber', 0xFFF59E0B),
+    ];
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 16,
+            children: [
+              for (final (name, value) in options)
+                GestureDetector(
+                  onTap: () {
+                    settings.accentColor = value;
+                    Navigator.pop(context);
+                  },
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      CircleAvatar(
+                        radius: 22,
+                        backgroundColor: Color(value),
+                        child: settings.accentColor == value
+                            ? const Icon(Icons.check, color: Colors.white)
+                            : null,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(name, style: const TextStyle(fontSize: 11)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

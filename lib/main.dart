@@ -145,8 +145,15 @@ class AiBitApp extends StatelessWidget {
           title: 'AI BIT',
           debugShowCheckedModeBanner: false,
           themeMode: settings.themeMode,
-          theme: buildTheme(Brightness.light),
-          darkTheme: buildTheme(Brightness.dark),
+          theme: buildTheme(
+            Brightness.light,
+            accent: Color(settings.accentColor),
+          ),
+          darkTheme: buildTheme(
+            Brightness.dark,
+            accent: Color(settings.accentColor),
+            amoled: settings.amoledBlack,
+          ),
           // In a browser the app would otherwise stretch across a desktop
           // window, which is nothing like how it looks on a phone.
           builder: kIsWeb ? _phoneFrame : null,

@@ -11,13 +11,19 @@ abstract final class AppColors {
   static const lightSurface = Color(0xFFF2F2F2);
 }
 
-ThemeData buildTheme(Brightness brightness) {
+ThemeData buildTheme(
+  Brightness brightness, {
+  Color accent = AppColors.brand,
+  bool amoled = false,
+}) {
   final isDark = brightness == Brightness.dark;
+  // AMOLED swaps the dark background to true black so OLED pixels switch off.
+  final darkBg = amoled ? const Color(0xFF000000) : AppColors.darkBg;
   final scheme = ColorScheme.fromSeed(
-    seedColor: AppColors.brand,
+    seedColor: accent,
     brightness: brightness,
-    primary: AppColors.brand,
-    surface: isDark ? AppColors.darkBg : AppColors.lightBg,
+    primary: accent,
+    surface: isDark ? darkBg : AppColors.lightBg,
   );
 
   return ThemeData(
@@ -40,7 +46,7 @@ ThemeData buildTheme(Brightness brightness) {
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(
-      backgroundColor: isDark ? AppColors.darkBg : AppColors.lightBg,
+      backgroundColor: isDark ? darkBg : AppColors.lightBg,
       indicatorColor: Colors.transparent,
       elevation: 0,
       height: 62,
@@ -50,7 +56,9 @@ ThemeData buildTheme(Brightness brightness) {
       ),
     ),
     bottomSheetTheme: BottomSheetThemeData(
-      backgroundColor: isDark ? AppColors.darkSurface : AppColors.lightBg,
+      backgroundColor: isDark
+          ? (amoled ? const Color(0xFF0A0A0A) : AppColors.darkSurface)
+          : AppColors.lightBg,
       surfaceTintColor: Colors.transparent,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
@@ -70,8 +78,8 @@ ThemeData buildTheme(Brightness brightness) {
     listTileTheme: const ListTileThemeData(
       contentPadding: EdgeInsets.symmetric(horizontal: 16),
     ),
-    progressIndicatorTheme: const ProgressIndicatorThemeData(
-      color: AppColors.brand,
+    progressIndicatorTheme: ProgressIndicatorThemeData(
+      color: accent,
     ),
   );
 }
