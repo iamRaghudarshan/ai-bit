@@ -26,6 +26,7 @@ class HomePage extends StatefulWidget {
 class HomePageState extends State<HomePage>
     with AutomaticKeepAliveClientMixin {
   List<VideoBrief> _feed = const [];
+  List<HistoryEntry> _continue = const [];
   bool _loading = true;
   String? _error;
   int _refreshToken = 0;
@@ -60,6 +61,12 @@ class HomePageState extends State<HomePage>
     });
     try {
       final repo = context.read<YtRepository>();
+
+      // The Continue-watching shelf belongs only to the personalised feed.
+      if (context.read<SettingsService>().kidsMode ||
+          _category != _CategoryChips.all) {
+        _continue = const [];
+      }
 
       // Kids mode takes over the whole feed, regardless of the chosen category
       // chip, so nothing but curated kid content shows.
@@ -108,6 +115,9 @@ class HomePageState extends State<HomePage>
       final searches = await db.recentSearches();
       if (!mounted) return;
       _signals = _signature(searches, seeds.channelIds);
+      final resumeable = await db.continueWatching();
+      if (!mounted) return;
+      _continue = resumeable;
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
         searches: searches,
@@ -225,16 +235,24 @@ class HomePageState extends State<HomePage>
                 ],
               );
             }
+            final hasShelf = _continue.isNotEmpty;
             return ListView.builder(
               padding: const EdgeInsets.only(top: 8),
-              itemCount: _feed.length,
-              // Cards are tall, so the default cache extent keeps several
-              // screens of decoded thumbnails alive above and below the
-              // viewport. One screen either side is enough to scroll smoothly
-              // and holds a fraction of the images.
+              itemCount: _feed.length + (hasShelf ? 1 : 0),
               addAutomaticKeepAlives: false,
               itemBuilder: (context, index) {
-                final video = _feed[index];
+                if (hasShelf && index == 0) {
+                  return _ContinueWatchingShelf(
+                    entries: _continue,
+                    onOpened: () async {
+                      // Refresh the shelf when returning from a video.
+                      final resumeable =
+                          await context.read<AppDatabase>().continueWatching();
+                      if (mounted) setState(() => _continue = resumeable);
+                    },
+                  );
+                }
+                final video = _feed[index - (hasShelf ? 1 : 0)];
                 // No RepaintBoundary here: ListView.builder already gives
                 // every child one, and a second is pure overhead.
                 return VideoCard(
@@ -252,6 +270,70 @@ class HomePageState extends State<HomePage>
 
 /// Horizontal topic filter across the top of the feed, mirroring the real
 /// app's chip row.
+/// Horizontal "Continue watching" row of partly-watched videos with a resume
+/// bar, shown at the top of the personalised feed.
+class _ContinueWatchingShelf extends StatelessWidget {
+  const _ContinueWatchingShelf({required this.entries, required this.onOpened});
+
+  final List<HistoryEntry> entries;
+  final Future<void> Function() onOpened;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Padding(
+          padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
+          child: Text(
+            'Continue watching',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+        ),
+        SizedBox(
+          height: 168,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: entries.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 10),
+            itemBuilder: (context, i) {
+              final entry = entries[i];
+              return SizedBox(
+                width: 200,
+                child: GestureDetector(
+                  onTap: () async {
+                    await WatchPage.open(context, entry.video);
+                    await onOpened();
+                  },
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      VideoThumb(video: entry.video, progress: entry.progress),
+                      const SizedBox(height: 6),
+                      Text(
+                        entry.video.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w500,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const Divider(height: 24),
+      ],
+    );
+  }
+}
+
 /// The pill toggle in the top bar: normal AI BIT on the left, Kids on the
 /// right. Default is normal; tapping a side switches the whole app's feed.
 class _ModeSwitch extends StatelessWidget {

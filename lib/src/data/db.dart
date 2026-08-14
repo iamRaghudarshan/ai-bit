@@ -364,6 +364,30 @@ class AppDatabase {
     return Duration(milliseconds: ms);
   }
 
+  /// Partly-watched regular videos, newest first, for a "Continue watching"
+  /// shelf. Excludes Shorts, Kids-mode items, and anything effectively
+  /// finished (past 92% or with under ten seconds played).
+  Future<List<HistoryEntry>> continueWatching({int limit = 15}) async {
+    final rows = await _db.query(
+      'history',
+      where: 'is_short = 0 AND is_kids = 0 AND position_ms > 10000 '
+          'AND (duration_ms IS NULL OR position_ms < duration_ms * 0.92)',
+      orderBy: 'watched_at DESC',
+      limit: limit,
+    );
+    return rows
+        .map(
+          (r) => HistoryEntry(
+            video: VideoBrief.fromMap(r),
+            position: Duration(milliseconds: r['position_ms'] as int? ?? 0),
+            watchedAt: DateTime.fromMillisecondsSinceEpoch(
+              r['watched_at']! as int,
+            ),
+          ),
+        )
+        .toList();
+  }
+
   /// Watch history, filterable so Videos, Shorts and Kids can be shown apart.
   /// Each of [shorts] and [kids] is null (don't care), true or false.
   Future<List<HistoryEntry>> history({
