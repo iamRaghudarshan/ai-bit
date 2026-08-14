@@ -726,7 +726,10 @@ class YtRepository {
           final seen = <int>{};
           for (final v in videos) {
             final h = v.videoResolution.height;
-            if (h <= 360 || !seen.add(h)) continue;
+            // Every rendition except 360p, which the combined stream below
+            // covers without a mux. This includes 144p/240p, so the smallest
+            // sizes are downloadable for data saving.
+            if (h == 360 || !seen.add(h)) continue;
             options.add(DownloadOption(
               audioOnly: false,
               quality: '${h}p',
