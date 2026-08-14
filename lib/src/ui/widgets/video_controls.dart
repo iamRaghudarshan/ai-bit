@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/format.dart';
 import '../../core/theme.dart';
+import '../../core/chapters.dart';
 import '../../player/playback_controller.dart';
 import 'sheets.dart';
 
@@ -133,7 +134,13 @@ class _VideoControlsState extends State<VideoControls> {
                 child: Stack(
                   children: [
                     _buildCentre(playback, buffering),
-                    _buildBottomBar(position, duration, isLive),
+                    _buildBottomBar(
+                      position,
+                      duration,
+                      isLive,
+                      playback.chapters,
+                      playback.currentChapter?.title,
+                    ),
                     _buildTopBar(),
                   ],
                 ),
@@ -209,7 +216,13 @@ class _VideoControlsState extends State<VideoControls> {
     );
   }
 
-  Widget _buildBottomBar(Duration position, Duration duration, bool isLive) {
+  Widget _buildBottomBar(
+    Duration position,
+    Duration duration,
+    bool isLive,
+    List<VideoChapter> chapters,
+    String? chapterTitle,
+  ) {
     final total = duration.inMilliseconds.toDouble();
     final current = _scrubbing
         ? _scrubTo
@@ -219,7 +232,26 @@ class _VideoControlsState extends State<VideoControls> {
       left: 4,
       right: 4,
       bottom: 0,
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // The chapter the playhead is in, YouTube-style, above the bar.
+          if (chapterTitle != null && !isLive)
+            Padding(
+              padding: const EdgeInsets.only(left: 12, bottom: 2),
+              child: Text(
+                chapterTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          Row(
         children: [
           const SizedBox(width: 8),
           Text(
@@ -249,23 +281,46 @@ class _VideoControlsState extends State<VideoControls> {
                         thumbColor: AppColors.brand,
                         overlayColor: AppColors.brand.withValues(alpha: 0.25),
                       ),
-                      child: Slider(
-                        value: total <= 0 ? 0 : current.toDouble(),
-                        max: total <= 0 ? 1 : total,
-                        onChangeStart: (v) {
-                          _hideTimer?.cancel();
-                          setState(() {
-                            _scrubbing = true;
-                            _scrubTo = v;
-                          });
-                        },
-                        onChanged: (v) => setState(() => _scrubTo = v),
-                        onChangeEnd: (v) {
-                          widget.controller
-                              .seekTo(Duration(milliseconds: v.round()));
-                          setState(() => _scrubbing = false);
-                          _restartHideTimer();
-                        },
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Slider(
+                            value: total <= 0 ? 0 : current.toDouble(),
+                            max: total <= 0 ? 1 : total,
+                            onChangeStart: (v) {
+                              _hideTimer?.cancel();
+                              setState(() {
+                                _scrubbing = true;
+                                _scrubTo = v;
+                              });
+                            },
+                            onChanged: (v) => setState(() => _scrubTo = v),
+                            onChangeEnd: (v) {
+                              widget.controller
+                                  .seekTo(Duration(milliseconds: v.round()));
+                              setState(() => _scrubbing = false);
+                              _restartHideTimer();
+                            },
+                          ),
+                          // Chapter divisions over the track. Non-interactive,
+                          // inset to roughly match the slider's thumb padding.
+                          if (chapters.length > 1 && total > 0)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 10),
+                                  child: CustomPaint(
+                                    painter: _ChapterTicks(
+                                      chapters: chapters,
+                                      totalMs: total,
+                                      scrubbing: _scrubbing,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ),
                     ),
                   ),
@@ -284,6 +339,8 @@ class _VideoControlsState extends State<VideoControls> {
             tooltip: 'Fullscreen',
             onPressed: () => _act(widget.controller.toggleFullScreen),
           ),
+        ],
+      ),
         ],
       ),
     );
@@ -343,4 +400,38 @@ class _RoundButton extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Thin white ticks marking chapter boundaries along the seek bar.
+class _ChapterTicks extends CustomPainter {
+  _ChapterTicks({
+    required this.chapters,
+    required this.totalMs,
+    required this.scrubbing,
+  });
+
+  final List<VideoChapter> chapters;
+  final double totalMs;
+  final bool scrubbing;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.85)
+      ..strokeWidth = 2;
+    final trackH = scrubbing ? 5.0 : 3.0;
+    final top = (size.height - trackH) / 2;
+    for (final c in chapters) {
+      final frac = (c.start.inMilliseconds / totalMs).clamp(0.0, 1.0);
+      if (frac <= 0 || frac >= 1) continue; // skip the 0:00 start and the end
+      final x = frac * size.width;
+      canvas.drawLine(Offset(x, top), Offset(x, top + trackH), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ChapterTicks old) =>
+      old.chapters != chapters ||
+      old.totalMs != totalMs ||
+      old.scrubbing != scrubbing;
 }

@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
+import '../core/chapters.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../data/download_manager.dart';
@@ -184,6 +185,12 @@ class _WatchPageState extends State<WatchPage>
         _video = VideoBrief.fromYt(details).withAvatar(_video.avatarUrl);
         _loadingDetails = false;
       });
+      // Hand parsed chapters to the controller so the seek bar can mark them.
+      if (context.read<PlaybackController>().current?.id == _video.id) {
+        context
+            .read<PlaybackController>()
+            .setChapters(parseChapters(details.description));
+      }
       // A row that arrived without an avatar — anything opened from a source
       // that does not carry one — gets it from the channel itself, so the
       // header is never left showing an initial.

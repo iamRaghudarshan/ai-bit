@@ -5,6 +5,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
+import '../core/chapters.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../data/db.dart';
@@ -381,9 +382,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
     _cancelCountdown();
     _endScreen = false;
-    // A loop belongs to one video; a new source starts without it.
+    // A loop and chapters belong to one video; a new source starts without.
     _loopA = null;
     _loopB = null;
+    _chapters = const [];
 
     // Setting a data source resets the remote commands inside the plugin, so
     // the skip buttons have to be re-armed for every video rather than once.
@@ -761,6 +763,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Swaps in a new autoplay queue — used once the watch page has finished
   /// loading the real "up next" list.
+  // ------------------------------------------------------------- chapters
+
+  List<VideoChapter> _chapters = const [];
+  List<VideoChapter> get chapters => _chapters;
+
+  /// The chapter covering the current position, or null.
+  VideoChapter? get currentChapter =>
+      _chapters.isEmpty ? null : chapterAt(_chapters, _position);
+
+  /// Set by the watch page once the description has been parsed.
+  void setChapters(List<VideoChapter> chapters) {
+    _chapters = chapters;
+    notifyListeners();
+  }
+
   // ------------------------------------------------------------- A–B loop
 
   Duration? _loopA;
