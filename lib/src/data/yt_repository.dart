@@ -603,11 +603,7 @@ class YtRepository {
         // to get 1080p or better. Both tracks are copied into one container
         // without re-encoding, which is quick and loses nothing.
         if (hd && manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
-          final videos = manifest.videoOnly
-              .where((v) => v.container.name == 'mp4')
-              .toList()
-            ..sort((a, b) =>
-                b.videoResolution.height.compareTo(a.videoResolution.height));
+          final videos = _downloadableVideos(manifest);
           if (videos.isNotEmpty) {
             // The requested height exactly where it exists, otherwise the
             // nearest below it, otherwise the best there is — so a picker entry
@@ -652,6 +648,31 @@ class YtRepository {
       }
     }
     throw StreamResolutionException(videoId, lastError);
+  }
+
+  /// Video-only MP4 renditions to offer for HD download, tallest first, with
+  /// H.264/AVC preferred over AV1.
+  ///
+  /// YouTube serves 1440p and 2160p **only** as AV1, and Apple's Photos and
+  /// AVPlayer reject AV1 on most iPhones — a 4K download saves and then fails
+  /// to play or export ("unsupported format", which is exactly what a 4K
+  /// download hit). Preferring AVC caps HD at a universally compatible 1080p,
+  /// the same "playable beats bigger" rule as [_bestPlayableAudio]. AV1 is used
+  /// only when a video offers nothing else.
+  static List<yt.VideoOnlyStreamInfo> _downloadableVideos(
+    yt.StreamManifest manifest,
+  ) {
+    final mp4 = manifest.videoOnly
+        .where((v) => v.container.name == 'mp4')
+        .toList();
+    final avc = mp4
+        .where((v) => v.videoCodec.toLowerCase().startsWith('avc'))
+        .toList();
+    final chosen = avc.isNotEmpty ? avc : mp4;
+    chosen.sort(
+      (a, b) => b.videoResolution.height.compareTo(a.videoResolution.height),
+    );
+    return chosen;
   }
 
   /// Picks AAC-in-MP4 over the higher-bitrate Opus track.
@@ -701,11 +722,7 @@ class YtRepository {
 
         // HD renditions, tallest first, only where they can be joined.
         if (allowFfmpeg && audio != null) {
-          final videos = manifest.videoOnly
-              .where((v) => v.container.name == 'mp4')
-              .toList()
-            ..sort((a, b) =>
-                b.videoResolution.height.compareTo(a.videoResolution.height));
+          final videos = _downloadableVideos(manifest);
           final seen = <int>{};
           for (final v in videos) {
             final h = v.videoResolution.height;

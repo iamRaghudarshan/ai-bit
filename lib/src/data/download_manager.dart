@@ -391,7 +391,20 @@ class DownloadManager extends ChangeNotifier {
     if (!await Gal.hasAccess(toAlbum: true)) {
       await Gal.requestAccess(toAlbum: true);
     }
-    await Gal.putVideo(record.filePath, album: 'AI BIT');
+    try {
+      await Gal.putVideo(record.filePath, album: 'AI BIT');
+    } on GalException catch (e) {
+      // Photos rejects codecs it cannot decode — chiefly the AV1 that YouTube
+      // uses for 4K. New HD downloads are AVC and save fine; an older AV1 file
+      // still cannot, so point at Export rather than surfacing a raw code.
+      if (e.type == GalExceptionType.notSupportedFormat) {
+        throw StateError(
+          "This video's format can't be added to Photos. Use "
+          "Export / Save to Files instead, or re-download it in HD.",
+        );
+      }
+      rethrow;
+    }
   }
 
   /// Hands a finished download to the system share sheet, which is how a file
