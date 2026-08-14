@@ -522,7 +522,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // Computing it up front therefore always returned "Auto" and returned
         // early, so audio-only streamed the full-size video behind the artwork
         // and saved no data at all.
-        final wanted = (_config.audioOnly || _droppedVideo)
+        final wanted = (_config.audioOnly || _droppedVideo || _config.dataSaver)
             ? _lowestQuality
             : _config.preferredQuality;
         if (wanted == SettingsService.autoQuality) return;

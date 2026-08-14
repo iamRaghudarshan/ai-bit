@@ -207,7 +207,10 @@ class DownloadManager extends ChangeNotifier {
       Timer? stall;
       void armStall() {
         stall?.cancel();
-        stall = Timer(const Duration(seconds: 40), () {
+        // Generous: the repository now retries a stalled chunk internally for
+        // up to ~80s before giving up, so this only fires when the transfer is
+        // genuinely dead, not merely slow or mid-retry.
+        stall = Timer(const Duration(seconds: 120), () {
           if (!completer.isCompleted) {
             completer.completeError(
               TimeoutException('Download stalled — no data received.'),

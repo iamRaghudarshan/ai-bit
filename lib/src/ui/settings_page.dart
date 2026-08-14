@@ -56,10 +56,32 @@ class SettingsPage extends StatelessWidget {
             onChanged: (value) => settings.autoplayNext = value,
           ),
           ListTile(
+            enabled: !settings.dataSaver,
             title: const Text('Default quality'),
-            subtitle: Text(settings.preferredQuality),
+            subtitle: Text(
+              settings.dataSaver
+                  ? 'Overridden by Data saver (lowest)'
+                  : settings.preferredQuality,
+            ),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () => _pickQuality(context, settings),
+            onTap: settings.dataSaver
+                ? null
+                : () => _pickQuality(context, settings),
+          ),
+          SwitchListTile(
+            value: settings.dataSaver,
+            title: const Text('Data saver'),
+            subtitle: const Text(
+              'Always stream the lowest quality a video offers, to use as '
+              'little data as possible. Many videos only offer 360p as a '
+              'playable stream, so that is the floor; pair with Audio only for '
+              'the least data.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) {
+              settings.dataSaver = value;
+              if (playback.hasVideo) playback.reloadCurrent();
+            },
           ),
           SwitchListTile(
             value: settings.rememberSpeedPerChannel,

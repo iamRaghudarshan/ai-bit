@@ -79,6 +79,18 @@ class SettingsService extends ChangeNotifier {
   int get accentColor => _prefs.getInt(_kAccent) ?? 0xFFFF0033;
   set accentColor(int value) => _write(_kAccent, value);
 
+  static const _kDataSaver = 'data_saver';
+
+  /// Minimise data use: always stream the lowest-quality rendition a video
+  /// offers, and default new downloads to the smallest size. Off by default.
+  ///
+  /// On videos that only offer the single 360p combined stream this can go no
+  /// lower than 360p — YouTube no longer serves a combined stream beneath it —
+  /// but on anything with a fuller ladder it drops to 144p/240p. For the
+  /// absolute least data, pair it with Audio only.
+  bool get dataSaver => _prefs.getBool(_kDataSaver) ?? false;
+  set dataSaver(bool value) => _write(_kDataSaver, value);
+
   static const _kRememberSpeed = 'remember_speed_per_channel';
 
   /// Remember the playback speed chosen for each channel, and reapply it the

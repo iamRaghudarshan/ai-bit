@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
@@ -773,8 +774,69 @@ class YtRepository {
   /// Bytes for one half of a download. [audio] selects the separate audio
   /// track that HD downloads have to fetch alongside the video.
   Stream<List<int>> downloadBytes(DownloadTarget target, {bool audio = false}) {
-    final handle = audio ? target.audioHandle : target.handle;
-    return _yt.videos.streamsClient.get(handle! as yt.StreamInfo);
+    final handle = (audio ? target.audioHandle : target.handle) as yt.StreamInfo;
+    return _rangedDownload(handle);
+  }
+
+  /// Fetches a progressive stream in bounded ranged chunks instead of one long
+  /// open request.
+  ///
+  /// The one-request approach was the whole cause of "download stalled — no
+  /// data received": YouTube throttles a single sustained googlevideo request
+  /// down to nothing after the first burst, so on a phone the transfer would
+  /// hang and the watchdog killed it. Asking for ~8 MB at a time keeps every
+  /// request short enough to run at full speed. A chunk that stalls or errors
+  /// is retried from exactly where it stopped — the bytes already yielded are
+  /// on disk — so a hiccup costs one chunk, not the whole download.
+  ///
+  /// Anything this cannot range over — fragmented DASH, or a stream whose size
+  /// YouTube did not report — falls back to the package's own streaming.
+  Stream<List<int>> _rangedDownload(yt.StreamInfo info) async* {
+    final total = info.size.totalBytes;
+    if (total <= 0 || info.fragments.isNotEmpty) {
+      yield* _yt.videos.streamsClient.get(info);
+      return;
+    }
+
+    const chunkSize = 8 * 1024 * 1024; // 8 MB per request.
+    const chunkTimeout = Duration(seconds: 25);
+    const maxAttempts = 3;
+
+    final client = http.Client();
+    try {
+      var received = 0;
+      while (received < total) {
+        final end = (received + chunkSize >= total ? total : received + chunkSize) - 1;
+        var attempt = 0;
+        while (true) {
+          try {
+            final request = http.Request('GET', info.url)
+              ..headers['Range'] = 'bytes=$received-$end';
+            final response =
+                await client.send(request).timeout(chunkTimeout);
+            if (response.statusCode != 206 && response.statusCode != 200) {
+              throw http.ClientException(
+                'Unexpected status ${response.statusCode}',
+                info.url,
+              );
+            }
+            // A gap between packets longer than the timeout is a stall, not a
+            // slow link — turn it into a retry rather than an endless wait.
+            await for (final data in response.stream.timeout(chunkTimeout)) {
+              received += data.length;
+              yield data;
+            }
+            break; // chunk complete
+          } catch (e) {
+            if (++attempt >= maxAttempts) rethrow;
+            await Future<void>.delayed(Duration(seconds: attempt));
+            // Loop retries from the current `received`, resuming the chunk.
+          }
+        }
+      }
+    } finally {
+      client.close();
+    }
   }
 
   PlaybackSources _cache(String key, PlaybackSources sources) {
