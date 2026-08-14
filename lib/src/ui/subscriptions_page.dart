@@ -28,14 +28,14 @@ class SubscriptionsPageState extends State<SubscriptionsPage> {
   List<VideoBrief> _videos = const [];
   bool _loading = true;
 
-  @override
-  void initState() {
-    super.initState();
-    reload();
-  }
+  // No initState fetch: every tab is built at startup inside the shell's
+  // IndexedStack, so loading here would fire a network request on launch while
+  // the user is still on Home. The shell calls reload() when the tab is first
+  // opened instead.
 
   /// Called by the shell when this tab is selected, since a subscription may
-  /// have been added from a channel page in the meantime.
+  /// have been added from a channel page in the meantime. The first call loads;
+  /// this is what defers the startup fetch.
   Future<void> reload() async {
     if (!mounted) return;
     setState(() => _loading = true);
