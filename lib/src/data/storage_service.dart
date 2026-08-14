@@ -175,6 +175,19 @@ class StorageService {
     await _db.clearSearchHistory();
   }
 
+  /// Wipes everything the app stores on this device — downloads, cache,
+  /// history, playlists and subscriptions — returning it to a fresh install.
+  ///
+  /// There is no account and no sync, so this cannot be undone: it is the
+  /// "start over" button, kept behind a strong confirmation in the UI.
+  Future<void> clearAll() async {
+    await clearDownloads();
+    await clearCache();
+    await clearHistory();
+    await _db.clearPlaylists();
+    await _db.clearSubscriptions();
+  }
+
   Future<Directory> _downloadDirectory() async {
     final base = await getApplicationSupportDirectory();
     return Directory('${base.path}/downloads');

@@ -191,6 +191,32 @@ class _StoragePageState extends State<StoragePage> {
                     action: context.read<StorageService>().clearHistory,
                   ),
                 ),
+                ListTile(
+                  enabled: !_busy,
+                  leading: Icon(
+                    Icons.delete_forever_outlined,
+                    color: theme.colorScheme.error,
+                  ),
+                  title: Text(
+                    'Clear all app data',
+                    style: TextStyle(color: theme.colorScheme.error),
+                  ),
+                  subtitle: const Text(
+                    'Delete everything — downloads, cache, history, playlists '
+                    'and subscriptions — and start over. This cannot be undone.',
+                  ),
+                  isThreeLine: true,
+                  onTap: () => _confirmAndRun(
+                    title: 'Clear all app data?',
+                    message:
+                        'This deletes every download, all cache, your watch and '
+                        'search history, every playlist and all subscriptions, '
+                        'returning the app to a fresh install. There is no '
+                        'account and no backup, so this cannot be undone.',
+                    confirmLabel: 'Erase everything',
+                    action: context.read<StorageService>().clearAll,
+                  ),
+                ),
                 const Divider(height: 24),
                 const _SectionLabel('Backup'),
                 ListTile(

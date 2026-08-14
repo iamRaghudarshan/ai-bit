@@ -510,6 +510,20 @@ class AppDatabase {
     await _db.delete('playlists', where: 'id = ?', whereArgs: [id]);
   }
 
+  /// Empties every playlist and removes all but the reserved Watch Later,
+  /// which is left in place (but empty) so the seed invariant holds.
+  Future<void> clearPlaylists() async {
+    await _db.delete('playlist_items');
+    await _db.delete(
+      'playlists',
+      where: 'id != ?',
+      whereArgs: [LocalPlaylist.watchLaterId],
+    );
+  }
+
+  /// Removes every followed channel.
+  Future<void> clearSubscriptions() => _db.delete('subscriptions');
+
   Future<void> addToPlaylist(int playlistId, VideoBrief video) =>
       _db.insert('playlist_items', {
         ...video.toMap(),
