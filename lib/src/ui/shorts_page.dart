@@ -40,6 +40,10 @@ class ShortsPageState extends State<ShortsPage> {
   /// nothing plays — the tab is built at startup along with every other.
   bool _activated = false;
 
+  /// The Kids/normal mode the loaded shorts belong to, so a mode switch on the
+  /// Home tab forces a reload rather than showing the previous mode's shorts.
+  bool _loadedKids = false;
+
   /// Debounces [_playCurrent] while a swipe is still in flight.
   ///
   /// Every call resolves a stream and rebuilds the native player. Flicking
@@ -57,11 +61,15 @@ class ShortsPageState extends State<ShortsPage> {
 
   /// Called by the shell when the tab is selected.
   Future<void> onTabOpened() async {
-    if (_activated) {
+    final kids = context.read<SettingsService>().kidsMode;
+    if (_activated && kids == _loadedKids) {
       // Returning to the tab resumes whatever is on screen.
       _playCurrent();
       return;
     }
+    // A mode switch: clear the old shorts so the loader shows while the new
+    // set fetches, rather than the previous mode's shorts lingering.
+    if (_activated) setState(() => _shorts = const []);
     _activated = true;
     await _load();
   }
@@ -81,10 +89,12 @@ class ShortsPageState extends State<ShortsPage> {
       final db = context.read<AppDatabase>();
       final searches = await db.recentSearches(limit: 2);
       if (!mounted) return;
+      final kids = context.read<SettingsService>().kidsMode;
+      _loadedKids = kids;
       final shorts = await context.read<YtRepository>().shortsFeed(
         searches: searches,
         refreshToken: _refreshToken,
-        kids: context.read<SettingsService>().kidsMode,
+        kids: kids,
       );
       if (!mounted) return;
       setState(() {

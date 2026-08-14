@@ -49,9 +49,13 @@ class HomePageState extends State<HomePage>
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool reset = false}) async {
     setState(() {
-      _loading = _feed.isEmpty;
+      // A mode or category change is a different feed, so show the skeleton
+      // rather than leaving the old rows up while the new ones fetch. A plain
+      // refresh keeps them (the pull-to-refresh spinner covers that).
+      _loading = reset || _feed.isEmpty;
+      if (reset) _feed = const [];
       _error = null;
     });
     try {
@@ -154,9 +158,10 @@ class HomePageState extends State<HomePage>
           kids: context.watch<SettingsService>().kidsMode,
           onChanged: (kids) {
             context.read<SettingsService>().kidsMode = kids;
-            // Reset to All and reload so the feed flips immediately.
-            setState(() => _category = _CategoryChips.all);
-            _load();
+            // Reset to All and reload with the skeleton, so the switch reads as
+            // an instant change rather than a frozen old feed.
+            _category = _CategoryChips.all;
+            _load(reset: true);
           },
         ),
         actions: [
@@ -187,7 +192,7 @@ class HomePageState extends State<HomePage>
               selected: _category,
               onSelected: (value) {
                 setState(() => _category = value);
-                _load();
+                _load(reset: true);
               },
             ),
             const Divider(height: 1),
