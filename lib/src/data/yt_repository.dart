@@ -70,6 +70,31 @@ class YtRepository {
     'football highlights',
   ];
 
+  /// Kid-friendly topics for the home feed in Kids mode. Evergreen, broadly
+  /// safe search terms — the app cannot enforce YouTube's own age gating, so
+  /// this curates rather than filters.
+  static const _kidsTopics = [
+    'nursery rhymes',
+    'kids cartoon',
+    'cocomelon',
+    'kids learning videos',
+    'peppa pig',
+    'kids songs',
+    'chota bheem',
+    'kids science experiments',
+    'abc for kids',
+    'moral stories for kids',
+  ];
+
+  static const _kidsShortsTopics = [
+    'kids cartoon',
+    'nursery rhyme',
+    'funny animals',
+    'kids learning',
+    'kids craft',
+    'cartoon',
+  ];
+
   void dispose() {
     _yt.close();
     _search.close();
@@ -89,8 +114,19 @@ class YtRepository {
     List<String> channelIds = const [],
     List<String> searches = const [],
     int refreshToken = 0,
+    bool kids = false,
   }) async {
     if (isPreview) return _previewRows(refreshToken);
+
+    // Kids mode ignores the personal signals entirely and draws only from the
+    // curated kid topics, so nothing from normal watch history leaks in.
+    if (kids) {
+      final topics = _rotate(_kidsTopics, refreshToken).take(6);
+      final results = await Future.wait(
+        topics.map((t) => _safe(() => search(t, sortByViews: true))),
+      );
+      return _interleave(results, skip: refreshToken);
+    }
 
     // Pull-to-refresh has to change what the interest signals return, not just
     // the filler topic. Rotating both lists means a different search and a
@@ -146,14 +182,17 @@ class YtRepository {
   Future<List<VideoBrief>> shortsFeed({
     List<String> searches = const [],
     int refreshToken = 0,
+    bool kids = false,
   }) async {
     if (isPreview) return _previewRows(refreshToken);
 
-    // Lead with the user's own interests, then broad topics.
-    final topics = <String>[
-      ...searches.take(2),
-      ..._rotate(_shortsTopics, refreshToken).take(3),
-    ];
+    // Kids mode draws only from kid-friendly shorts topics.
+    final topics = kids
+        ? _rotate(_kidsShortsTopics, refreshToken).take(4).toList()
+        : <String>[
+            ...searches.take(2),
+            ..._rotate(_shortsTopics, refreshToken).take(3),
+          ];
 
     final results = await Future.wait(
       topics.map((t) => _safeShorts(() => _search.searchShorts('$t shorts'))),

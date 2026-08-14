@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../data/settings.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
@@ -56,6 +57,22 @@ class HomePageState extends State<HomePage>
     try {
       final repo = context.read<YtRepository>();
 
+      // Kids mode takes over the whole feed, regardless of the chosen category
+      // chip, so nothing but curated kid content shows.
+      if (context.read<SettingsService>().kidsMode) {
+        final feed = await repo.homeFeed(
+          refreshToken: _refreshToken,
+          kids: true,
+        );
+        if (!mounted) return;
+        setState(() {
+          _feed = feed;
+          _loading = false;
+          _error = feed.isEmpty ? 'Nothing came back.' : null;
+        });
+        return;
+      }
+
       // Trending is the closest thing available without the official Data API:
       // several popular topics, each sorted by view count, interleaved.
       if (_category == _CategoryChips.trending) {
@@ -91,6 +108,7 @@ class HomePageState extends State<HomePage>
         channelIds: seeds.channelIds,
         searches: searches,
         refreshToken: _refreshToken,
+        kids: context.read<SettingsService>().kidsMode,
       );
       if (!mounted) return;
       setState(() {
@@ -132,18 +150,14 @@ class HomePageState extends State<HomePage>
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 16,
-        title: Row(
-          children: [
-            const Icon(Icons.play_arrow_rounded, color: Color(0xFFFF0033), size: 30),
-            const SizedBox(width: 4),
-            Text(
-              'AI BIT',
-              style: Theme.of(context).appBarTheme.titleTextStyle?.copyWith(
-                fontWeight: FontWeight.w700,
-                letterSpacing: -0.8,
-              ),
-            ),
-          ],
+        title: _ModeSwitch(
+          kids: context.watch<SettingsService>().kidsMode,
+          onChanged: (kids) {
+            context.read<SettingsService>().kidsMode = kids;
+            // Reset to All and reload so the feed flips immediately.
+            setState(() => _category = _CategoryChips.all);
+            _load();
+          },
         ),
         actions: [
           IconButton(
@@ -166,14 +180,18 @@ class HomePageState extends State<HomePage>
       body: Column(
         children: [
           if (YtRepository.isPreview) const _PreviewBanner(),
-          _CategoryChips(
-            selected: _category,
-            onSelected: (value) {
-              setState(() => _category = value);
-              _load();
-            },
-          ),
-          const Divider(height: 1),
+          // Category chips are meaningless in Kids mode, where the whole feed
+          // is curated.
+          if (!context.watch<SettingsService>().kidsMode) ...[
+            _CategoryChips(
+              selected: _category,
+              onSelected: (value) {
+                setState(() => _category = value);
+                _load();
+              },
+            ),
+            const Divider(height: 1),
+          ],
           Expanded(child: _buildFeed()),
         ],
       ),
@@ -229,6 +247,73 @@ class HomePageState extends State<HomePage>
 
 /// Horizontal topic filter across the top of the feed, mirroring the real
 /// app's chip row.
+/// The pill toggle in the top bar: normal AI BIT on the left, Kids on the
+/// right. Default is normal; tapping a side switches the whole app's feed.
+class _ModeSwitch extends StatelessWidget {
+  const _ModeSwitch({required this.kids, required this.onChanged});
+
+  final bool kids;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.onSurface.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _segment(context, label: 'AI BIT', icon: Icons.play_arrow_rounded, selected: !kids, onTap: () => onChanged(false)),
+          _segment(context, label: 'Kids', icon: Icons.child_care, selected: kids, onTap: () => onChanged(true)),
+        ],
+      ),
+    );
+  }
+
+  Widget _segment(
+    BuildContext context, {
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    // Kids side gets a friendly green; normal side the brand red.
+    final activeColor = label == 'Kids' ? const Color(0xFF34A853) : AppColors.brand;
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? activeColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: selected ? Colors.white : scheme.onSurface),
+            const SizedBox(width: 5),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.3,
+                color: selected ? Colors.white : scheme.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _CategoryChips extends StatelessWidget {
   const _CategoryChips({required this.selected, required this.onSelected});
 

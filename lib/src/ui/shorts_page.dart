@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import '../core/format.dart';
 import '../data/db.dart';
 import '../data/models.dart';
+import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'widgets/comments_sheet.dart';
@@ -83,6 +84,7 @@ class ShortsPageState extends State<ShortsPage> {
       final shorts = await context.read<YtRepository>().shortsFeed(
         searches: searches,
         refreshToken: _refreshToken,
+        kids: context.read<SettingsService>().kidsMode,
       );
       if (!mounted) return;
       setState(() {
@@ -156,6 +158,7 @@ class ShortsPageState extends State<ShortsPage> {
     try {
       final more = await context.read<YtRepository>().shortsFeed(
         refreshToken: _refreshToken,
+        kids: context.read<SettingsService>().kidsMode,
       );
       if (!mounted) return;
       final seen = _shorts.map((s) => s.id).toSet();

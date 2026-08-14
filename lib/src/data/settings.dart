@@ -53,6 +53,13 @@ class SettingsService extends ChangeNotifier {
   bool get autoplayNext => _prefs.getBool(_kAutoplay) ?? true;
   set autoplayNext(bool value) => _write(_kAutoplay, value);
 
+  static const _kKidsMode = 'kids_mode';
+
+  /// Kids mode fills the home feed with kid-friendly content instead of the
+  /// usual recommendations. Off by default — the app opens as normal.
+  bool get kidsMode => _prefs.getBool(_kKidsMode) ?? false;
+  set kidsMode(bool value) => _write(_kKidsMode, value);
+
   /// When false the player pauses as the app leaves the foreground, matching
   /// stock YouTube behaviour.
   bool get backgroundPlayback => _prefs.getBool(_kBackground) ?? true;
