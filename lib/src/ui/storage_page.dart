@@ -1,3 +1,7 @@
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
+import '../data/backup_service.dart';
+import '../data/db.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -187,11 +191,96 @@ class _StoragePageState extends State<StoragePage> {
                     action: context.read<StorageService>().clearHistory,
                   ),
                 ),
+                const Divider(height: 24),
+                const _SectionLabel('Backup'),
+                ListTile(
+                  enabled: !_busy,
+                  leading: const Icon(Icons.upload_file_outlined),
+                  title: const Text('Back up library'),
+                  subtitle: const Text(
+                    'Export playlists, subscriptions and history to a file you '
+                    'can save or send elsewhere. Downloads are not included.',
+                  ),
+                  isThreeLine: true,
+                  onTap: _backup,
+                ),
+                ListTile(
+                  enabled: !_busy,
+                  leading: const Icon(Icons.download_outlined),
+                  title: const Text('Restore from backup'),
+                  subtitle: const Text(
+                    'Merge a backup file into this device. Existing items are '
+                    'kept; the backup is added on top.',
+                  ),
+                  isThreeLine: true,
+                  onTap: _restore,
+                ),
                 const SizedBox(height: 24),
               ],
             ),
     );
   }
+
+  Future<void> _backup() async {
+    setState(() => _busy = true);
+    try {
+      final path = await BackupService(context.read<AppDatabase>()).export();
+      if (!mounted) return;
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(path)],
+          text: 'AI BIT library backup',
+        ),
+      );
+    } catch (e) {
+      if (mounted) _snack('Backup failed: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _restore() async {
+    final picked = await FilePicker.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+    if (picked.isEmpty) return;
+    final path = picked.first.path;
+    if (path == null || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final summary =
+          await BackupService(context.read<AppDatabase>()).restore(path);
+      if (mounted) _snack(summary);
+    } catch (e) {
+      if (mounted) _snack('Restore failed — is it an AI BIT backup? ($e)');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _snack(String message) => ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(message)));
+}
+
+/// Small caps section label, matching the settings screen.
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: Text(
+          label.toUpperCase(),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                letterSpacing: 1,
+                color: Theme.of(context).colorScheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+      );
 }
 
 /// Single stacked bar showing the split, so the biggest offender is obvious
