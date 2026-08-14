@@ -107,12 +107,10 @@ class VideoCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Edge-to-edge thumbnail, the way the YouTube home feed shows it.
+          VideoThumb(video: video, progress: progress, radius: 0),
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: VideoThumb(video: video, progress: progress),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 4, 16),
+            padding: const EdgeInsets.fromLTRB(12, 12, 4, 18),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -120,7 +118,7 @@ class VideoCard extends StatelessWidget {
                 // channelThumbnailSupportedRenderers. The coloured initial is
                 // only the fallback for rows that arrive without one.
                 CircleAvatar(
-                  radius: 17,
+                  radius: 18,
                   backgroundColor: _avatarColor(video.channelId),
                   foregroundImage: video.avatarUrl == null
                       ? null
@@ -145,16 +143,18 @@ class VideoCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // YouTube's title: 15px, medium, two lines.
                       Text(
                         video.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w500,
                           height: 1.3,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      const SizedBox(height: 5),
                       Text(
                         metaLine([
                           video.author,
@@ -164,8 +164,10 @@ class VideoCard extends StatelessWidget {
                         ]),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.6),
                         ),
                       ),
                     ],

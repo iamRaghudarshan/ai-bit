@@ -131,26 +131,36 @@ class HomePageState extends State<HomePage>
     super.build(context);
     return Scaffold(
       appBar: AppBar(
+        titleSpacing: 16,
         title: Row(
           children: [
-            const Icon(Icons.play_circle_fill, color: Color(0xFFFF0033), size: 26),
-            const SizedBox(width: 6),
-            Text('AI BIT', style: Theme.of(context).appBarTheme.titleTextStyle),
+            const Icon(Icons.play_arrow_rounded, color: Color(0xFFFF0033), size: 30),
+            const SizedBox(width: 4),
+            Text(
+              'AI BIT',
+              style: Theme.of(context).appBarTheme.titleTextStyle?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.8,
+              ),
+            ),
           ],
         ),
         actions: [
           IconButton(
             icon: const Icon(Icons.search),
+            tooltip: 'Search',
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const SearchPage()),
             ),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
             ),
           ),
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
