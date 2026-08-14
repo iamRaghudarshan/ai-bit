@@ -2,14 +2,14 @@ import 'package:flutter/material.dart';
 
 import 'home_page.dart';
 import 'library_page.dart';
-import 'search_page.dart';
 import 'shorts_page.dart';
 import 'subscriptions_page.dart';
 import 'widgets/mini_player.dart';
 
-/// Bottom-nav shell, matching YouTube's five destinations with one swap:
-/// theirs has a create (+) button in the middle, which needs an account to
-/// upload to, so Search takes that slot instead.
+/// Bottom-nav shell matching YouTube's destinations: Home, Shorts,
+/// Subscriptions, You. Search is not a tab — it lives in the Home top bar,
+/// the way YouTube does it. Their middle create (+) button needs an account to
+/// upload to, so it is left out.
 ///
 /// Tabs are kept alive in an [IndexedStack] so switching away from the feed and
 /// back does not refetch it.
@@ -23,7 +23,6 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> {
   final _homeKey = GlobalKey<HomePageState>();
   final _libraryKey = GlobalKey<LibraryPageState>();
-  final _searchKey = GlobalKey<SearchPageState>();
   final _subsKey = GlobalKey<SubscriptionsPageState>();
   final _shortsKey = GlobalKey<ShortsPageState>();
   int _index = 0;
@@ -47,10 +46,8 @@ class _RootShellState extends State<RootShell> {
         // opened wastes a request on every cold start.
         _shortsKey.currentState?.onTabOpened();
       case 2:
-        _searchKey.currentState?.focusInput();
-      case 3:
         _subsKey.currentState?.reload();
-      case 4:
+      case 3:
         _libraryKey.currentState?.reload();
     }
   }
@@ -67,7 +64,6 @@ class _RootShellState extends State<RootShell> {
         children: [
           HomePage(key: _homeKey),
           ShortsPage(key: _shortsKey),
-          SearchPage(key: _searchKey),
           SubscriptionsPage(key: _subsKey),
           LibraryPage(key: _libraryKey),
         ],
@@ -92,14 +88,9 @@ class _RootShellState extends State<RootShell> {
                 label: 'Shorts',
               ),
               NavigationDestination(
-                icon: Icon(Icons.search_outlined),
-                selectedIcon: Icon(Icons.search),
-                label: 'Search',
-              ),
-              NavigationDestination(
                 icon: Icon(Icons.subscriptions_outlined),
                 selectedIcon: Icon(Icons.subscriptions),
-                label: 'Subs',
+                label: 'Subscriptions',
               ),
               NavigationDestination(
                 icon: Icon(Icons.video_library_outlined),

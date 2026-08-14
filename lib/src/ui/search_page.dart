@@ -63,17 +63,6 @@ class SearchPageState extends State<SearchPage> {
   int get _activeFilterCount =>
       _filters.values.where((o) => o.value != null).length;
 
-  /// Called by the shell when the Search tab is selected. Focus cannot be
-  /// requested in initState: every tab of an IndexedStack is built at startup,
-  /// so doing it there stole the keyboard while Home was still showing.
-  void focusInput() {
-    if (!mounted) return;
-    _focus.requestFocus();
-    // Anything searched from elsewhere — a channel page, a shared link —
-    // should be in the list by the time the tab is opened.
-    unawaited(_loadHistory());
-  }
-
   @override
   void initState() {
     super.initState();
@@ -82,6 +71,10 @@ class SearchPageState extends State<SearchPage> {
     // completions make way for the results rather than sitting over them.
     _focus.addListener(_onFocusChanged);
     unawaited(_loadHistory());
+    // Search is a pushed screen now, not a kept-alive tab, so focusing here is
+    // safe and opens the keyboard the moment it appears — the way YouTube's
+    // search does.
+    _focus.requestFocus();
   }
 
   Future<void> _loadHistory() async {
