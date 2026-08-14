@@ -24,7 +24,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -36,6 +36,11 @@ class AppDatabase {
         if (from < 2) await _createDownloads(db);
         if (from < 3) await _createSearches(db);
         if (from < 4) await _createSubscriptions(db);
+        if (from < 5) {
+          await db.execute(
+            'ALTER TABLE history ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0',
+          );
+        }
       },
     );
     return AppDatabase._(db);
@@ -53,6 +58,7 @@ class AppDatabase {
         upload_raw   TEXT,
         upload_date  INTEGER,
         is_live      INTEGER NOT NULL DEFAULT 0,
+        is_short     INTEGER NOT NULL DEFAULT 0,
         position_ms  INTEGER NOT NULL DEFAULT 0,
         watched_at   INTEGER NOT NULL
       )
@@ -352,9 +358,13 @@ class AppDatabase {
     return Duration(milliseconds: ms);
   }
 
-  Future<List<HistoryEntry>> history({int limit = 200}) async {
+  /// Watch history. [shorts] null returns everything, true only Shorts, false
+  /// only regular videos — so the two can be shown apart.
+  Future<List<HistoryEntry>> history({int limit = 200, bool? shorts}) async {
     final rows = await _db.query(
       'history',
+      where: shorts == null ? null : 'is_short = ?',
+      whereArgs: shorts == null ? null : [shorts ? 1 : 0],
       orderBy: 'watched_at DESC',
       limit: limit,
     );

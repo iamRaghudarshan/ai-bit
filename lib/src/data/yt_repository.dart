@@ -197,7 +197,9 @@ class YtRepository {
     final results = await Future.wait(
       topics.map((t) => _safeShorts(() => _search.searchShorts('$t shorts'))),
     );
-    return _interleave(results)..shuffle();
+    return (_interleave(results)..shuffle())
+        .map((v) => v.asShort())
+        .toList();
   }
 
   Future<List<VideoBrief>> _safeShorts(

@@ -16,6 +16,7 @@ class VideoBrief {
     this.uploadDate,
     this.uploadRaw,
     this.isLive = false,
+    this.isShort = false,
     this.avatarUrl,
   });
 
@@ -28,6 +29,10 @@ class VideoBrief {
   final DateTime? uploadDate;
   final String? uploadRaw;
   final bool isLive;
+
+  /// True for a vertical Short, so watch history can keep Shorts and regular
+  /// videos apart.
+  final bool isShort;
 
   /// The channel's real avatar, when the response carried one. Null falls back
   /// to a coloured initial.
@@ -48,7 +53,24 @@ class VideoBrief {
         uploadDate: uploadDate,
         uploadRaw: uploadRaw,
         isLive: isLive,
+        isShort: isShort,
         avatarUrl: url ?? avatarUrl,
+      );
+
+  /// Copy tagged as a Short. The feed parsers do not always know, so the
+  /// Shorts UI marks what it plays.
+  VideoBrief asShort() => VideoBrief(
+        id: id,
+        title: title,
+        author: author,
+        channelId: channelId,
+        duration: duration,
+        viewCount: viewCount,
+        uploadDate: uploadDate,
+        uploadRaw: uploadRaw,
+        isLive: isLive,
+        isShort: true,
+        avatarUrl: avatarUrl,
       );
 
   /// 480x360 with letterboxing — the only thumbnail size YouTube guarantees
@@ -81,6 +103,7 @@ class VideoBrief {
     // a stored upload date.
     'upload_date': uploadDate?.toUtc().millisecondsSinceEpoch,
     'is_live': isLive ? 1 : 0,
+    'is_short': isShort ? 1 : 0,
   };
 
   factory VideoBrief.fromMap(Map<String, Object?> m) => VideoBrief(
@@ -100,6 +123,7 @@ class VideoBrief {
             isUtc: true,
           ),
     isLive: (m['is_live'] as int? ?? 0) == 1,
+    isShort: (m['is_short'] as int? ?? 0) == 1,
   );
 
   @override
