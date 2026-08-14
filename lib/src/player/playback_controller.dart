@@ -113,6 +113,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Alternate audio tracks (dubs), when the HLS manifest carries them.
+  List<BetterPlayerAsmsAudioTrack> get audioTracks =>
+      _player?.betterPlayerAsmsAudioTracks ?? const [];
+
+  BetterPlayerAsmsAudioTrack? get activeAudioTrack =>
+      _player?.betterPlayerAsmsAudioTrack;
+
+  /// Switches to a dub / alternate audio track.
+  void setAudioTrack(BetterPlayerAsmsAudioTrack track) {
+    _player?.setAudioTrack(track);
+    notifyListeners();
+  }
+
   /// The rendition actually playing, or null while on Auto.
   String? get activeQuality {
     final height = _player?.betterPlayerAsmsTrack?.height ?? 0;

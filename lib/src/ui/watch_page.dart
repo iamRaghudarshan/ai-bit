@@ -1067,6 +1067,55 @@ class _ActionRow extends StatelessWidget {
 
   /// Everything that used to sit in the sideways-scrolling row, as a tidy
   /// selectable list — YouTube's player overflow.
+  /// Dub / alternate audio-track picker, shown when a video carries more than
+  /// one audio track.
+  void _showAudioTracks(BuildContext context) {
+    final playback = context.read<PlaybackController>();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: AnimatedBuilder(
+          animation: playback,
+          builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                child: Text(
+                  'Audio track',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: EdgeInsets.zero,
+                  children: [
+                    for (final track in playback.audioTracks)
+                      ListTile(
+                        title: Text(
+                          track.label ?? track.language ?? 'Track ${track.id}',
+                        ),
+                        trailing: playback.activeAudioTrack?.id == track.id
+                            ? const Icon(Icons.check)
+                            : null,
+                        onTap: () {
+                          playback.setAudioTrack(track);
+                          Navigator.pop(sheetContext);
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showMoreOptions(BuildContext context) {
     final playback = context.read<PlaybackController>();
     final settings = context.read<SettingsService>();
@@ -1107,6 +1156,20 @@ class _ActionRow extends StatelessWidget {
                           showSleepTimerSheet(context);
                         },
                       ),
+                      if (playback.audioTracks.length > 1)
+                        ListTile(
+                          leading: const Icon(Icons.multitrack_audio),
+                          title: const Text('Audio track'),
+                          subtitle: Text(
+                            playback.activeAudioTrack?.label ??
+                                playback.activeAudioTrack?.language ??
+                                'Default',
+                          ),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            _showAudioTracks(context);
+                          },
+                        ),
                       SwitchListTile(
                         secondary: const Icon(Icons.headphones_outlined),
                         title: const Text('Audio only'),
