@@ -734,8 +734,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (video == null) return;
     final resumeAt = _position;
     _current = null;
-    await play(video, upNext: _queue.toList(), recordHistory: false);
-    if (resumeAt > const Duration(seconds: 3)) await seek(resumeAt);
+    // Same guard as a quality switch: rebuilding the player makes the outgoing
+    // one report STATE_ENDED, and with the duration momentarily unknown that
+    // reads as a genuine finish — so toggling Audio only would throw up the end
+    // screen over the still-playing video. Suppress it across the rebuild.
+    _switchingQuality = true;
+    _endScreen = false;
+    try {
+      await play(video, upNext: _queue.toList(), recordHistory: false);
+      if (resumeAt > const Duration(seconds: 3)) await seek(resumeAt);
+    } finally {
+      // Held a moment longer: the STATE_ENDED from the torn-down player can
+      // land just after the rebuild returns, so clearing the guard at once
+      // would still let it through.
+      Timer(const Duration(milliseconds: 800), () => _switchingQuality = false);
+    }
   }
 
   /// Swaps in a new autoplay queue — used once the watch page has finished
