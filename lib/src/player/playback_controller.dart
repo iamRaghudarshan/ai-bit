@@ -296,7 +296,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _duration = video.duration ?? Duration.zero;
     notifyListeners();
 
-    unawaited(_db.recordWatch(video));
+    // Mark what was watched in Kids mode, so it lands in kids history rather
+    // than the normal videos/shorts lists.
+    unawaited(
+      _db.recordWatch(_config.kidsMode ? video.asKids() : video),
+    );
 
     // The browser preview has no native player plugin. Stop after recording
     // the selection so every screen still renders and can be reviewed.

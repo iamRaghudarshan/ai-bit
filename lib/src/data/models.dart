@@ -17,6 +17,7 @@ class VideoBrief {
     this.uploadRaw,
     this.isLive = false,
     this.isShort = false,
+    this.isKids = false,
     this.avatarUrl,
   });
 
@@ -33,6 +34,10 @@ class VideoBrief {
   /// True for a vertical Short, so watch history can keep Shorts and regular
   /// videos apart.
   final bool isShort;
+
+  /// True when watched in Kids mode, so kids history stays out of the normal
+  /// videos and shorts history.
+  final bool isKids;
 
   /// The channel's real avatar, when the response carried one. Null falls back
   /// to a coloured initial.
@@ -54,6 +59,7 @@ class VideoBrief {
         uploadRaw: uploadRaw,
         isLive: isLive,
         isShort: isShort,
+        isKids: isKids,
         avatarUrl: url ?? avatarUrl,
       );
 
@@ -70,6 +76,23 @@ class VideoBrief {
         uploadRaw: uploadRaw,
         isLive: isLive,
         isShort: true,
+        isKids: isKids,
+        avatarUrl: avatarUrl,
+      );
+
+  /// Copy tagged as watched in Kids mode; keeps whatever else it was.
+  VideoBrief asKids() => VideoBrief(
+        id: id,
+        title: title,
+        author: author,
+        channelId: channelId,
+        duration: duration,
+        viewCount: viewCount,
+        uploadDate: uploadDate,
+        uploadRaw: uploadRaw,
+        isLive: isLive,
+        isShort: isShort,
+        isKids: true,
         avatarUrl: avatarUrl,
       );
 
@@ -104,6 +127,7 @@ class VideoBrief {
     'upload_date': uploadDate?.toUtc().millisecondsSinceEpoch,
     'is_live': isLive ? 1 : 0,
     'is_short': isShort ? 1 : 0,
+    'is_kids': isKids ? 1 : 0,
   };
 
   factory VideoBrief.fromMap(Map<String, Object?> m) => VideoBrief(
@@ -124,6 +148,7 @@ class VideoBrief {
           ),
     isLive: (m['is_live'] as int? ?? 0) == 1,
     isShort: (m['is_short'] as int? ?? 0) == 1,
+    isKids: (m['is_kids'] as int? ?? 0) == 1,
   );
 
   @override

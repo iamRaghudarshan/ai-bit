@@ -26,7 +26,7 @@ class LibraryPageState extends State<LibraryPage> {
 
   Future<_LibraryData> _load() async {
     final db = context.read<AppDatabase>();
-    return (playlists: await db.playlists(), history: await db.history(limit: 12, shorts: false));
+    return (playlists: await db.playlists(), history: await db.history(limit: 12, shorts: false, kids: false));
   }
 
   /// Called by the shell when this tab becomes visible again, so a video

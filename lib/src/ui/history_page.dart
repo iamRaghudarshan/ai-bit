@@ -7,8 +7,8 @@ import 'watch_page.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
-/// Watch history, with Videos and Shorts kept on separate tabs so one does not
-/// bury the other.
+/// Watch history on three tabs — Videos, Shorts and Kids — so none buries the
+/// others. Videos and Shorts exclude anything watched in Kids mode.
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
 
@@ -18,16 +18,18 @@ class HistoryPage extends StatefulWidget {
 
 class _HistoryPageState extends State<HistoryPage>
     with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
-  late Future<List<HistoryEntry>> _videos = _load(shorts: false);
-  late Future<List<HistoryEntry>> _shorts = _load(shorts: true);
+  late final TabController _tabs = TabController(length: 3, vsync: this);
+  // Videos and Shorts are non-kids; Kids is everything watched in Kids mode.
+  late Future<List<HistoryEntry>> _videos = _db.history(shorts: false, kids: false);
+  late Future<List<HistoryEntry>> _shorts = _db.history(shorts: true, kids: false);
+  late Future<List<HistoryEntry>> _kids = _db.history(kids: true);
 
-  Future<List<HistoryEntry>> _load({required bool shorts}) =>
-      context.read<AppDatabase>().history(shorts: shorts);
+  AppDatabase get _db => context.read<AppDatabase>();
 
   void _reload() => setState(() {
-    _videos = _load(shorts: false);
-    _shorts = _load(shorts: true);
+    _videos = _db.history(shorts: false, kids: false);
+    _shorts = _db.history(shorts: true, kids: false);
+    _kids = _db.history(kids: true);
   });
 
   @override
@@ -76,9 +78,12 @@ class _HistoryPageState extends State<HistoryPage>
         ],
         bottom: TabBar(
           controller: _tabs,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
           tabs: const [
             Tab(text: 'Videos'),
             Tab(text: 'Shorts'),
+            Tab(text: 'Kids'),
           ],
         ),
       ),
@@ -94,6 +99,11 @@ class _HistoryPageState extends State<HistoryPage>
           _HistoryList(
             future: _shorts,
             emptyMessage: 'Shorts you watch show up here.',
+            onChanged: _reload,
+          ),
+          _HistoryList(
+            future: _kids,
+            emptyMessage: 'What you watch in Kids mode shows up here.',
             onChanged: _reload,
           ),
         ],

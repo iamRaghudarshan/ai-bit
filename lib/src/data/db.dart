@@ -24,7 +24,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -39,6 +39,11 @@ class AppDatabase {
         if (from < 5) {
           await db.execute(
             'ALTER TABLE history ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0',
+          );
+        }
+        if (from < 6) {
+          await db.execute(
+            'ALTER TABLE history ADD COLUMN is_kids INTEGER NOT NULL DEFAULT 0',
           );
         }
       },
@@ -59,6 +64,7 @@ class AppDatabase {
         upload_date  INTEGER,
         is_live      INTEGER NOT NULL DEFAULT 0,
         is_short     INTEGER NOT NULL DEFAULT 0,
+        is_kids      INTEGER NOT NULL DEFAULT 0,
         position_ms  INTEGER NOT NULL DEFAULT 0,
         watched_at   INTEGER NOT NULL
       )
@@ -358,13 +364,27 @@ class AppDatabase {
     return Duration(milliseconds: ms);
   }
 
-  /// Watch history. [shorts] null returns everything, true only Shorts, false
-  /// only regular videos — so the two can be shown apart.
-  Future<List<HistoryEntry>> history({int limit = 200, bool? shorts}) async {
+  /// Watch history, filterable so Videos, Shorts and Kids can be shown apart.
+  /// Each of [shorts] and [kids] is null (don't care), true or false.
+  Future<List<HistoryEntry>> history({
+    int limit = 200,
+    bool? shorts,
+    bool? kids,
+  }) async {
+    final clauses = <String>[];
+    final args = <Object>[];
+    if (shorts != null) {
+      clauses.add('is_short = ?');
+      args.add(shorts ? 1 : 0);
+    }
+    if (kids != null) {
+      clauses.add('is_kids = ?');
+      args.add(kids ? 1 : 0);
+    }
     final rows = await _db.query(
       'history',
-      where: shorts == null ? null : 'is_short = ?',
-      whereArgs: shorts == null ? null : [shorts ? 1 : 0],
+      where: clauses.isEmpty ? null : clauses.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
       orderBy: 'watched_at DESC',
       limit: limit,
     );
