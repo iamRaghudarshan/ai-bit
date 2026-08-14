@@ -70,6 +70,16 @@ class SettingsPage extends StatelessWidget {
             ),
             onChanged: (value) => settings.rememberSpeedPerChannel = value,
           ),
+          SwitchListTile(
+            value: settings.sponsorBlock,
+            title: const Text('Skip sponsors (SponsorBlock)'),
+            subtitle: const Text(
+              'Automatically skip sponsor and self-promo segments, using the '
+              'community SponsorBlock database. No account needed.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) => settings.sponsorBlock = value,
+          ),
           const Divider(),
           const _SectionLabel('Storage'),
           ListTile(

@@ -11,6 +11,7 @@ import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/settings.dart';
+import '../data/sponsorblock_client.dart';
 import '../data/yt_repository.dart';
 import '../ui/widgets/video_controls.dart';
 import 'remote_commands.dart';
@@ -38,6 +39,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   final YtRepository _repo;
   final AppDatabase _db;
   final SettingsService _config;
+  final SponsorBlockClient _sponsorBlock = SponsorBlockClient();
 
   /// Attached to the `BetterPlayer` widget so native Picture-in-Picture can
   /// find the player's frame on screen.
@@ -302,6 +304,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(
       _db.recordWatch(_config.kidsMode ? video.asKids() : video),
     );
+    _loadSponsorSegments(video.id);
 
     // The browser preview has no native player plugin. Stop after recording
     // the selection so every screen still renders and can be reviewed.
@@ -763,6 +766,41 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Swaps in a new autoplay queue — used once the watch page has finished
   /// loading the real "up next" list.
+  // ---------------------------------------------------------- SponsorBlock
+
+  List<SponsorSegment> _segments = const [];
+
+  /// The category of the segment just auto-skipped, for a brief toast; cleared
+  /// by the UI after showing it.
+  String? sponsorSkipNotice;
+
+  void _loadSponsorSegments(String videoId) {
+    _segments = const [];
+    if (!_config.sponsorBlock) return;
+    unawaited(
+      _sponsorBlock.segments(videoId).then((segs) {
+        // Only apply if still on the same video.
+        if (_current?.id == videoId) _segments = segs;
+      }, onError: (Object _) {}),
+    );
+  }
+
+  /// Skips [_position] past any sponsor segment it has entered. Called from the
+  /// position listener, which runs about once a second.
+  void _applySponsorSkip() {
+    if (_segments.isEmpty) return;
+    for (final seg in _segments) {
+      // A small tolerance at the end so a segment that finishes just past the
+      // playhead is not re-triggered.
+      if (_position >= seg.start && _position < seg.end - const Duration(milliseconds: 300)) {
+        sponsorSkipNotice = seg.label;
+        unawaited(seek(seg.end));
+        notifyListeners();
+        return;
+      }
+    }
+  }
+
   // ------------------------------------------------------------- chapters
 
   List<VideoChapter> _chapters = const [];
@@ -1223,6 +1261,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(seek(a));
     }
 
+    _applySponsorSkip();
+
     final second = Duration(seconds: _position.inSeconds);
     if (_lastNotified != second) {
       _lastNotified = second;
@@ -1252,6 +1292,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _player?.videoPlayerController?.removeListener(_onValueChanged);
     _player?.removeEventsListener(_onPlayerEvent);
     _player?.dispose(forceDispose: true);
+    _sponsorBlock.close();
     ticker.dispose();
     super.dispose();
   }

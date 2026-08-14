@@ -127,6 +127,19 @@ class _WatchPageState extends State<WatchPage>
   bool _following = false;
 
   void _followPlayer() {
+    // A SponsorBlock auto-skip leaves a one-shot notice; show it and clear it.
+    final notice = _playback?.sponsorSkipNotice;
+    if (notice != null && mounted) {
+      _playback?.sponsorSkipNotice = null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Skipped $notice'),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+
     final current = _playback?.current;
     if (!mounted || current == null) return;
     if (current.id == _video.id) {

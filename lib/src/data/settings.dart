@@ -60,6 +60,13 @@ class SettingsService extends ChangeNotifier {
   bool get kidsMode => _prefs.getBool(_kKidsMode) ?? false;
   set kidsMode(bool value) => _write(_kKidsMode, value);
 
+  static const _kSponsorBlock = 'sponsorblock';
+
+  /// Auto-skip sponsor and self-promo segments via the SponsorBlock community
+  /// database. On by default — it is the natural extension of an ad-free app.
+  bool get sponsorBlock => _prefs.getBool(_kSponsorBlock) ?? true;
+  set sponsorBlock(bool value) => _write(_kSponsorBlock, value);
+
   static const _kAmoled = 'amoled_black';
 
   /// Pure-black backgrounds in dark mode, which switch OLED pixels fully off.
