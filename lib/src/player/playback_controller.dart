@@ -381,6 +381,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
     _cancelCountdown();
     _endScreen = false;
+    // A loop belongs to one video; a new source starts without it.
+    _loopA = null;
+    _loopB = null;
 
     // Setting a data source resets the remote commands inside the plugin, so
     // the skip buttons have to be re-armed for every video rather than once.
@@ -758,6 +761,37 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Swaps in a new autoplay queue — used once the watch page has finished
   /// loading the real "up next" list.
+  // ------------------------------------------------------------- A–B loop
+
+  Duration? _loopA;
+  Duration? _loopB;
+
+  Duration? get loopA => _loopA;
+  Duration? get loopB => _loopB;
+  bool get hasLoop => _loopA != null && _loopB != null;
+
+  /// Marks the current position as the loop's start (A).
+  void setLoopStart() {
+    _loopA = _position;
+    // Keep A before B; drop a stale B that now sits behind the new A.
+    if (_loopB != null && _loopB! <= _loopA!) _loopB = null;
+    notifyListeners();
+  }
+
+  /// Marks the current position as the loop's end (B). Ignored if it is not
+  /// after A.
+  void setLoopEnd() {
+    if (_loopA == null || _position <= _loopA!) return;
+    _loopB = _position;
+    notifyListeners();
+  }
+
+  void clearLoop() {
+    _loopA = null;
+    _loopB = null;
+    notifyListeners();
+  }
+
   void replaceQueue(List<VideoBrief> videos) {
     _queue
       ..clear()
@@ -1164,6 +1198,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _playing = value.isPlaying;
     _persistPosition();
+
+    // A–B loop: jump back to A once playback passes B.
+    final a = _loopA;
+    final b = _loopB;
+    if (a != null && b != null && _position >= b) {
+      unawaited(seek(a));
+    }
 
     final second = Duration(seconds: _position.inSeconds);
     if (_lastNotified != second) {

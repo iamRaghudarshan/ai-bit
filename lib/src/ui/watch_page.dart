@@ -1116,6 +1116,38 @@ class _ActionRow extends StatelessWidget {
                         onTap: playback.cycleRepeatMode,
                       ),
                       ListTile(
+                        leading: Icon(
+                          playback.hasLoop
+                              ? Icons.repeat_on
+                              : Icons.compare_arrows,
+                        ),
+                        title: const Text('Loop A–B'),
+                        subtitle: Text(
+                          playback.hasLoop
+                              ? 'Looping ${clockLabel(playback.loopA)} – '
+                                    '${clockLabel(playback.loopB)}'
+                              : playback.loopA != null
+                                  ? 'Start ${clockLabel(playback.loopA)} — '
+                                        'set the end point'
+                                  : 'Repeat a section between two points',
+                        ),
+                        trailing: playback.hasLoop || playback.loopA != null
+                            ? TextButton(
+                                onPressed: playback.clearLoop,
+                                child: const Text('Clear'),
+                              )
+                            : null,
+                        onTap: () {
+                          if (playback.loopA == null) {
+                            playback.setLoopStart();
+                          } else if (playback.loopB == null) {
+                            playback.setLoopEnd();
+                          } else {
+                            playback.clearLoop();
+                          }
+                        },
+                      ),
+                      ListTile(
                         leading: const Icon(Icons.queue_music),
                         title: const Text('Queue'),
                         trailing: playback.queue.isEmpty
