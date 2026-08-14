@@ -37,6 +37,12 @@ that, and read the CI log rather than guessing when it fails.
 
 ### Releasing
 
+**The known-good stable version is 2.6.1**, marked by the tag `stable-2.6.1`
+(iOS build 83; Android the per-ABI split). When the user asks for "stable",
+build from that tag — not from `main` unless they ask for latest — and hand
+back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
+
+
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
 
 ```bash
