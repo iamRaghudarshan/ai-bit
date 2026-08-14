@@ -19,6 +19,9 @@ ThemeData buildTheme(
   final isDark = brightness == Brightness.dark;
   // AMOLED swaps the dark background to true black so OLED pixels switch off.
   final darkBg = amoled ? const Color(0xFF000000) : AppColors.darkBg;
+  // Bottom-nav foreground: crisp white on dark, near-black on light, matching
+  // YouTube rather than the seeded scheme's tinted off-white.
+  final navFg = isDark ? Colors.white : const Color(0xFF0F0F0F);
   final scheme = ColorScheme.fromSeed(
     seedColor: accent,
     brightness: brightness,
@@ -51,8 +54,16 @@ ThemeData buildTheme(
       elevation: 0,
       height: 62,
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      // The seeded ColorScheme tints its neutrals toward the red seed, so
+      // scheme.onSurface is an off-white in dark mode rather than the crisp
+      // white YouTube's bar uses. Pin the icons and labels to pure white on
+      // dark and near-black on light, both selected and unselected, so the bar
+      // reads the same as the real app in either theme.
+      iconTheme: WidgetStatePropertyAll(
+        IconThemeData(size: 26, color: navFg),
+      ),
       labelTextStyle: WidgetStatePropertyAll(
-        TextStyle(fontSize: 10, color: scheme.onSurface),
+        TextStyle(fontSize: 10, color: navFg, fontWeight: FontWeight.w500),
       ),
     ),
     bottomSheetTheme: BottomSheetThemeData(
