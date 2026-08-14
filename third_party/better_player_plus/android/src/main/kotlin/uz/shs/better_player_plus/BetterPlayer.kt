@@ -281,6 +281,10 @@ internal class BetterPlayer(
                                 bitmap = BitmapFactory.decodeFile(filePath)
                                 bitmap?.let { bitmap ->
                                     callback.onBitmap(bitmap)
+                                    // PATCH: put the art on the media session too,
+                                    // so the lock screen shows the thumbnail, not
+                                    // just play/pause on a blank card.
+                                    updateMediaSessionMetadata(title, author)
                                 }
                             }
                             if (state == WorkInfo.State.SUCCEEDED || state == WorkInfo.State.CANCELLED || state == WorkInfo.State.FAILED) {
@@ -358,6 +362,9 @@ internal class BetterPlayer(
         if (mediaSession == null) {
             setupMediaSession(context)
         }
+        // Seed the lock-screen widget with title and channel immediately; the
+        // artwork follows once the image has downloaded.
+        updateMediaSessionMetadata(title, author)
 
         refreshHandler = Handler(Looper.getMainLooper())
         refreshRunnable = Runnable {
@@ -378,17 +385,36 @@ internal class BetterPlayer(
         refreshHandler?.postDelayed(refreshRunnable!!, 0)
         exoPlayerEventListener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                mediaSession?.setMetadata(
-                    MediaMetadataCompat.Builder()
-                        .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, getDuration())
-                        .build()
-                )
+                // PATCH: full metadata, not just duration. The lock-screen media
+                // widget renders the title, channel and artwork from the media
+                // session's metadata, and this only ever set the duration — so
+                // even with an active session the widget had nothing to show.
+                updateMediaSessionMetadata(title, author)
             }
         }
         exoPlayerEventListener?.let { exoPlayerEventListener ->
             exoPlayer?.addListener(exoPlayerEventListener)
         }
         exoPlayer?.seekTo(0)
+    }
+
+    // PATCH: the lock-screen media widget reads what to show from the media
+    // session's metadata. The plugin only ever put the duration there, so the
+    // widget had no title, channel or artwork to display — which on some
+    // launchers means it does not appear at all. This fills in all of it, and
+    // adds the artwork once the async image load has produced a bitmap.
+    private fun updateMediaSessionMetadata(title: String, author: String?) {
+        val builder = MediaMetadataCompat.Builder()
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, author ?: "")
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, author ?: "")
+            .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, getDuration())
+        bitmap?.let {
+            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it)
+            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, it)
+        }
+        mediaSession?.setMetadata(builder.build())
     }
 
     fun disposeRemoteNotifications() {

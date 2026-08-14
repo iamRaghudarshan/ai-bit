@@ -52,6 +52,14 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    widget binds to. (setMediaSessionToken is not used: media3's overload wants
    a token type MediaSessionCompat does not provide.)
 
+16. The media session's metadata only ever carried the duration — no title,
+   channel or artwork. The lock-screen media widget renders those from the
+   session metadata, so it showed a bare card or, on some launchers, nothing at
+   all. `updateMediaSessionMetadata` now fills in title, channel and duration
+   when playback starts and on every state change, and adds the artwork once
+   the async image load produces a bitmap. This is what makes the Android lock
+   screen match what iOS already shows.
+
 ## Dart
 
 5. `VideoEventType` gained `skipToNext` and `skipToPrevious`
