@@ -1007,105 +1007,182 @@ class _ActionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final playback = context.watch<PlaybackController>();
     final settings = context.watch<SettingsService>();
-    final video = playback.current;
-    final sleep = playback.sleepRemaining;
 
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.fromLTRB(12, 14, 12, 0),
-      child: Row(
+    // The four most-used controls stay inline; everything else is one tap
+    // away under "More", the way YouTube keeps its player settings in an
+    // overflow rather than a long scrolling row.
+    // The most-used controls stay inline; everything else is one tap away
+    // under "More", the way YouTube keeps its player settings in an overflow
+    // rather than a long scrolling row. Wrap, not a Row, so a narrow screen
+    // flows the chips to a second line instead of overflowing.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 14, 8, 0),
+      child: Wrap(
         children: [
+          _ActionChip(
+            icon: Icons.hd_outlined,
+            label: playback.activeQuality ?? settings.preferredQuality,
+            onTap: () => showQualitySheet(context),
+          ),
           _ActionChip(
             icon: Icons.speed,
             label: playback.speed == 1.0 ? 'Speed' : '${playback.speed}x',
             onTap: () => showSpeedSheet(context),
           ),
           _ActionChip(
-            icon: Icons.hd_outlined,
-            // What is actually playing, falling back to the preference when
-            // nothing is loaded yet. Showing the preference regardless meant
-            // the chip read "720p" while the sheet said 360p was playing —
-            // both true, and together nonsense. A video that only offers 360p
-            // cannot honour a 720p preference, and the chip should say so.
-            label: playback.activeQuality ?? settings.preferredQuality,
-            onTap: () => showQualitySheet(context),
-          ),
-          _ActionChip(
-            icon: Icons.bedtime_outlined,
-            label: sleep == null ? 'Sleep' : clockLabel(sleep),
-            highlighted: sleep != null,
-            onTap: () => showSleepTimerSheet(context),
-          ),
-          _ActionChip(
             icon: Icons.closed_caption_outlined,
-            label: playback.activeCaptions?.name ?? 'Captions',
+            label: 'Captions',
             highlighted: playback.activeCaptions != null,
             onTap: () => showCaptionsSheet(context),
           ),
-          const CastChip(),
           _ActionChip(
-            icon: Icons.analytics_outlined,
-            label: 'Stats',
-            highlighted: playback.showStats,
-            onTap: playback.toggleStats,
+            icon: Icons.more_horiz,
+            label: 'More',
+            onTap: () => _showMoreOptions(context),
           ),
-          _ActionChip(
-            icon: Icons.picture_in_picture_alt_outlined,
-            label: 'PiP',
-            onTap: playback.enterPictureInPicture,
-          ),
-          _ActionChip(
-            icon: Icons.queue_music,
-            label: playback.queue.isEmpty
-                ? 'Queue'
-                : 'Queue (${playback.queue.length})',
-            onTap: () => showQueueSheet(context),
-          ),
-          _ActionChip(
-            icon: settings.autoplayNext
-                ? Icons.playlist_play
-                : Icons.playlist_remove,
-            label: 'Autoplay',
-            highlighted: settings.autoplayNext,
-            onTap: () => settings.autoplayNext = !settings.autoplayNext,
-          ),
-          _ActionChip(
-            icon: switch (playback.repeatMode) {
-              PlaybackRepeat.one => Icons.repeat_one,
-              _ => Icons.repeat,
-            },
-            label: switch (playback.repeatMode) {
-              PlaybackRepeat.off => 'Repeat',
-              PlaybackRepeat.one => 'Repeat 1',
-              PlaybackRepeat.all => 'Repeat all',
-            },
-            highlighted: playback.repeatMode != PlaybackRepeat.off,
-            onTap: playback.cycleRepeatMode,
-          ),
-          if (video != null)
-            _ActionChip(
-              icon: Icons.share_outlined,
-              label: 'Share',
-              onTap: () => SharePlus.instance.share(
-                ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
-              ),
-            ),
-          _ActionChip(
-            icon: settings.audioOnly ? Icons.headphones : Icons.headphones_outlined,
-            label: 'Audio only',
-            highlighted: settings.audioOnly,
-            onTap: () {
-              settings.audioOnly = !settings.audioOnly;
-              playback.reloadCurrent();
-            },
-          ),
-          if (video != null)
-            _ActionChip(
-              icon: Icons.playlist_add,
-              label: 'Save',
-              onTap: () => showSaveToPlaylistSheet(context, video),
-            ),
         ],
+      ),
+    );
+  }
+
+  /// Everything that used to sit in the sideways-scrolling row, as a tidy
+  /// selectable list — YouTube's player overflow.
+  void _showMoreOptions(BuildContext context) {
+    final playback = context.read<PlaybackController>();
+    final settings = context.read<SettingsService>();
+    final video = playback.current;
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: AnimatedBuilder(
+          animation: Listenable.merge([playback, settings]),
+          builder: (context, _) {
+            final sleep = playback.sleepRemaining;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                  child: Text(
+                    'Options',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    children: [
+                      ListTile(
+                        leading: const Icon(Icons.bedtime_outlined),
+                        title: const Text('Sleep timer'),
+                        trailing: sleep == null
+                            ? null
+                            : Text(clockLabel(sleep)),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          showSleepTimerSheet(context);
+                        },
+                      ),
+                      SwitchListTile(
+                        secondary: const Icon(Icons.headphones_outlined),
+                        title: const Text('Audio only'),
+                        value: settings.audioOnly,
+                        onChanged: (v) {
+                          settings.audioOnly = v;
+                          playback.reloadCurrent();
+                        },
+                      ),
+                      SwitchListTile(
+                        secondary: const Icon(Icons.playlist_play),
+                        title: const Text('Autoplay next'),
+                        value: settings.autoplayNext,
+                        onChanged: (v) => settings.autoplayNext = v,
+                      ),
+                      ListTile(
+                        leading: Icon(switch (playback.repeatMode) {
+                          PlaybackRepeat.one => Icons.repeat_one,
+                          _ => Icons.repeat,
+                        }),
+                        title: const Text('Repeat'),
+                        trailing: Text(switch (playback.repeatMode) {
+                          PlaybackRepeat.off => 'Off',
+                          PlaybackRepeat.one => 'This video',
+                          PlaybackRepeat.all => 'Queue',
+                        }),
+                        onTap: playback.cycleRepeatMode,
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.queue_music),
+                        title: const Text('Queue'),
+                        trailing: playback.queue.isEmpty
+                            ? null
+                            : Text('${playback.queue.length}'),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          showQueueSheet(context);
+                        },
+                      ),
+                      ListTile(
+                        leading: const Icon(
+                          Icons.picture_in_picture_alt_outlined,
+                        ),
+                        title: const Text('Picture in picture'),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          playback.enterPictureInPicture();
+                        },
+                      ),
+                      if (CastButton.isSupported)
+                        ListTile(
+                          leading: const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: Center(child: CastButton(size: 22)),
+                          ),
+                          title: const Text('Cast / AirPlay'),
+                        ),
+                      SwitchListTile(
+                        secondary: const Icon(Icons.analytics_outlined),
+                        title: const Text('Stats for nerds'),
+                        value: playback.showStats,
+                        onChanged: (_) {
+                          playback.toggleStats();
+                          Navigator.pop(sheetContext);
+                        },
+                      ),
+                      if (video != null)
+                        ListTile(
+                          leading: const Icon(Icons.playlist_add),
+                          title: const Text('Save to playlist'),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            showSaveToPlaylistSheet(context, video);
+                          },
+                        ),
+                      if (video != null)
+                        ListTile(
+                          leading: const Icon(Icons.share_outlined),
+                          title: const Text('Share'),
+                          onTap: () {
+                            Navigator.pop(sheetContext);
+                            SharePlus.instance.share(
+                              ShareParams(
+                                uri: Uri.parse('https://youtu.be/${video.id}'),
+                              ),
+                            );
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
