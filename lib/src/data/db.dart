@@ -24,7 +24,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -45,6 +45,22 @@ class AppDatabase {
           await db.execute(
             'ALTER TABLE history ADD COLUMN is_kids INTEGER NOT NULL DEFAULT 0',
           );
+        }
+        if (from < 7) {
+          // downloads and playlist_items both persist a video via
+          // VideoBrief.toMap(), which emits is_short/is_kids once those columns
+          // were added for history — but these two tables never gained them, so
+          // every saveDownload / addToPlaylist threw "no column named is_short"
+          // and the download or save failed outright. Add the columns here so
+          // the shared insert matches the schema again.
+          for (final table in ['downloads', 'playlist_items']) {
+            await db.execute(
+              'ALTER TABLE $table ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0',
+            );
+            await db.execute(
+              'ALTER TABLE $table ADD COLUMN is_kids INTEGER NOT NULL DEFAULT 0',
+            );
+          }
         }
       },
     );
@@ -93,6 +109,8 @@ class AppDatabase {
         upload_raw  TEXT,
         upload_date INTEGER,
         is_live     INTEGER NOT NULL DEFAULT 0,
+        is_short    INTEGER NOT NULL DEFAULT 0,
+        is_kids     INTEGER NOT NULL DEFAULT 0,
         added_at    INTEGER NOT NULL,
         PRIMARY KEY (playlist_id, video_id)
       )
@@ -118,6 +136,8 @@ class AppDatabase {
         upload_raw     TEXT,
         upload_date    INTEGER,
         is_live        INTEGER NOT NULL DEFAULT 0,
+        is_short       INTEGER NOT NULL DEFAULT 0,
+        is_kids        INTEGER NOT NULL DEFAULT 0,
         file_path      TEXT NOT NULL,
         quality        TEXT,
         audio_only     INTEGER NOT NULL DEFAULT 0,

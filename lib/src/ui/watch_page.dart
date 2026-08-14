@@ -12,6 +12,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../core/chapters.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../data/db.dart';
 import '../data/download_manager.dart';
 import '../data/models.dart';
 import '../data/preview_data.dart';
@@ -775,57 +776,7 @@ class _Header extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          // The whole row opens the channel — the same affordance the real app
-          // gives, and the only way to reach a channel from here.
-          InkWell(
-            onTap: video.channelId.isEmpty
-                ? null
-                : () => ChannelPage.open(
-                    context,
-                    video.channelId,
-                    title: video.author,
-                  ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  // The real avatar, with the initial only as a fallback.
-                  // This row was hardcoded to the letter and never showed a
-                  // picture at all, whatever the video carried.
-                  CircleAvatar(
-                    radius: 16,
-                    backgroundColor: AppColors.darkElevated,
-                    foregroundImage: video.avatarUrl == null
-                        ? null
-                        : CachedNetworkImageProvider(
-                            video.avatarUrl!,
-                            maxWidth: 96,
-                            maxHeight: 96,
-                          ),
-                    child: Text(
-                      video.author.isEmpty
-                          ? '?'
-                          : video.author.substring(0, 1).toUpperCase(),
-                      style: const TextStyle(fontSize: 14),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      video.author,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  if (video.channelId.isNotEmpty)
-                    const Icon(Icons.chevron_right, size: 18),
-                ],
-              ),
-            ),
-          ),
+          _ChannelRow(video: video),
           if (description.trim().isNotEmpty) ...[
             const SizedBox(height: 12),
             // A card that opens a sheet, rather than expanding inline: a long
@@ -863,6 +814,192 @@ class _Header extends StatelessWidget {
                   ),
                 ),
               ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// The channel row under a video: avatar, channel name with its subscriber
+/// count directly after it, then a Subscribe toggle — the layout the real app
+/// uses. Tapping the avatar or name opens the channel; the button is its own
+/// tap target.
+///
+/// The subscriber count and the button's subscribed state both need data the
+/// video row does not carry, so this loads them lazily: the channel's info for
+/// the count, the local subscriptions table for the toggle. It shows the name
+/// immediately and fills the rest in as it arrives, rather than blocking the
+/// whole header on a network call.
+class _ChannelRow extends StatefulWidget {
+  const _ChannelRow({required this.video});
+
+  final VideoBrief video;
+
+  @override
+  State<_ChannelRow> createState() => _ChannelRowState();
+}
+
+class _ChannelRowState extends State<_ChannelRow> {
+  ChannelInfo? _info;
+  bool? _subscribed;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_ChannelRow old) {
+    super.didUpdateWidget(old);
+    // The watch page reuses one _Header across videos in the queue, so a new
+    // video reaches this row through a rebuild rather than a fresh mount.
+    if (old.video.channelId != widget.video.channelId) {
+      setState(() {
+        _info = null;
+        _subscribed = null;
+      });
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    final id = widget.video.channelId;
+    if (id.isEmpty) return;
+    final db = context.read<AppDatabase>();
+    final repo = context.read<YtRepository>();
+
+    final subbed = await db.isSubscribed(id);
+    if (mounted) setState(() => _subscribed = subbed);
+
+    try {
+      final info = await repo.channelInfo(id);
+      if (mounted && id == widget.video.channelId) {
+        setState(() => _info = info);
+      }
+    } catch (_) {
+      // No subscriber count then — the name and button still work.
+    }
+  }
+
+  /// Prefer the fetched channel info, but fall back to what the video carries
+  /// so Subscribe works even before (or without) the info call.
+  ChannelInfo get _channel =>
+      _info ??
+      ChannelInfo(
+        id: widget.video.channelId,
+        title: widget.video.author,
+        avatarUrl: widget.video.avatarUrl,
+      );
+
+  Future<void> _toggle() async {
+    final db = context.read<AppDatabase>();
+    final messenger = ScaffoldMessenger.of(context);
+    final channel = _channel;
+    if (_subscribed ?? false) {
+      await db.unsubscribe(channel.id);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Unsubscribed from ${channel.title}')),
+      );
+    } else {
+      await db.subscribe(channel);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Subscribed to ${channel.title}')),
+      );
+    }
+    if (mounted) setState(() => _subscribed = !(_subscribed ?? false));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final video = widget.video;
+    final scheme = theme.colorScheme;
+    final subscribed = _subscribed ?? false;
+    final subLabel = _info?.subscriberLabel;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          // The avatar and the name open the channel; kept inside their own
+          // InkWell so the Subscribe button beside them stays a separate tap.
+          Expanded(
+            child: InkWell(
+              onTap: video.channelId.isEmpty
+                  ? null
+                  : () => ChannelPage.open(
+                      context,
+                      video.channelId,
+                      title: video.author,
+                    ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 16,
+                    backgroundColor: AppColors.darkElevated,
+                    foregroundImage: video.avatarUrl == null
+                        ? null
+                        : CachedNetworkImageProvider(
+                            video.avatarUrl!,
+                            maxWidth: 96,
+                            maxHeight: 96,
+                          ),
+                    child: Text(
+                      video.author.isEmpty
+                          ? '?'
+                          : video.author.substring(0, 1).toUpperCase(),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  // Name on top, subscriber count directly beneath it — the
+                  // count sits with the name rather than anywhere else.
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          video.author,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (subLabel != null)
+                          Text(
+                            subLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontSize: 11,
+                              color: scheme.onSurface.withValues(alpha: 0.6),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (video.channelId.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _subscribed == null ? null : _toggle,
+              style: FilledButton.styleFrom(
+                backgroundColor: subscribed
+                    ? scheme.onSurface.withValues(alpha: 0.12)
+                    : scheme.onSurface,
+                foregroundColor: subscribed ? scheme.onSurface : scheme.surface,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: Text(subscribed ? 'Subscribed' : 'Subscribe'),
             ),
           ],
         ],

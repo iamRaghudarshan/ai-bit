@@ -1,3 +1,6 @@
+# Downloaded release artifacts (APKs pulled from CI for on-device testing)
+scratch_apk/
+
 # Flutter / Dart
 .dart_tool/
 .packages
