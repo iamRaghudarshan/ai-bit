@@ -92,6 +92,11 @@ class _DownloadTile extends StatelessWidget {
                                   Icons.error_outline,
                                   color: Colors.white70,
                                 )
+                              : record.status == DownloadStatus.paused
+                              ? const Icon(
+                                  Icons.pause_circle_outline,
+                                  color: Colors.white70,
+                                )
                               : SizedBox(
                                   width: 26,
                                   height: 26,
@@ -143,6 +148,14 @@ class _DownloadTile extends StatelessWidget {
                         audioOnly: record.audioOnly,
                         quality: record.quality,
                       );
+                    case 'pause':
+                      await downloads.pause(record.video.id);
+                    case 'resume':
+                      await downloads.resume(record.video.id);
+                    case 'top':
+                      final order = downloads.pendingOrder;
+                      final at = order.indexOf(record.video.id);
+                      if (at > 0) downloads.reorderPending(at, 0);
                     case 'cancel':
                       await downloads.cancel(record.video.id);
                     case 'delete':
@@ -167,6 +180,18 @@ class _DownloadTile extends StatelessWidget {
               itemBuilder: (context) => [
                 if (record.status == DownloadStatus.failed)
                   const PopupMenuItem(value: 'retry', child: Text('Retry')),
+                if (record.status == DownloadStatus.running ||
+                    record.status == DownloadStatus.queued)
+                  const PopupMenuItem(value: 'pause', child: Text('Pause')),
+                if (record.status == DownloadStatus.paused)
+                  const PopupMenuItem(value: 'resume', child: Text('Resume')),
+                if (record.status == DownloadStatus.queued &&
+                    downloads.pendingOrder.length > 1 &&
+                    downloads.pendingOrder.first != record.video.id)
+                  const PopupMenuItem(
+                    value: 'top',
+                    child: Text('Move to top of queue'),
+                  ),
                 if (!record.isComplete &&
                     record.status != DownloadStatus.failed)
                   const PopupMenuItem(value: 'cancel', child: Text('Cancel')),
@@ -203,6 +228,7 @@ class _DownloadTile extends StatelessWidget {
       DownloadStatus.completed =>
         '$kind • ${formatBytes(record.receivedBytes)} • Available offline',
       DownloadStatus.queued => 'Queued',
+      DownloadStatus.paused => 'Paused • tap to resume',
       DownloadStatus.running =>
         record.totalBytes > 0
             ? '${formatBytes(record.receivedBytes)} of '

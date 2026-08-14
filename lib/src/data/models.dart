@@ -234,7 +234,7 @@ class PlaylistBrief {
   String get shareUrl => 'https://www.youtube.com/playlist?list=$id';
 }
 
-enum DownloadStatus { queued, running, completed, failed }
+enum DownloadStatus { queued, running, paused, completed, failed }
 
 /// A video saved to device storage for offline playback.
 class DownloadRecord {

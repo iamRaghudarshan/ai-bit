@@ -41,6 +41,13 @@ class DownloadManager extends ChangeNotifier {
   String? _activeId;
   StreamSubscription<List<int>>? _activeSubscription;
 
+  /// The active transfer's completer, so pause can end it cleanly.
+  Completer<void>? _activeCompleter;
+
+  /// Ids paused mid-transfer, so the catch block keeps the partial file and
+  /// marks the record paused instead of failed.
+  final _paused = <String>{};
+
   /// Newest first, matching the downloads list order.
   List<DownloadRecord> get all => _records.values.toList().reversed.toList();
 
@@ -210,6 +217,7 @@ class DownloadManager extends ChangeNotifier {
       }
 
       armStall();
+      _activeCompleter = completer;
       _activeSubscription = _repo.downloadBytes(target).listen(
         (chunk) {
           sink!.add(chunk);
@@ -261,6 +269,15 @@ class DownloadManager extends ChangeNotifier {
       await _db.saveDownload(_records[id]!);
     } catch (e) {
       await sink?.close();
+      // Paused, not failed: keep the partial file and the record so it can
+      // resume, and stop here without the failure cleanup below.
+      if (e is _PauseSignal) {
+        _update(_records[id]!.copyWith(status: DownloadStatus.paused));
+        await _db.updateDownloadStatus(id, DownloadStatus.paused);
+        _activeSubscription = null;
+        _activeCompleter = null;
+        return;
+      }
       // A partial file is worse than none — it would play as a truncated video.
       if (file != null && await file.exists()) {
         await file.delete().catchError((_) => file!);
@@ -281,8 +298,53 @@ class DownloadManager extends ChangeNotifier {
       debugPrint('AI BIT: download failed for $id — $e');
     } finally {
       _activeSubscription = null;
+      _activeCompleter = null;
     }
   }
+
+  /// Pauses a queued or running download, keeping its partial file.
+  Future<void> pause(String videoId) async {
+    final record = _records[videoId];
+    if (record == null || record.isComplete) return;
+    _pending.remove(videoId);
+    if (_activeId == videoId) {
+      _paused.add(videoId);
+      await _activeSubscription?.cancel();
+      _activeSubscription = null;
+      // End the awaiting transfer through the pause path.
+      if (!(_activeCompleter?.isCompleted ?? true)) {
+        _activeCompleter?.completeError(const _PauseSignal());
+      }
+    } else {
+      _update(record.copyWith(status: DownloadStatus.paused));
+      await _db.updateDownloadStatus(videoId, DownloadStatus.paused);
+    }
+    _paused.remove(videoId);
+  }
+
+  /// Resumes a paused download. It re-fetches from the start — resuming a
+  /// partial byte range is not possible once the signed URL has expired — but
+  /// picks up without the user re-choosing anything.
+  Future<void> resume(String videoId) async {
+    final record = _records[videoId];
+    if (record == null || record.isComplete) return;
+    _update(record.copyWith(status: DownloadStatus.queued, receivedBytes: 0));
+    await _db.updateDownloadStatus(videoId, DownloadStatus.queued);
+    if (!_pending.contains(videoId)) _pending.add(videoId);
+    unawaited(_drain());
+  }
+
+  /// Moves a still-pending download within the queue.
+  void reorderPending(int oldIndex, int newIndex) {
+    if (oldIndex < 0 || oldIndex >= _pending.length) return;
+    final id = _pending.removeAt(oldIndex);
+    final target = newIndex.clamp(0, _pending.length);
+    _pending.insert(target, id);
+    notifyListeners();
+  }
+
+  /// The ids still waiting, in order, for a reorderable list.
+  List<String> get pendingOrder => List.unmodifiable(_pending);
 
   /// Stops the in-flight transfer, if [videoId] is the one running.
   Future<void> cancel(String videoId) async {
@@ -447,4 +509,10 @@ String formatBytes(int bytes) {
   if (bytes < mb) return '${(bytes / 1024).toStringAsFixed(0)} KB';
   if (bytes < 1024 * mb) return '${(bytes / mb).toStringAsFixed(1)} MB';
   return '${(bytes / (1024 * mb)).toStringAsFixed(2)} GB';
+}
+
+/// Thrown internally to unwind a running transfer for a pause, distinct from a
+/// real failure so the partial file and record are kept.
+class _PauseSignal implements Exception {
+  const _PauseSignal();
 }
