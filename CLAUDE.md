@@ -54,7 +54,23 @@ The version name comes from the tag with the prefix stripped; the build number
 is the Actions run number. `pubspec.yaml` still reads `1.0.0+1` and is not the
 source of truth — do not "fix" it. **Identify a build to the user by its build
 number**, which is always unique, because several releases can share a version
-name. Never tag without the user asking for a build in that message.
+name. **Never build without the user's explicit approval in that same message**
+("build" / "ok build") — not "fix it" or "do it", and not carried over from an
+earlier build in the session.
+
+The Android artifact is **split per ABI** (`--split-per-abi`); the arm64 slice
+is `app-arm64-v8a-release.apk` (~73MB, nearly every real phone) and a copy is
+also named `app-release.apk`. The artifact bundles all three slices, so its zip
+is large — the GitHub download to this PC is slow; run `gh run download` in the
+background and hand the user the arm64 path.
+
+Testing on the user's device: their phone (a Xiaomi, Android 12, arm64) can be
+driven over adb. There is no adb on PATH here — download standalone
+platform-tools into the scratchpad, then `adb push` the APK (Xiaomi blocks
+`adb install`) for a manual tap-install, and `adb logcat` to read crashes.
+Release strips Dart `debugPrint`, but native (Kotlin/PlayerNotificationManager)
+logs still show. Several device-only bugs (R8 launch crash, extensionless-URL
+playback crash, lock-screen media session) were found exactly this way.
 
 ### Diagnostics — run these before debugging playback code
 
@@ -84,20 +100,48 @@ D:/flutter/bin/flutter.bat run -d chrome --web-port 5555
 ## What is built
 
 Playback: single long-lived player, background audio, PiP, speed, sleep timer,
-quality picker (HLS ladder where one exists, muxed renditions where not),
 captions, an audio-only mode that plays the video stream with the picture
-covered, and a screen-off saving mode that steps down the ladder.
+covered, and a screen-off saving mode that steps down the ladder. The player's
+settings sit behind a **"⋮ More" overflow** on the watch page — Quality, Speed
+and Captions inline, the rest (Sleep, Audio only, Autoplay, Repeat, Queue, PiP,
+Cast, Stats, Save, Share) in the sheet — rather than a sideways-scrolling chip
+row.
 
-Browsing: home feed built from search history, Shorts, search with completions
-and combinable filters, channel pages (Videos, Shorts, Live, Playlists),
-comments with replies, watch history, local playlists, subscriptions, queue.
+Quality is the HLS ladder where one exists and muxed renditions where not; the
+picker reads live tracks off the manifest, and Settings offers the full ladder
+as a saved default.
 
-Offline: serial download queue, audio-only downloads, HD downloads (two files
-joined by FFmpeg), MP3 conversion, and a storage screen that measures and
-clears downloads, cache and history separately.
+Browsing: home feed (personalised from search history, or curated in Kids
+mode), Shorts, channel pages (Videos, Shorts, Live, Playlists), comments with
+replies, local playlists, subscriptions, queue. **Search is not a tab** — it is
+the top-bar magnifying glass on Home, opening a focused screen with recent
+searches, live completions and combinable filters (YouTube's own layout). The
+bottom nav is Home, Shorts, Subscriptions, You.
+
+Watch history is **three tabs — Videos, Shorts, Kids** (`history_page.dart`).
+`VideoBrief.isShort` / `isKids` tag each row; `isShort` is set by the Shorts
+feed, `isKids` at play time from the current mode. Videos and Shorts exclude
+Kids-mode content; the You-page recent shelf shows regular videos only.
+
+Kids mode: a pill toggle in the Home top bar (default off). On, the home feed
+and Shorts draw only from curated kid-friendly topics (`_kidsTopics` /
+`_kidsShortsTopics` in `yt_repository.dart`) and the category chips hide. It
+curates, it does not enforce — the app cannot apply YouTube's own age gating.
+
+Shorts smoothness: only the active page watches the player (siblings are a
+static thumbnail behind a `RepaintBoundary`), and `YtRepository.prefetch` warms
+the stream cache for the next two shorts so a swipe is a cache hit, not a fresh
+resolve. True next-video buffering would need more than the one shared player.
+
+Offline: serial download queue with a **per-download quality picker** (every
+real rendition with its size — 360p combined, HD via mux, audio, MP3), a stall
+watchdog so a stuck transfer fails visibly instead of spinning, and a storage
+screen that measures and clears downloads, cache and history separately.
 
 Platform: lock-screen and notification transport controls including skip,
 AirPlay via the system route picker, call and Bluetooth interruption handling.
+Android's lock-screen widget needs the media session to carry title/channel/
+artwork metadata, not just duration — see PATCHES.md #15/#16.
 
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
 account behind a ToS-violating client), Chromecast (needs the Cast SDK and a
@@ -107,7 +151,8 @@ to anonymous clients, so there is nothing to extract.
 
 **Not publishable.** Guideline 5.2.2 forbids exactly this, and repeated
 submissions risk the developer account. TestFlight internal testing and
-sideloaded APKs are the distribution model.
+sideloaded APKs are the distribution model. **Stable baseline is 2.6.1**, tag
+`stable-2.6.1` — build from it when the user asks for "stable".
 
 ## Architecture
 
@@ -198,11 +243,18 @@ downloads fall back to the 360p combined file.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 2**. Adding a table means
-bumping the version and extending `onUpgrade`, not just `onCreate`; `downloads`
-was added that way. Playlist id 1 is reserved for Watch Later and is seeded at
-creation. Everything is device-local: there is no account, no sync, and the
-YouTube Data API cannot supply watch history even if sign-in were added.
+`lib/src/data/db.dart` — SQLite at schema **version 6**. Bumping the version
+means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
+or the change is missing on one path: `downloads` (v2), `searches` (v3),
+`subscriptions` (v4) added whole tables; `history.is_short` (v5) and
+`history.is_kids` (v6) added columns via `ALTER TABLE` so existing history
+survives. Playlist id 1 is reserved for Watch Later and is seeded at creation.
+Everything is device-local: there is no account, no sync, and the YouTube Data
+API cannot supply watch history even if sign-in were added.
+
+Per-download quality is persisted as the record's `quality` spec (`360p`,
+`1080p`, `Audio`, `MP3`), so a retry or a restore after restart re-fetches the
+same rendition without a schema change.
 
 ### Web is a preview target, not a platform
 
