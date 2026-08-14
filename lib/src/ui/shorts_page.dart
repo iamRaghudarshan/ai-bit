@@ -111,11 +111,23 @@ class ShortsPageState extends State<ShortsPage> {
 
   void _playCurrent() {
     _settle?.cancel();
-    _settle = Timer(const Duration(milliseconds: 350), () {
+    _settle = Timer(const Duration(milliseconds: 180), () {
       if (_shorts.isEmpty || !mounted) return;
       // Shorts loop, so the queue is left empty and repeat handles the rest.
       context.read<PlaybackController>().play(_shorts[_index]);
+      _prefetchAhead();
     });
+  }
+
+  /// Warms the stream cache for the next couple of shorts, so swiping to them
+  /// starts playing at once instead of waiting on a fresh resolve — the way
+  /// YouTube preloads ahead.
+  void _prefetchAhead() {
+    final repo = context.read<YtRepository>();
+    for (var ahead = 1; ahead <= 2; ahead++) {
+      final next = _index + ahead;
+      if (next < _shorts.length) repo.prefetch(_shorts[next].id);
+    }
   }
 
   @override
@@ -187,23 +199,53 @@ class _ShortView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
-    final showPlayer =
-        isActive && playback.current?.id == video.id && !kIsWeb;
-
     return Stack(
       fit: StackFit.expand,
       children: [
         // The thumbnail sits underneath always: it fills the frame while the
-        // stream resolves, so a swipe never lands on a black rectangle.
-        CachedNetworkImage(memCacheWidth: 720, 
-          imageUrl: video.thumbUrl,
-          fit: BoxFit.cover,
-          errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),
+        // stream resolves, so a swipe never lands on a black rectangle. It does
+        // not watch playback, so the pages either side of the active one never
+        // repaint as the player ticks — which is what made scrolling stutter.
+        RepaintBoundary(
+          child: CachedNetworkImage(
+            memCacheWidth: 720,
+            imageUrl: video.thumbUrl,
+            fit: BoxFit.cover,
+            errorWidget: (_, _, _) => const ColoredBox(color: Colors.black),
+          ),
         ),
         const ColoredBox(color: Colors.black26),
 
-        if (showPlayer && playback.player != null && !playback.isLoading)
+        // Only the active short watches the player, so its per-frame rebuilds
+        // are confined to this one page instead of every visible page.
+        if (isActive) _ActiveShortPlayer(video: video),
+
+        _Overlay(video: video),
+      ],
+    );
+  }
+}
+
+/// The player surface and play/pause glyph for the short currently on screen.
+/// Kept separate so watching the controller only rebuilds this, not the
+/// thumbnail or the sibling pages.
+class _ActiveShortPlayer extends StatelessWidget {
+  const _ActiveShortPlayer({required this.video});
+
+  final VideoBrief video;
+
+  @override
+  Widget build(BuildContext context) {
+    final playback = context.watch<PlaybackController>();
+    final ready = playback.current?.id == video.id &&
+        !kIsWeb &&
+        playback.player != null &&
+        !playback.isLoading;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (ready)
           GestureDetector(
             onTap: playback.togglePlayPause,
             child: BetterPlayer(
@@ -211,15 +253,12 @@ class _ShortView extends StatelessWidget {
               controller: playback.player!,
             ),
           )
-        else if (isActive)
+        else
           const Center(child: CircularProgressIndicator(color: Colors.white)),
-
-        if (isActive && !playback.isPlaying && !playback.isLoading)
+        if (ready && !playback.isPlaying)
           const Center(
             child: Icon(Icons.play_arrow, size: 64, color: Colors.white70),
           ),
-
-        _Overlay(video: video),
       ],
     );
   }

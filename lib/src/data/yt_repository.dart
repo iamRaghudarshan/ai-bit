@@ -446,6 +446,24 @@ class YtRepository {
   ///
   /// Re-check the ordering with `dart run tool/probe_clients.dart` if playback
   /// quality or reliability ever regresses.
+  /// Warms the stream cache for [videoId] without playing it, so a following
+  /// [resolve] returns instantly. Used to preload the next Shorts the way
+  /// YouTube does, turning the network round-trip on swipe into a cache hit.
+  ///
+  /// Fire-and-forget: failures are swallowed, and a video already cached is
+  /// skipped so this costs nothing when called repeatedly.
+  void prefetch(String videoId) {
+    if (_streamCache.containsKey('$videoId:false')) return;
+    if (!_prefetching.add(videoId)) return;
+    unawaited(
+      resolve(videoId).then((_) {}, onError: (Object _) {}).whenComplete(
+        () => _prefetching.remove(videoId),
+      ),
+    );
+  }
+
+  final _prefetching = <String>{};
+
   Future<PlaybackSources> resolve(String videoId, {bool audioOnly = false}) async {
     final key = '$videoId:$audioOnly';
     final cached = _streamCache[key];
