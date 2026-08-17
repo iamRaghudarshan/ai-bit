@@ -81,6 +81,7 @@ problem is upstream or ours:
 ```bash
 D:/flutter/bin/dart.bat run tool/check_streams.dart [videoId]    # is extraction working?
 D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
+D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
 ```
 
@@ -133,10 +134,22 @@ static thumbnail behind a `RepaintBoundary`), and `YtRepository.prefetch` warms
 the stream cache for the next two shorts so a swipe is a cache hit, not a fresh
 resolve. True next-video buffering would need more than the one shared player.
 
-Offline: serial download queue with a **per-download quality picker** (every
-real rendition with its size — 360p combined, HD via mux, audio, MP3), a stall
-watchdog so a stuck transfer fails visibly instead of spinning, and a storage
-screen that measures and clears downloads, cache and history separately.
+Offline: serial download queue with a **per-download quality picker** (the full
+144p–1080p AVC ladder with each size, plus 360p combined, audio, MP3),
+pause/resume/reorder, ranged chunked transfers, and a storage screen that
+measures and clears downloads, cache and history separately — plus a **"Clear
+all app data"** full reset.
+
+Added since the 2.6.1 baseline (all in later builds, on `main`): **SponsorBlock**
+auto-skip, **backup & restore** of the library to a JSON file
+(`backup_service.dart`), an **audio-track / dub-language picker**, a **Data
+saver** setting (streams the lowest rendition; reuses the audio-only low-quality
+path), per-channel remembered speed, an **A–B loop**, chapter ticks on the seek
+bar, a Continue-watching shelf, AMOLED-black + accent-colour theming, and a
+channel **Subscribe button + subscriber count** on the watch page. Note the
+streaming quality floor: most videos now expose only the 360p combined stream,
+so Data saver and the quality picker cannot go below 360p while *watching* even
+though *downloads* reach 144p.
 
 Platform: lock-screen and notification transport controls including skip,
 AirPlay via the system route picker, call and Bluetooth interruption handling.
@@ -221,7 +234,18 @@ upgrade` will not.
 concurrent downloads from a single manifest. A failed or cancelled transfer
 deletes its partial file rather than leaving a truncated video that half-plays.
 Anything caught mid-transfer at startup is marked failed by `restore()` so it is
-retried deliberately.
+retried deliberately. Downloads can be **paused/resumed/reordered** (pause ends
+the active transfer through a private `_PauseSignal` so the catch path keeps the
+partial file instead of failing it; resume re-fetches from the start).
+
+**Transfers are pulled in bounded ranged chunks, not one open request** —
+`YtRepository._rangedDownload` requests ~8 MB at a time with a per-chunk timeout
+and retry-from-where-it-stopped. A single sustained googlevideo request gets
+throttled to nothing after the first burst, which surfaced on-device as
+"download stalled — no data received" and a dead transfer; the chunking keeps
+each request short enough to run at full speed. Verify with
+`tool/check_chunked.dart`. The manager's stall watchdog is 120s so it only fires
+when the transfer is genuinely dead, not mid-retry.
 
 ### HD downloads need two files joined
 
@@ -236,6 +260,15 @@ above 360p, so anything HD is a video-only track plus a separate audio track:
 the muxer copies them into one MP4 without re-encoding. A failed join keeps the
 video-only file rather than discarding a finished transfer.
 
+**HD downloads prefer H.264/AVC** (`_downloadableVideos`): YouTube serves 1440p
+and 2160p ONLY as AV1, which Apple's Photos and AVPlayer reject on most iPhones
+— a 4K download saved and then failed with `GalException NOT_SUPPORTED_FORMAT`
+and would not play. Preferring AVC caps HD at a universally compatible 1080p
+(AV1 only when a video offers nothing else). Same "playable beats bigger" rule
+as `_bestPlayableAudio` uses for Opus. The picker offers the full 144p–1080p
+AVC ladder plus the 360p combined stream. Per-height codecs re-checked live with
+a throwaway probe; `avc1` exists up to 1080p, `av01` only above.
+
 MP3 is the one real re-encode — YouTube serves AAC, so the conversion is a
 genuine quality loss and exists only for players that refuse `.m4a`. Both are
 off by default; both are no-ops where the native library is unavailable, and
@@ -243,12 +276,20 @@ downloads fall back to the 360p combined file.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 6**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 7**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
 `history.is_kids` (v6) added columns via `ALTER TABLE` so existing history
-survives. Playlist id 1 is reserved for Watch Later and is seeded at creation.
+survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7).
+
+**A row is persisted through `VideoBrief.toMap()`, which is shared across the
+`history`, `downloads` and `playlist_items` tables** — so a column added to
+`VideoBrief` must be added to ALL THREE tables, not just the one you had in
+mind. v7 existed because `is_short`/`is_kids` were added to history's table but
+not the other two, and every `saveDownload`/`addToPlaylist` then threw "table
+downloads has no column named is_short" and failed silently as a failed
+download. When you extend `VideoBrief`, grep for `...video.toMap()`. Playlist id 1 is reserved for Watch Later and is seeded at creation.
 Everything is device-local: there is no account, no sync, and the YouTube Data
 API cannot supply watch history even if sign-in were added.
 
