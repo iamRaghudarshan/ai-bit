@@ -22,6 +22,10 @@ class YoutubeBrowseClient {
     'https://www.youtube.com/youtubei/v1/browse?prettyPrint=false',
   );
 
+  static final _nextUri = Uri.parse(
+    'https://www.youtube.com/youtubei/v1/next?prettyPrint=false',
+  );
+
   static const _context = {
     'client': {
       'clientName': 'WEB',
@@ -39,10 +43,13 @@ class YoutubeBrowseClient {
 
   void close() => _http.close();
 
-  Future<Map<String, dynamic>> _post(Map<String, dynamic> body) async {
+  Future<Map<String, dynamic>> _post(
+    Map<String, dynamic> body, {
+    Uri? endpoint,
+  }) async {
     final response = await _http
         .post(
-          _browse,
+          endpoint ?? _browse,
           headers: const {
             'Content-Type': 'application/json',
             'Origin': 'https://www.youtube.com',
@@ -216,6 +223,76 @@ class YoutubeBrowseClient {
         title: parts.first,
         author: title,
         avatarUrl: header.avatar,
+        channelId: channelId,
+        duration: _durationFromBadge(l['contentImage']),
+        viewCount: _parseCompact(views),
+        uploadRaw: age.isEmpty ? null : age,
+        isLive: views.toLowerCase().contains('watching'),
+      ));
+    }
+    return out;
+  }
+
+  /// Related / up-next videos for a watch page, via the `next` endpoint.
+  ///
+  /// `youtube_explode_dart`'s `getRelatedVideos` throws on YouTube's current
+  /// `lockupViewModel` response (it tries to parse "Streamed …" as a date), so
+  /// the app was always falling back to same-channel uploads. Parsing the
+  /// response here — with the same lockup and duration-badge reading the channel
+  /// tabs use — gives real suggestions that carry their **duration**, which the
+  /// package's broken path dropped.
+  Future<List<VideoBrief>> related(String videoId) async {
+    final json = await _post({'videoId': videoId}, endpoint: _nextUri);
+
+    final lockups = <Map<String, dynamic>>[];
+    _collect(json, 'lockupViewModel', lockups);
+
+    final out = <VideoBrief>[];
+    final seen = <String>{};
+    for (final l in lockups) {
+      if (l['contentType'] != 'LOCKUP_CONTENT_TYPE_VIDEO') continue;
+      final id = l['contentId'];
+      if (id is! String || id.isEmpty || id == videoId || !seen.add(id)) {
+        continue;
+      }
+
+      // metadata reads as [title, channel, "733K views", "1 day ago", …].
+      final parts = <String>[];
+      _collectStrings(l['metadata'], 'content', parts);
+      if (parts.isEmpty) continue;
+
+      final views = parts.firstWhere(
+        (p) => p.toLowerCase().contains('view'),
+        orElse: () => '',
+      );
+      final age = parts.firstWhere(
+        (p) =>
+            p.toLowerCase().contains('ago') ||
+            p.toLowerCase().contains('stream'),
+        orElse: () => '',
+      );
+      // The channel name is the metadata line that is neither the title nor the
+      // views/age stats.
+      final author = parts.skip(1).firstWhere(
+        (p) =>
+            p != views &&
+            p != age &&
+            !p.toLowerCase().contains('view') &&
+            !p.toLowerCase().contains('watching'),
+        orElse: () => '',
+      );
+      // A UC… browseId points at the video's channel, for tapping through.
+      final browseIds = <String>[];
+      _collectStrings(l, 'browseId', browseIds);
+      final channelId = browseIds.firstWhere(
+        (b) => b.startsWith('UC'),
+        orElse: () => '',
+      );
+
+      out.add(VideoBrief(
+        id: id,
+        title: parts.first,
+        author: author,
         channelId: channelId,
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),

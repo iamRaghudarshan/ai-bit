@@ -196,13 +196,9 @@ class _VideoControlsState extends State<VideoControls> {
                   ? Icons.pause
                   : Icons.play_arrow,
               size: 44,
-              onTap: () => _act(() {
-                if (widget.controller.isPlaying() ?? false) {
-                  widget.controller.pause();
-                } else {
-                  widget.controller.play();
-                }
-              }),
+              // Through the PlaybackController so a finished video restarts
+              // from the top rather than staying stuck on its last frame.
+              onTap: () => _act(playback.togglePlayPause),
             ),
           const SizedBox(width: 20),
           _RoundButton(

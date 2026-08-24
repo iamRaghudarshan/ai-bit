@@ -609,6 +609,14 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (player.isPlaying() ?? false) {
       await player.pause();
     } else {
+      // Restart a finished video instead of sitting on the last frame: neither
+      // AVPlayer nor ExoPlayer rewinds on play() when already at the end, so
+      // tapping play after a video completed did nothing. Seek to zero first.
+      if (_duration > Duration.zero &&
+          _position >= _duration - const Duration(milliseconds: 800)) {
+        await player.seekTo(Duration.zero);
+        if (_endScreen) dismissEndScreen();
+      }
       await player.play();
     }
   }

@@ -285,12 +285,18 @@ class YtRepository {
   /// The "Up next" list under the player. Needs the full [yt.Video] because
   /// the related-video token only exists on the watch page.
   Future<List<VideoBrief>> related(yt.Video video) async {
+    // Own `next`-endpoint parser first: the package's getRelatedVideos throws
+    // on YouTube's current lockup format, and even when it worked it dropped
+    // the duration. This keeps the duration badge on every suggestion.
+    final viaNext = await _safe(() => _browse.related(video.id.value));
+    if (viaNext.isNotEmpty) return viaNext;
+
     try {
       final list = await _yt.videos.getRelatedVideos(video);
-      if (list == null) return const [];
+      if (list == null || list.isEmpty) return const [];
       return list.map(VideoBrief.fromYt).toList();
     } catch (_) {
-      // Related videos are a nice-to-have; fall back to same-channel uploads.
+      // Last resort: same-channel uploads (which also carry their duration).
       return _safe(() => channelUploads(video.channelId.value, limit: 12));
     }
   }
