@@ -1,7 +1,10 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../data/settings.dart';
+import '../data/update_service.dart';
 import '../player/playback_controller.dart';
 import 'storage_page.dart';
 
@@ -160,15 +163,131 @@ class SettingsPage extends StatelessWidget {
           ),
           const Divider(),
           const _SectionLabel('About'),
+          Builder(
+            builder: (context) => ListTile(
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('Check for updates'),
+              subtitle: const Text('See whether a newer build is available.'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _checkForUpdates(context),
+            ),
+          ),
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('Personal build'),
             subtitle: Text(
-              'Streams are resolved directly from YouTube, so no ads are ever '
-              'requested. Everything you save stays on this device. Intended '
-              'for personal use only — do not redistribute.',
+              'Streams are resolved directly from the source, so no ads are '
+              'ever requested. Everything you save stays on this device. '
+              'Intended for personal use only — do not redistribute.',
             ),
             isThreeLine: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _checkForUpdates(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    final service = UpdateService();
+    final result = await service.check();
+    service.close();
+    if (!context.mounted) return;
+    Navigator.of(context).pop(); // dismiss the spinner
+
+    // A reachability failure — say so plainly.
+    if (result.latest == null) {
+      _showInfo(context, 'Update check failed',
+          result.error ?? 'Something went wrong.');
+      return;
+    }
+
+    if (!result.updateAvailable) {
+      _showInfo(
+        context,
+        'Up to date',
+        "You're on the latest version — v${result.currentVersion} "
+            '(build ${result.currentBuild}).',
+      );
+      return;
+    }
+
+    // Newer build offered. On Android the download is a plain APK the user
+    // installs; iOS cannot sideload, so it updates through TestFlight instead.
+    final latest = result.latest!;
+    final isAndroid = defaultTargetPlatform == TargetPlatform.android;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Update available'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Installed: v${result.currentVersion} '
+                '(build ${result.currentBuild})'),
+            const SizedBox(height: 4),
+            Text(
+              'Latest: v${latest.version} (build ${latest.build})',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            if (latest.notes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(latest.notes),
+            ],
+            if (!isAndroid) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'On iOS, install the update through TestFlight.',
+                style: TextStyle(fontStyle: FontStyle.italic),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Later'),
+          ),
+          if (isAndroid)
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                final uri = Uri.parse(latest.url);
+                final ok = await launchUrl(
+                  uri,
+                  mode: LaunchMode.externalApplication,
+                );
+                if (!ok) {
+                  messenger.showSnackBar(
+                    const SnackBar(
+                        content: Text('Could not open the download link.')),
+                  );
+                }
+              },
+              child: const Text('Download'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showInfo(BuildContext context, String title, String message) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
           ),
         ],
       ),
