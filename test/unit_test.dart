@@ -4,6 +4,7 @@ import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
+import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -296,6 +297,29 @@ Some blurb about the video.
 
     test('never reports a negative size', () {
       expect(formatBytes(-1), '0 B');
+    });
+  });
+
+  group('feedColumnsFor', () {
+    test('phones get a single column', () {
+      expect(feedColumnsFor(320), 1);
+      expect(feedColumnsFor(390), 1);
+      expect(feedColumnsFor(599), 1);
+    });
+
+    test('tablets switch to two columns at the 600dp Material boundary', () {
+      // A small tablet held portrait is 600–720dp; the old 640 cutoff left it
+      // on the stretched phone list.
+      expect(feedColumnsFor(600), 2);
+      expect(feedColumnsFor(720), 2);
+      expect(feedColumnsFor(999), 2);
+    });
+
+    test('wider screens step up to three and four', () {
+      expect(feedColumnsFor(1000), 3);
+      expect(feedColumnsFor(1399), 3);
+      expect(feedColumnsFor(1400), 4);
+      expect(feedColumnsFor(1920), 4);
     });
   });
 

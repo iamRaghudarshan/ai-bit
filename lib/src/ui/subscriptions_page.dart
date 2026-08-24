@@ -7,6 +7,7 @@ import '../data/models.dart';
 import '../data/yt_repository.dart';
 import 'channel_page.dart';
 import 'watch_page.dart';
+import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -128,12 +129,25 @@ class SubscriptionsPageState extends State<SubscriptionsPage> {
                           title: 'Nothing new',
                           message: 'No recent uploads from these channels.',
                         )
-                      : ListView.builder(
-                          itemCount: _videos.length,
-                          itemBuilder: (context, i) {
+                      : ResponsiveVideoFeed(
+                          videos: _videos,
+                          listItemBuilder: (context, i) {
                             final video = _videos[i];
                             return VideoRow(
                               video: video,
+                              onTap: () => WatchPage.openQueue(
+                                context,
+                                _videos,
+                                startAt: i,
+                              ),
+                              onMenu: () => showVideoMenu(context, video),
+                            );
+                          },
+                          gridItemBuilder: (context, i) {
+                            final video = _videos[i];
+                            return VideoCard(
+                              video: video,
+                              inGrid: true,
                               onTap: () => WatchPage.openQueue(
                                 context,
                                 _videos,

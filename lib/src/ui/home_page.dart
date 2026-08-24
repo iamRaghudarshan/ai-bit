@@ -9,6 +9,7 @@ import '../data/yt_repository.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'watch_page.dart';
+import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -246,8 +247,10 @@ class HomePageState extends State<HomePage>
                     if (mounted) setState(() => _continue = resumeable);
                   },
                 );
-            VideoCard card(VideoBrief video) => VideoCard(
+            VideoCard card(VideoBrief video, {bool inGrid = false}) =>
+                VideoCard(
                   video: video,
+                  inGrid: inGrid,
                   onTap: () => WatchPage.open(context, video),
                   onMenu: () => showVideoMenu(context, video),
                 );
@@ -255,58 +258,15 @@ class HomePageState extends State<HomePage>
             // Phones keep the single-column list exactly as before; only wider
             // screens (tablets, foldables, landscape) fan the feed out into a
             // multi-column grid the way YouTube does on a big screen.
-            return LayoutBuilder(
-              builder: (context, constraints) {
-                final width = constraints.maxWidth;
-                final columns = width >= 1400
-                    ? 4
-                    : width >= 1000
-                        ? 3
-                        : width >= 640
-                            ? 2
-                            : 1;
-
-                if (columns == 1) {
-                  return ListView.builder(
-                    padding: const EdgeInsets.only(top: 8),
-                    itemCount: _feed.length + (hasShelf ? 1 : 0),
-                    addAutomaticKeepAlives: false,
-                    itemBuilder: (context, index) {
-                      if (hasShelf && index == 0) return shelf();
-                      // No RepaintBoundary here: ListView.builder already gives
-                      // every child one, and a second is pure overhead.
-                      return card(_feed[index - (hasShelf ? 1 : 0)]);
-                    },
-                  );
-                }
-
-                // Fixed cell height = 16:9 thumbnail for the cell width plus the
-                // card's meta block, so cells never clip regardless of columns.
-                final cellWidth = width / columns;
-                const metaHeight = 108.0;
-                final cellHeight = cellWidth * 9 / 16 + metaHeight;
-
-                return CustomScrollView(
-                  slivers: [
-                    if (hasShelf)
-                      SliverToBoxAdapter(child: shelf()),
-                    SliverPadding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      sliver: SliverGrid(
-                        gridDelegate:
-                            SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: columns,
-                          mainAxisExtent: cellHeight,
-                        ),
-                        delegate: SliverChildBuilderDelegate(
-                          (context, index) => card(_feed[index]),
-                          childCount: _feed.length,
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
+            return ResponsiveVideoFeed(
+              videos: _feed,
+              header: hasShelf ? shelf() : null,
+              listPadding: const EdgeInsets.only(top: 8),
+              // No RepaintBoundary on items: ListView.builder already gives
+              // every child one, and a second is pure overhead.
+              listItemBuilder: (context, index) => card(_feed[index]),
+              gridItemBuilder: (context, index) =>
+                  card(_feed[index], inGrid: true),
             );
           },
       ),

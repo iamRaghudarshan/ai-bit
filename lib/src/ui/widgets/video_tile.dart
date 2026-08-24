@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../core/format.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
+import 'responsive_feed.dart';
 
 /// 16:9 thumbnail with the duration badge and an optional resume bar.
 class VideoThumb extends StatelessWidget {
@@ -92,12 +93,19 @@ class VideoCard extends StatelessWidget {
     required this.onTap,
     this.onMenu,
     this.progress = 0,
+    this.inGrid = false,
   });
 
   final VideoBrief video;
   final VoidCallback onTap;
   final VoidCallback? onMenu;
   final double progress;
+
+  /// True when the card is a cell in the tablet grid rather than a full-width
+  /// phone row: the thumbnail gets YouTube's rounded corners (the gutters
+  /// around the cell make square edges look unfinished) and the meta block
+  /// aligns with the thumbnail edge instead of carrying its own inset.
+  final bool inGrid;
 
   @override
   Widget build(BuildContext context) {
@@ -107,10 +115,14 @@ class VideoCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Edge-to-edge thumbnail, the way the YouTube home feed shows it.
-          VideoThumb(video: video, progress: progress, radius: 0),
+          // Edge-to-edge thumbnail on a phone, the way the YouTube home feed
+          // shows it; rounded inside the tablet grid, also the way YouTube
+          // shows it there.
+          VideoThumb(video: video, progress: progress, radius: inGrid ? 12 : 0),
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 4, 18),
+            padding: inGrid
+                ? const EdgeInsets.fromLTRB(0, 10, 0, 0)
+                : const EdgeInsets.fromLTRB(12, 12, 4, 18),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -277,6 +289,10 @@ class VideoRow extends StatelessWidget {
 }
 
 /// Grey placeholder blocks shown while a feed loads.
+///
+/// Mirrors the loaded feed's layout: a column of blocks on a phone, the same
+/// multi-column grid on wider screens — a single stretched skeleton on a
+/// tablet would announce the wrong layout and then jump.
 class FeedSkeleton extends StatelessWidget {
   const FeedSkeleton({super.key, this.count = 4});
 
@@ -285,30 +301,50 @@ class FeedSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final base = Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.07);
-    return ListView.builder(
-      padding: const EdgeInsets.only(top: 8),
-      itemCount: count,
-      itemBuilder: (_, _) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            AspectRatio(
-              aspectRatio: 16 / 9,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: base,
-                  borderRadius: BorderRadius.circular(12),
-                ),
+
+    Widget block() => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: base,
+                borderRadius: BorderRadius.circular(12),
               ),
             ),
-            const SizedBox(height: 12),
-            Container(height: 12, width: double.infinity, color: base),
-            const SizedBox(height: 6),
-            Container(height: 12, width: 180, color: base),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          Container(height: 12, width: double.infinity, color: base),
+          const SizedBox(height: 6),
+          Container(height: 12, width: 180, color: base),
+        ],
       ),
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = feedColumnsFor(constraints.maxWidth);
+        if (columns == 1) {
+          return ListView.builder(
+            padding: const EdgeInsets.only(top: 8),
+            itemCount: count,
+            itemBuilder: (_, _) => block(),
+          );
+        }
+        return GridView.builder(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            crossAxisSpacing: 12,
+            childAspectRatio: 16 / 12,
+          ),
+          itemCount: count * columns,
+          itemBuilder: (_, _) => block(),
+        );
+      },
     );
   }
 }

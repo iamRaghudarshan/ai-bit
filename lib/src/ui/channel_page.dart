@@ -9,6 +9,7 @@ import '../data/models.dart';
 import '../data/yt_repository.dart';
 import 'playlist_page.dart';
 import 'watch_page.dart';
+import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -241,13 +242,21 @@ class _ChannelPageState extends State<ChannelPage>
         message: emptyMessage,
       );
     }
-    return ListView.builder(
-      itemCount: videos.length,
-      addAutomaticKeepAlives: false,
-      itemBuilder: (context, i) {
+    return ResponsiveVideoFeed(
+      videos: videos,
+      listItemBuilder: (context, i) {
         final video = videos[i];
         return VideoRow(
           video: video,
+          onTap: () => WatchPage.open(context, video),
+          onMenu: () => showVideoMenu(context, video),
+        );
+      },
+      gridItemBuilder: (context, i) {
+        final video = videos[i];
+        return VideoCard(
+          video: video,
+          inGrid: true,
           onTap: () => WatchPage.open(context, video),
           onMenu: () => showVideoMenu(context, video),
         );
@@ -284,12 +293,21 @@ class _ChannelPageState extends State<ChannelPage>
           ),
         ),
         Expanded(
-          child: ListView.builder(
-            itemCount: videos.length,
-            itemBuilder: (context, i) {
+          child: ResponsiveVideoFeed(
+            videos: videos,
+            listItemBuilder: (context, i) {
               final video = videos[i];
               return VideoRow(
                 video: video,
+                onTap: () => WatchPage.openQueue(context, videos, startAt: i),
+                onMenu: () => showVideoMenu(context, video),
+              );
+            },
+            gridItemBuilder: (context, i) {
+              final video = videos[i];
+              return VideoCard(
+                video: video,
+                inGrid: true,
                 onTap: () => WatchPage.openQueue(context, videos, startAt: i),
                 onMenu: () => showVideoMenu(context, video),
               );
