@@ -236,29 +236,75 @@ class HomePageState extends State<HomePage>
               );
             }
             final hasShelf = _continue.isNotEmpty;
-            return ListView.builder(
-              padding: const EdgeInsets.only(top: 8),
-              itemCount: _feed.length + (hasShelf ? 1 : 0),
-              addAutomaticKeepAlives: false,
-              itemBuilder: (context, index) {
-                if (hasShelf && index == 0) {
-                  return _ContinueWatchingShelf(
-                    entries: _continue,
-                    onOpened: () async {
-                      // Refresh the shelf when returning from a video.
-                      final resumeable =
-                          await context.read<AppDatabase>().continueWatching();
-                      if (mounted) setState(() => _continue = resumeable);
-                    },
-                  );
-                }
-                final video = _feed[index - (hasShelf ? 1 : 0)];
-                // No RepaintBoundary here: ListView.builder already gives
-                // every child one, and a second is pure overhead.
-                return VideoCard(
+
+            Widget shelf() => _ContinueWatchingShelf(
+                  entries: _continue,
+                  onOpened: () async {
+                    // Refresh the shelf when returning from a video.
+                    final resumeable =
+                        await context.read<AppDatabase>().continueWatching();
+                    if (mounted) setState(() => _continue = resumeable);
+                  },
+                );
+            VideoCard card(VideoBrief video) => VideoCard(
                   video: video,
                   onTap: () => WatchPage.open(context, video),
                   onMenu: () => showVideoMenu(context, video),
+                );
+
+            // Phones keep the single-column list exactly as before; only wider
+            // screens (tablets, foldables, landscape) fan the feed out into a
+            // multi-column grid the way YouTube does on a big screen.
+            return LayoutBuilder(
+              builder: (context, constraints) {
+                final width = constraints.maxWidth;
+                final columns = width >= 1400
+                    ? 4
+                    : width >= 1000
+                        ? 3
+                        : width >= 640
+                            ? 2
+                            : 1;
+
+                if (columns == 1) {
+                  return ListView.builder(
+                    padding: const EdgeInsets.only(top: 8),
+                    itemCount: _feed.length + (hasShelf ? 1 : 0),
+                    addAutomaticKeepAlives: false,
+                    itemBuilder: (context, index) {
+                      if (hasShelf && index == 0) return shelf();
+                      // No RepaintBoundary here: ListView.builder already gives
+                      // every child one, and a second is pure overhead.
+                      return card(_feed[index - (hasShelf ? 1 : 0)]);
+                    },
+                  );
+                }
+
+                // Fixed cell height = 16:9 thumbnail for the cell width plus the
+                // card's meta block, so cells never clip regardless of columns.
+                final cellWidth = width / columns;
+                const metaHeight = 108.0;
+                final cellHeight = cellWidth * 9 / 16 + metaHeight;
+
+                return CustomScrollView(
+                  slivers: [
+                    if (hasShelf)
+                      SliverToBoxAdapter(child: shelf()),
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      sliver: SliverGrid(
+                        gridDelegate:
+                            SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: columns,
+                          mainAxisExtent: cellHeight,
+                        ),
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) => card(_feed[index]),
+                          childCount: _feed.length,
+                        ),
+                      ),
+                    ),
+                  ],
                 );
               },
             );

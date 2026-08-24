@@ -478,6 +478,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
               'User-Agent':
                   'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
             },
+      // Start playing sooner. ExoPlayer's default waits for 3s of video to
+      // buffer before it begins; 1s is enough to start smoothly and cuts the
+      // spinner-before-play noticeably. minBuffer/maxBuffer stay large so once
+      // playing it still buffers well ahead. Android-only — iOS AVPlayer manages
+      // its own start buffer.
+      bufferingConfiguration: const BetterPlayerBufferingConfiguration(
+        minBufferMs: 20000,
+        maxBufferMs: 60000,
+        bufferForPlaybackMs: 1000,
+        bufferForPlaybackAfterRebufferMs: 3000,
+      ),
       // Caching is OFF deliberately. With useCache the iOS plugin plays through
       // CachingPlayerItem — a custom AVAssetResourceLoader — instead of a plain
       // AVPlayerItem, and that path fails on googlevideo URLs, which redirect,
