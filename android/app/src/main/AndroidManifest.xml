@@ -13,7 +13,7 @@
         android:maxSdkVersion="28"/>
 
     <application
-        android:label="AI BIT"
+        android:label="${appName}"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

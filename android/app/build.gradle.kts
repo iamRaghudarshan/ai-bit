@@ -23,6 +23,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // The launcher label carries the version ("AI BIT 2.17.0") so the
+        // installed build is identifiable at a glance. In CI, versionName
+        // comes from the tag via --build-name; a local build shows the
+        // pubspec's placeholder 1.0.0, which is fine — locals are never
+        // shipped.
+        manifestPlaceholders["appName"] = "AI BIT " + flutter.versionName
     }
 
     buildTypes {
