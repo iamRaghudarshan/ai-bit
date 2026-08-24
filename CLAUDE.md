@@ -72,6 +72,43 @@ Release strips Dart `debugPrint`, but native (Kotlin/PlayerNotificationManager)
 logs still show. Several device-only bugs (R8 launch crash, extensionless-URL
 playback crash, lock-screen media session) were found exactly this way.
 
+### Download website and in-app updates
+
+The APK is distributed (no store) from **`safenest.raghudarshan.online`**, which
+is a *separate* project at **`D:\AI PRO`** — a SafeNest/FinMate FastAPI storefront
+(uvicorn on 127.0.0.1:8080, no `--reload`) behind a Cloudflare tunnel. **Do not
+disturb SafeNest** — never restart that server or edit its mobile app.
+
+Publishing is deliberately **restart-free**: the server mounts the built SPA
+directory `finmate-react/frontend/dist/` as StaticFiles at `/`, and that dir is
+served live (new files appear without a restart). So the AI BIT files live there:
+
+- `dist/ai-bit-<version>.apk` — the build, served at `/ai-bit-<version>.apk`.
+- `dist/ai-bit-latest.json` — `{version, build, url, notes}`; the update manifest.
+- `dist/aibit-gate.js` — the download password gate (see below).
+
+The download is reached through a **hidden password-gated link**, not a public
+page (the "new website" idea was dropped). A faint dot in the SafeNest `/get`
+footer (`backend/storefront/index.html`, read live per request, so editing it
+needs no restart) has `class="dl-trigger"`; `aibit-gate.js` binds it to a
+password modal. Correct password (**hardcoded `10001`**) triggers the APK
+download. The gate is a **same-origin .js file**, not inline, because the
+storefront sets CSP `script-src 'self'` — inline scripts and `onclick` are
+blocked. Client-side only; not a security boundary.
+
+**To publish a new build:** build (tag as usual) → download the arm64 APK →
+`cp` it into `dist/ai-bit-<new>.apk` → bump `dist/ai-bit-latest.json`
+(`version`, `build`, `url`) → point the two APK strings in `dist/aibit-gate.js`
+at the new file. All live immediately, no restart. Verify with
+`curl http://127.0.0.1:8080/ai-bit-latest.json` and `/ai-bit-<new>.apk`.
+
+In-app: **Settings → About → Check for updates** (`update_service.dart`) fetches
+`ai-bit-latest.json`, reads the running build from `package_info_plus`
+(`buildNumber` = the CI run number, the real installed build), and offers the
+newer one. Android's Download button opens the APK URL via `url_launcher`
+(needs the `<queries>` https VIEW intent in the manifest, Android 11+); iOS is
+told to update through TestFlight, since it cannot install an APK.
+
 ### Diagnostics — run these before debugging playback code
 
 YouTube changes its player endpoints every few months, and that breaks the app
