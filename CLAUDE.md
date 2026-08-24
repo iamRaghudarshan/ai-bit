@@ -98,15 +98,16 @@ blocked. Client-side only; not a security boundary.
 
 **To publish a new build:** build (tag as usual) → download the arm64 APK →
 `cp` it into `dist/ai-bit-<new>.apk` → bump `dist/ai-bit-latest.json`
-(`version`, `build`, `url`) → point the two APK strings in `dist/aibit-gate.js`
-at the new file → bump the `?v=` on the `aibit-gate.js` script tag at the
-bottom of `finmate-react/backend/storefront/index.html` (NOT
-`backend/storefront/` — the react one). That last step matters: Cloudflare
-edge-caches `.js` for 4 hours but not HTML, so without a new query string the
-public site keeps serving the old gate. All live immediately, no restart.
-Verify **through the public domain**, not just localhost:
-`curl https://safenest.raghudarshan.online/ai-bit-latest.json`, the new
-`/ai-bit-<new>.apk`, and that `/aibit-gate.js?v=<new>` names the new APK.
+(`version`, `build`, `url`). That is all: the gate fetches that same manifest
+at page load for its download URL and the version line in the modal, so it
+follows the JSON automatically. (Its hardcoded APK path is only a fallback —
+worth bumping if editing the file anyway, and any edit to `aibit-gate.js`
+also needs the `?v=` bumped on its script tag at the bottom of
+`finmate-react/backend/storefront/index.html` (NOT `backend/storefront/`),
+because Cloudflare edge-caches `.js` for 4 hours but not HTML.)
+All live immediately, no restart. Verify **through the public domain**, not
+just localhost: `curl https://safenest.raghudarshan.online/ai-bit-latest.json`
+and the new `/ai-bit-<new>.apk`.
 
 In-app: **Settings → About → Check for updates** (`update_service.dart`) fetches
 `ai-bit-latest.json`, reads the running build from `package_info_plus`
