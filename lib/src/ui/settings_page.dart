@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -163,6 +164,24 @@ class SettingsPage extends StatelessWidget {
           ),
           const Divider(),
           const _SectionLabel('About'),
+          // The installed version, always visible — before this the only way
+          // to learn what build was running was to tap Check for updates and
+          // read it out of the result dialog.
+          FutureBuilder<PackageInfo>(
+            future: PackageInfo.fromPlatform(),
+            builder: (context, snapshot) {
+              final info = snapshot.data;
+              return ListTile(
+                leading: const Icon(Icons.verified_outlined),
+                title: const Text('Version'),
+                subtitle: Text(
+                  info == null
+                      ? '…'
+                      : 'v${info.version} (build ${info.buildNumber})',
+                ),
+              );
+            },
+          ),
           Builder(
             builder: (context) => ListTile(
               leading: const Icon(Icons.system_update_outlined),
