@@ -42,6 +42,10 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
+**Latest release is 2.18.0** — Android build 114, iOS build 113 — published to
+the download site. Check `git tag --sort=-creatordate` rather than trusting
+this line, which ages.
+
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
 
@@ -56,7 +60,16 @@ source of truth — do not "fix" it. **Identify a build to the user by its build
 number**, which is always unique, because several releases can share a version
 name. **Never build without the user's explicit approval in that same message**
 ("build" / "ok build") — not "fix it" or "do it", and not carried over from an
-earlier build in the session.
+earlier build in the session. **A build the user approves is published to the
+download site in the same job** — see below; they should not have to ask twice.
+
+That tag-derived version reaches the user in three places, all fed from the
+same `--build-name`/`--build-number` CI passes: the Android **launcher label**
+is `AI BIT <version>` via a `manifestPlaceholders["appName"]` in
+`android/app/build.gradle.kts` (so `android:label="${appName}"` — a local build
+with no `--build-name` shows the pubspec's placeholder 1.0.0, which is fine
+since locals never ship), a **Version row in Settings → About**, and the
+update dialog. `package_info_plus` is the source for both in-app readings.
 
 The Android artifact is **split per ABI** (`--split-per-abi`); the arm64 slice
 is `app-arm64-v8a-release.apk` (~73MB, nearly every real phone) and a copy is
@@ -194,6 +207,20 @@ channel **Subscribe button + subscriber count** on the watch page. Note the
 streaming quality floor: most videos now expose only the 360p combined stream,
 so Data saver and the quality picker cannot go below 360p while *watching* even
 though *downloads* reach 144p.
+
+**Big screens get a multi-column feed** (2.17.0). `feedColumnsFor(width)` in
+`lib/src/ui/widgets/responsive_feed.dart` is the single breakpoint rule — 2
+columns from 600dp (Material's tablet boundary; an earlier 640 cutoff left
+small portrait tablets on the stretched phone list), 3 from 1000, 4 from 1400 —
+and `ResponsiveVideoFeed` wraps it, taking a *list* builder and a *grid*
+builder because phone and tablet items are different widgets, not one widget
+resized: Home shows `VideoCard`s and Subscriptions/channel tabs show compact
+`VideoRow`s, but every surface converges on `VideoCard(inGrid: true)` in the
+grid. `FeedSkeleton` follows the same rule so the loading state does not
+announce a phone layout and then jump. Phones under 600dp keep the exact
+single-column `ListView` they always had; a phone in landscape does cross the
+threshold, which matches the real app. Used by Home, Subscriptions and the
+channel Videos/Shorts/Live tabs; search results stay rows, as on YouTube.
 
 Platform: lock-screen and notification transport controls including skip,
 AirPlay via the system route picker, call and Bluetooth interruption handling.
@@ -341,6 +368,21 @@ Per-download quality is persisted as the record's `quality` spec (`360p`,
 `1080p`, `Audio`, `MP3`), so a retry or a restore after restart re-fetches the
 same rendition without a schema change.
 
+**Installing a new APK over an old one never touched user data** — the database
+and prefs survive an update by themselves. *Uninstalling* is what wipes them,
+and that is what Android Auto Backup is for. It was nominally enabled but had
+no rules, so it tried to include the downloaded videos, blew Google's ~25 MB
+backup quota, and Android then **silently skipped the whole backup** — a
+reinstall came back empty with nothing to show why. `android/app/src/main/res/
+xml/backup_rules.xml` (Android 11 and below) and `data_extraction_rules.xml`
+(12+) now exclude `downloads/` from cloud backup and device transfer, leaving
+the database and settings — far under quota — to restore. Both files are
+needed; they are the same intent in two formats Android picked at different
+versions. Videos are re-downloadable, the library is not. Note the rules only
+help a reinstall that happens *after* a build carrying them, and only with
+Google backup switched on, so Settings → Backup & restore
+(`backup_service.dart`) stays the reliable manual path.
+
 ### Web is a preview target, not a platform
 
 A cross-cutting `kIsWeb` concern threads through several files. In a browser:
@@ -380,6 +422,17 @@ reading code. When something returns nothing, write a probe first. Every
 **A silent catch hides a dead feature.** Search suggestions were empty for
 months because a broken package call was caught and turned into an empty list.
 If a `catch` returns a neutral value, say why in a comment or log it.
+
+**Native changes can be verified from the built APK — do that instead of
+shrugging.** Nothing Android compiles here, and "CI went green" only proves it
+built, not that a manifest placeholder resolved or a resource was included. The
+downloaded artifact answers both. `unzip` it, then decode `AndroidManifest.xml`
+as UTF-16LE and substring-search for the value you expect (this is how
+`AI BIT 2.18.0` was confirmed as the launcher label). For resources, note that
+AAPT2 **renames files in release builds** — `res/xml/backup_rules.xml` ships as
+something like `res/Qq.xml` — so search the compiled XML by *content*
+(`full-backup-content`, `downloads/`) rather than by path, or conclude wrongly
+that the file was dropped. Cheap, and it converts "reasoned" into "verified".
 
 **The player is one long-lived instance.** Several plugin bugs come from
 assuming a player per video: the lock-screen artwork cache was keyed by player
