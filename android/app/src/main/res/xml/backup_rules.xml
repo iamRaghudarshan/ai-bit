@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup rules for Android 11 and below (fullBackupContent).
+
+     Exclude-only: everything else - the SQLite database (history,
+     subscriptions, playlists, downloads metadata) and SharedPreferences
+     (settings) - stays in the backup, and together they are far under the
+     25 MB cloud quota. The downloaded video files must be excluded: left in,
+     they blow the quota and Android silently skips the whole backup, which is
+     why a reinstall used to come back empty. Videos are re-downloadable; the
+     library is not. -->
+<full-backup-content>
+    <exclude domain="file" path="downloads/" />
+</full-backup-content>
