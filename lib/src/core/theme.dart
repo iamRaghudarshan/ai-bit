@@ -66,6 +66,20 @@ ThemeData buildTheme(
         TextStyle(fontSize: 10, color: navFg, fontWeight: FontWeight.w500),
       ),
     ),
+    // In-page tabs (channel page, history) carried no theme, so they inherited
+    // the seeded scheme's tinted label colour and Material's full-width divider
+    // — unlike YouTube's, which is plain white/near-black text with a short
+    // underline under the selected tab and no divider line. Match that.
+    tabBarTheme: TabBarThemeData(
+      labelColor: navFg,
+      unselectedLabelColor: isDark ? Colors.white60 : Colors.black54,
+      indicatorColor: navFg,
+      indicatorSize: TabBarIndicatorSize.label,
+      dividerColor: Colors.transparent,
+      labelStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+      unselectedLabelStyle:
+          const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+    ),
     bottomSheetTheme: BottomSheetThemeData(
       backgroundColor: isDark
           ? (amoled ? const Color(0xFF0A0A0A) : AppColors.darkSurface)
