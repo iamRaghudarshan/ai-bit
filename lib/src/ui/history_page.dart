@@ -81,28 +81,24 @@ class _HistoryPageState extends State<HistoryPage>
   Future<void> _load() async {
     final token = ++_loadToken;
     final query = _query;
-    late final List<HistoryEntry> videos;
-    late final List<HistoryEntry> shorts;
-    late final List<HistoryEntry> kids;
 
-    if (query.isEmpty) {
-      videos = await _db.history(shorts: false, kids: false);
-      shorts = await _db.history(shorts: true, kids: false);
-      kids = await _db.history(kids: true);
-    } else {
-      // AppDatabase.searchWatchHistory has no shorts/kids parameter, so one
-      // query is run and split three ways here — cheaper than three LIKE
-      // scans, and it keeps each tab showing only its own kind of row.
-      // The limit is raised well above the unfiltered 200 because SQLite
-      // spends it *before* the split: a Kids search would otherwise be
-      // crowded out by regular history that never reaches the Kids tab.
-      final matches = await _db.searchWatchHistory(query, limit: 1000);
-      videos = matches
-          .where((e) => !e.video.isShort && !e.video.isKids)
-          .toList();
-      shorts = matches.where((e) => e.video.isShort && !e.video.isKids).toList();
-      kids = matches.where((e) => e.video.isKids).toList();
-    }
+    // One query per tab, filtered in SQL. Splitting a single unfiltered query
+    // in Dart would be one scan instead of three, but SQLite spends its LIMIT
+    // before the split, so a Kids search could come back with nothing after
+    // the cap was filled by regular history that never reaches the Kids tab.
+    // An empty query goes down the same path: searchWatchHistory falls back to
+    // the plain history() list, with the same shorts/kids meaning.
+    final videos = await _db.searchWatchHistory(
+      query,
+      shorts: false,
+      kids: false,
+    );
+    final shorts = await _db.searchWatchHistory(
+      query,
+      shorts: true,
+      kids: false,
+    );
+    final kids = await _db.searchWatchHistory(query, kids: true);
 
     if (!mounted || token != _loadToken) return;
     setState(() {
@@ -374,13 +370,15 @@ class _HistoryPageState extends State<HistoryPage>
   }
 
   Widget _row(HistoryEntry entry) {
-    final scheme = Theme.of(context).colorScheme;
     final id = entry.video.id;
-    final selected = _selected.contains(id);
 
-    Widget row = VideoRow(
+    return VideoRow(
       video: entry.video,
       progress: entry.progress,
+      // Null outside selection mode, so the row looks like every other feed's;
+      // in selection mode the tile draws its own circle and tint.
+      selected: _selecting ? _selected.contains(id) : null,
+      onLongPress: _selecting ? null : () => _beginSelection(id),
       onTap: _selecting
           ? () => _toggle(id)
           : () async {
@@ -400,37 +398,6 @@ class _HistoryPageState extends State<HistoryPage>
                 _reload();
               },
             ),
-    );
-
-    if (_selecting) {
-      row = Row(
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(left: 10),
-            child: Icon(
-              selected ? Icons.check_circle : Icons.circle_outlined,
-              size: 22,
-              color: selected
-                  ? scheme.primary
-                  : scheme.onSurface.withValues(alpha: 0.4),
-            ),
-          ),
-          Expanded(child: row),
-        ],
-      );
-    }
-
-    // The long press lives outside VideoRow's own InkWell: the shared tile has
-    // no long-press hook, and adding one there would touch every feed in the
-    // app. LongPress wins the arena over the inner tap, so both still work.
-    return GestureDetector(
-      onLongPress: _selecting ? null : () => _beginSelection(id),
-      child: ColoredBox(
-        color: selected
-            ? scheme.primary.withValues(alpha: 0.14)
-            : Colors.transparent,
-        child: row,
-      ),
     );
   }
 }

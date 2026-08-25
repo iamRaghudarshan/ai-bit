@@ -90,34 +90,38 @@ class _DownloadsPageState extends State<DownloadsPage> {
 
     final downloads = context.read<DownloadManager>();
     final messenger = ScaffoldMessenger.of(context);
-    // Serial, and by id: DownloadManager.cancel stops the in-flight transfer
-    // before deleting, and both paths delete the file — reimplementing that
-    // here would leave orphaned files in the app's private storage.
-    for (final record in records) {
-      if (!_selected.contains(record.video.id)) continue;
-      try {
-        if (record.isComplete) {
-          await downloads.remove(record.video.id);
-        } else {
-          await downloads.cancel(record.video.id);
-        }
-      } catch (e) {
-        // One stubborn file must not abandon the rest of the selection; say
-        // which one failed rather than swallowing it.
+    final chosen = records.where((r) => _selected.contains(r.video.id)).toList();
+    // One call rather than a loop over remove/cancel: the manager deletes them
+    // all and notifies once, so the list rebuilds once instead of per row. It
+    // still stops an in-flight transfer before deleting and removes each file
+    // itself — reimplementing that here would leave orphaned files in the
+    // app's private storage.
+    final failures = await downloads.removeAll(chosen.map((r) => r.video.id));
+    if (!mounted) return;
+    setState(_clearSelection);
+
+    // A stubborn file must not abandon the rest of the selection, and it must
+    // not vanish silently either: name the ones that would not go.
+    for (final record in chosen) {
+      final failure = failures[record.video.id];
+      if (failure != null) {
         messenger.showSnackBar(
-          SnackBar(content: Text('${record.video.title}: $e')),
+          SnackBar(content: Text('${record.video.title}: $failure')),
         );
       }
     }
-    if (!mounted) return;
-    setState(_clearSelection);
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(
-          count == 1 ? 'Deleted 1 download' : 'Deleted $count downloads',
+    final deleted = count - failures.length;
+    // Skipped when nothing went: the per-failure messages above already said
+    // so, and "Deleted 0 downloads" on top of them is noise.
+    if (deleted > 0) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            deleted == 1 ? 'Deleted 1 download' : 'Deleted $deleted downloads',
+          ),
         ),
-      ),
-    );
+      );
+    }
   }
 
   @override

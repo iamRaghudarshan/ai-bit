@@ -225,6 +225,8 @@ class VideoRow extends StatelessWidget {
     required this.onTap,
     this.onMenu,
     this.progress = 0,
+    this.selected,
+    this.onLongPress,
   });
 
   final VideoBrief video;
@@ -232,59 +234,102 @@ class VideoRow extends StatelessWidget {
   final VoidCallback? onMenu;
   final double progress;
 
+  /// Selection state for a list that lets several rows be picked at once.
+  /// Null — the default — means the list is not in selection mode, and the row
+  /// then builds exactly the tree it always did: no indicator, no tint, so
+  /// every other feed is untouched. True or false shows the leading circle,
+  /// because an unpicked row in selection mode still has to say what a tap
+  /// would now do.
+  final bool? selected;
+
+  /// Long press on the whole row, which is how a selection starts. It belongs
+  /// here rather than in a GestureDetector the caller wraps around the row:
+  /// the two would then have to settle it in the gesture arena, and this way
+  /// the press gets the same ink feedback as the tap.
+  final VoidCallback? onLongPress;
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return InkWell(
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 160,
-              child: VideoThumb(video: video, progress: progress, radius: 8),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    video.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+    final isSelected = selected ?? false;
+
+    Widget content = Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 160,
+            child: VideoThumb(video: video, progress: progress, radius: 8),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  video.title,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodyMedium?.copyWith(height: 1.25),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  metaLine([
+                    video.author,
+                    if (video.viewCount != null)
+                      '${compactCount(video.viewCount)} views',
+                    timeAgo(video.uploadDate, raw: video.uploadRaw),
+                  ]),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 11,
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    metaLine([
-                      video.author,
-                      if (video.viewCount != null)
-                        '${compactCount(video.viewCount)} views',
-                      timeAgo(video.uploadDate, raw: video.uploadRaw),
-                    ]),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontSize: 11,
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-            if (onMenu != null)
-              IconButton(
-                icon: const Icon(Icons.more_vert, size: 18),
-                onPressed: onMenu,
-                visualDensity: VisualDensity.compact,
-              ),
-          ],
-        ),
+          ),
+          if (onMenu != null)
+            IconButton(
+              icon: const Icon(Icons.more_vert, size: 18),
+              onPressed: onMenu,
+              visualDensity: VisualDensity.compact,
+            ),
+        ],
       ),
     );
+
+    if (selected != null) {
+      // The circle sits outside the row's own padding and is centred against
+      // the whole tile, which is where a list that is not selecting has
+      // nothing at all — the thumbnail keeps its position and size either way.
+      content = Row(
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 10),
+            child: Icon(
+              isSelected ? Icons.check_circle : Icons.circle_outlined,
+              size: 22,
+              color: isSelected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurface.withValues(alpha: 0.4),
+            ),
+          ),
+          Expanded(child: content),
+        ],
+      );
+    }
+
+    if (isSelected) {
+      content = ColoredBox(
+        color: theme.colorScheme.primary.withValues(alpha: 0.14),
+        child: content,
+      );
+    }
+
+    return InkWell(onTap: onTap, onLongPress: onLongPress, child: content);
   }
 }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,11 +28,20 @@ import 'playback_controller.dart';
 ///   [isSupported] is false on iOS and [popOut] falls back to PiP rather than
 ///   pretending there is an overlay to ask for.
 ///
-/// The bubble is a control, not a second video surface: there is exactly one
-/// native player and it is attached to the Flutter view (see CLAUDE.md, "One
-/// player for the whole app"), so its pixels cannot also be rendered into an
-/// overlay window. What the bubble gives you is audio that keeps playing, the
-/// title of what is playing, and one tap back into the app.
+/// **The Android window shows real video.** There is exactly one native player
+/// in this app (CLAUDE.md, "One player for the whole app"), so the overlay does
+/// not start a second one — a second decoder would fight the first for audio
+/// focus. Instead the overlay owns a `SurfaceView` and the vendored plugin's
+/// `BetterPlayerSurfaceBridge` (PATCH 18) points the live ExoPlayer at it,
+/// then points it back at Flutter's texture when the window closes.
+///
+/// The consequence, and it is the intended one: **the in-app video surface goes
+/// blank while the overlay is up**, because one decoder has one output. System
+/// Picture-in-Picture behaves identically. Audio never stops. To keep that
+/// blankness from outliving the overlay, [start] installs a lifecycle observer
+/// that takes the window down the moment the app is resumed — returning to the
+/// app is exactly when the video has to come back, and the user may well return
+/// through the launcher rather than by tapping the bubble.
 class FloatingPlayer {
   const FloatingPlayer._();
 
@@ -40,6 +51,40 @@ class FloatingPlayer {
   /// why iOS is a permanent false rather than a to-do.
   static bool get isSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  static final StreamController<String> _failures =
+      StreamController<String>.broadcast();
+
+  /// Failures that surface *after* [start] has already returned true.
+  ///
+  /// The overlay is a foreground service started with
+  /// `startForegroundService`, which returns before the service has run a line
+  /// — so the two failures that actually happen in the field (Android 14
+  /// refusing the `mediaPlayback` service type at runtime, and the overlay
+  /// permission being revoked between the check and `addView`) have no
+  /// `Result` left to fail. They arrive here instead, so that a button that
+  /// appears to do nothing can say why.
+  static Stream<String> get failures => _failures.stream;
+
+  static bool _handlerInstalled = false;
+  static _ResumeWatcher? _resumeWatcher;
+
+  static void _ensureHandler() {
+    if (_handlerInstalled || !isSupported) return;
+    _handlerInstalled = true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onFailed') {
+        final message = call.arguments is String
+            ? call.arguments as String
+            : 'The floating player could not be shown.';
+        _failures.add(message);
+      }
+      // Anything else is a native side newer than this file. Ignored rather
+      // than thrown back, because an unhandled reply would only produce log
+      // noise on a channel whose only job is one-way notification.
+      return null;
+    });
+  }
 
   /// Whether the user has granted "display over other apps".
   ///
@@ -57,21 +102,60 @@ class FloatingPlayer {
   static Future<void> requestPermission() =>
       _ask<bool>('requestPermission', fallback: false);
 
-  /// Shows the bubble. False when it could not be shown, which in practice
-  /// means the overlay permission is not granted.
-  static Future<bool> start({String title = '', String subtitle = ''}) =>
-      _ask<bool>(
-        'start',
-        fallback: false,
-        arguments: <String, dynamic>{'title': title, 'subtitle': subtitle},
-      );
+  /// Shows the window. False when it could not be shown, which in practice
+  /// means the overlay permission is not granted or [playing] was false.
+  ///
+  /// [playing] is not decoration. The service declares
+  /// `foregroundServiceType="mediaPlayback"`, and from Android 14 the system
+  /// judges that claim at runtime and throws
+  /// `InvalidForegroundServiceTypeException` when it does not believe it. Only
+  /// the caller knows whether media is actually running, so the answer travels
+  /// with the request and the native side refuses without it.
+  static Future<bool> start({
+    String title = '',
+    String subtitle = '',
+    required bool playing,
+  }) async {
+    _ensureHandler();
+    final started = await _ask<bool>(
+      'start',
+      fallback: false,
+      arguments: <String, dynamic>{
+        'title': title,
+        'subtitle': subtitle,
+        'playing': playing,
+      },
+    );
+    if (started) _watchForResume();
+    return started;
+  }
 
-  /// Takes the bubble down. Safe to call when it is not showing.
-  static Future<void> stop() => _ask<bool>('stop', fallback: false);
+  /// Takes the window down. Safe to call when it is not showing.
+  ///
+  /// This is also the path that returns the video to the in-app player, so it
+  /// is deliberately cheap and safe to call speculatively — `RootShell` does,
+  /// on dispose and whenever playback ends.
+  static Future<void> stop() async {
+    _stopWatchingForResume();
+    await _ask<bool>('stop', fallback: false);
+  }
 
   /// Whether the overlay service is currently up.
-  static Future<bool> isRunning() =>
-      _ask<bool>('isRunning', fallback: false);
+  static Future<bool> isRunning() => _ask<bool>('isRunning', fallback: false);
+
+  static void _watchForResume() {
+    if (_resumeWatcher != null) return;
+    final watcher = _ResumeWatcher();
+    _resumeWatcher = watcher;
+    WidgetsBinding.instance.addObserver(watcher);
+  }
+
+  static void _stopWatchingForResume() {
+    final watcher = _resumeWatcher;
+    if (watcher == null) return;
+    _resumeWatcher = null;
+    WidgetsBinding.instance.removeObserver(watcher);
+  }
 
   /// One place for the channel call, so every unhappy path is handled the same
   /// way and none of them is silent.
@@ -120,6 +204,21 @@ class FloatingPlayer {
     // through a context that may have been popped by then.
     final messenger = ScaffoldMessenger.of(context);
 
+    if (!playback.isPlaying) {
+      // Refused here rather than left to fail natively. The overlay runs as a
+      // mediaPlayback foreground service, and Android 14 rejects that type at
+      // runtime when nothing is playing — so a paused video would start a
+      // service the OS immediately kills, which reads to the user as a button
+      // that silently does nothing.
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Start playing first — the floating player needs '
+              'playback running.'),
+        ),
+      );
+      return;
+    }
+
     if (!await hasPermission()) {
       if (!context.mounted) return;
       final go = await showDialog<bool>(
@@ -156,11 +255,52 @@ class FloatingPlayer {
       return;
     }
 
-    final started = await start(title: video.title, subtitle: video.author);
+    // Armed before the call, because the service can fail inside
+    // startForeground before start() has even returned.
+    _listenForFailure(messenger);
+
+    final started = await start(
+      title: video.title,
+      subtitle: video.author,
+      playing: playback.isPlaying,
+    );
     if (!started) {
       messenger.showSnackBar(
         const SnackBar(content: Text('Could not open the floating player.')),
       );
+    }
+  }
+
+  /// Shows the next late failure, if one arrives soon, then stops listening.
+  ///
+  /// Bounded on purpose: [failures] is a broadcast stream, and a subscription
+  /// left open per tap would leak. Anything that goes wrong later than this is
+  /// the user closing the window, not the window failing to open.
+  static void _listenForFailure(ScaffoldMessengerState messenger) {
+    StreamSubscription<String>? subscription;
+    Timer? timer;
+    subscription = failures.listen((message) {
+      timer?.cancel();
+      subscription?.cancel();
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    });
+    timer = Timer(const Duration(seconds: 5), () => subscription?.cancel());
+  }
+}
+
+/// Takes the overlay down when the app comes back to the front.
+///
+/// This is the safety net for the surface handoff. While the overlay holds the
+/// video, the in-app surface is blank; if the user returns through the launcher
+/// or the recents list instead of tapping the bubble, nothing else would close
+/// it and the app would look broken. Returning to the app is precisely when
+/// the video has to come home, which is also how system PiP behaves.
+class _ResumeWatcher extends WidgetsBindingObserver {
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // stop() removes this observer, so it does not fire twice.
+      FloatingPlayer.stop();
     }
   }
 }

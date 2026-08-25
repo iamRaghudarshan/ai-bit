@@ -385,6 +385,58 @@ class DownloadManager extends ChangeNotifier {
 
   /// Deletes the record and its file.
   Future<void> remove(String videoId) async {
+    await _removeOne(videoId);
+    notifyListeners();
+  }
+
+  /// Deletes several downloads as one action.
+  ///
+  /// Exists because the downloads page's multi-select delete used to loop over
+  /// [remove]/[cancel], which notified once per row: deleting twenty rows
+  /// rebuilt the whole list twenty times, each rebuild reading a list that was
+  /// still mid-deletion. One notify at the end is one rebuild of the finished
+  /// state.
+  ///
+  /// Returns the ids that could not be deleted, mapped to the error that
+  /// stopped them, so the caller can still name what failed. A stubborn file
+  /// must not abandon the rest of the selection, so each id is attempted
+  /// independently.
+  ///
+  /// The database rows still go one at a time — [AppDatabase] has no batch
+  /// delete and downloads are few enough that a batch would not repay the
+  /// extra API surface. The rebuilds were the cost worth removing.
+  Future<Map<String, Object>> removeAll(Iterable<String> videoIds) async {
+    // Materialised first: callers pass the page's live selection set, and
+    // deleting while iterating it would throw a concurrent-modification error.
+    final ids = videoIds.toSet();
+    final failures = <String, Object>{};
+    var removed = false;
+    for (final id in ids) {
+      try {
+        // Same order [cancel] uses, and applied to every id rather than only
+        // the unfinished ones: for a completed download both steps are no-ops,
+        // and an in-flight transfer must be stopped before its file is deleted
+        // or the still-open sink writes it straight back.
+        _pending.remove(id);
+        if (_activeId == id) {
+          await _activeSubscription?.cancel();
+          _activeSubscription = null;
+        }
+        await _removeOne(id);
+        removed = true;
+      } catch (e) {
+        failures[id] = e;
+      }
+    }
+    // Only when something actually went: an all-failed call should not make
+    // the list rebuild for nothing.
+    if (removed) notifyListeners();
+    return failures;
+  }
+
+  /// The deletion itself, without notifying — so [removeAll] can do many and
+  /// tell the UI once.
+  Future<void> _removeOne(String videoId) async {
     final record = _records.remove(videoId);
     if (record != null) {
       final file = File(record.filePath);
@@ -393,7 +445,6 @@ class DownloadManager extends ChangeNotifier {
       }
     }
     await _db.deleteDownload(videoId);
-    notifyListeners();
   }
 
   /// Copies a finished video download into the system photo library.

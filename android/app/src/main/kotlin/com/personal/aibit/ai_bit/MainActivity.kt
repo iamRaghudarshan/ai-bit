@@ -23,39 +23,83 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val CHANNEL = "ai.bit/floating_player"
         const val TAG = "AiBitFloating"
+
+        /** Dart-side method name for a failure that surfaced after `start`. */
+        const val ON_FAILED = "onFailed"
     }
+
+    private var channel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    // The Dart side already gates on the platform; this exists
-                    // so a future device check has somewhere to live.
-                    "isSupported" -> result.success(true)
+        val methodChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+        channel = methodChannel
 
-                    "hasPermission" -> result.success(canDrawOverlays())
+        // The overlay service is started with startForegroundService, which
+        // returns before anything can go wrong inside it — so the failures that
+        // matter (Android 14 refusing the mediaPlayback service type, the
+        // overlay permission revoked between the check and addView) happen with
+        // no Result left to fail. This is how they get back to the user instead
+        // of being a button that does nothing.
+        FloatingPlayerService.onFailure = { message ->
+            // The service already runs on the main thread, but the channel is
+            // strict about it and a future caller may not be.
+            runOnUiThread {
+                try {
+                    channel?.invokeMethod(ON_FAILED, message)
+                } catch (e: Exception) {
+                    // The engine can be detached between the failure and this
+                    // post. Logged rather than crashed: the failure has already
+                    // been logged natively, and there is nobody left to tell.
+                    Log.w(TAG, "could not deliver the floating player failure", e)
+                }
+            }
+        }
 
-                    "requestPermission" -> {
-                        openOverlaySettings()
-                        // Reports the permission as it stands *now*, which is
-                        // almost always false: the grant happens in the
-                        // Settings app, in another task, with no result coming
-                        // back to us. Dart re-checks when the user returns.
-                        result.success(canDrawOverlays())
-                    }
+        methodChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                // The Dart side already gates on the platform; this exists
+                // so a future device check has somewhere to live.
+                "isSupported" -> result.success(true)
 
-                    "isRunning" -> result.success(FloatingPlayerService.isRunning)
+                "hasPermission" -> result.success(canDrawOverlays())
 
-                    "start" -> {
-                        if (!canDrawOverlays()) {
+                "requestPermission" -> {
+                    openOverlaySettings()
+                    // Reports the permission as it stands *now*, which is
+                    // almost always false: the grant happens in the
+                    // Settings app, in another task, with no result coming
+                    // back to us. Dart re-checks when the user returns.
+                    result.success(canDrawOverlays())
+                }
+
+                "isRunning" -> result.success(FloatingPlayerService.isRunning)
+
+                "start" -> {
+                    // Belt and braces with the Dart-side check. A foreground
+                    // service typed mediaPlayback is only justified while media
+                    // is actually playing, and Android 14 enforces that at
+                    // runtime with InvalidForegroundServiceTypeException — so
+                    // the one caller that knows the answer sends it, and this
+                    // refuses rather than starting a service the OS will kill.
+                    val playing = call.argument<Boolean>("playing") == true
+                    when {
+                        !playing -> {
+                            Log.i(TAG, "refusing to float: nothing is playing")
+                            result.success(false)
+                        }
+
+                        !canDrawOverlays() -> {
                             // Not an error: "you have not granted this yet" is
                             // an ordinary answer, and the Dart side turns it
                             // into the explanation dialog. A PlatformException
                             // here would just be a false alarm in the log.
                             result.success(false)
-                        } else {
+                        }
+
+                        else -> {
                             startBubble(
                                 call.argument<String>("title").orEmpty(),
                                 call.argument<String>("subtitle").orEmpty()
@@ -63,15 +107,26 @@ class MainActivity : FlutterActivity() {
                             result.success(true)
                         }
                     }
-
-                    "stop" -> {
-                        stopService(Intent(this, FloatingPlayerService::class.java))
-                        result.success(true)
-                    }
-
-                    else -> result.notImplemented()
                 }
+
+                "stop" -> {
+                    stopService(Intent(this, FloatingPlayerService::class.java))
+                    result.success(true)
+                }
+
+                else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        // The service holds this callback in a static field, so leaving it set
+        // would pin a dead Activity and its engine for as long as the process
+        // lives.
+        FloatingPlayerService.onFailure = null
+        channel?.setMethodCallHandler(null)
+        channel = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun canDrawOverlays(): Boolean =

@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
-import '../data/app_lock_service.dart';
 import '../data/kids_guard.dart';
 import '../data/settings.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
+import 'app_lock_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'watch_page.dart';
@@ -228,18 +228,6 @@ class HomePageState extends State<HomePage>
 
   static bool _loggedMissingGuard = false;
 
-  /// Asks for the Kids PIN. True only when the right one was typed.
-  Future<bool> _askKidsPin(String hash) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      // Not dismissible by tapping outside: a stray tap is the easiest way
-      // past a lock, and Cancel is right there.
-      barrierDismissible: false,
-      builder: (_) => _KidsPinDialog(hash: hash),
-    );
-    return ok ?? false;
-  }
-
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -255,14 +243,22 @@ class HomePageState extends State<HomePage>
         title: _ModeSwitch(
           kids: kids,
           onChanged: (wantsKids) async {
+            // The one and only write site for kidsMode, so the guard below is
+            // the whole rule and cannot be walked around from elsewhere.
+            //
             // Turning Kids mode ON is free. Turning it OFF is the move a child
             // makes to get out of it, so that is the direction the PIN guards.
-            if (!wantsKids && settings.kidsPinHash.isNotEmpty) {
-              final unlocked = await _askKidsPin(settings.kidsPinHash);
+            // AppLockPage.confirmKidsPin is the same PIN pad the app lock uses
+            // — a second, free-text prompt for this used to live here, and two
+            // different-looking asks for one action read as a bug. It returns
+            // true when no Kids PIN is set, which is exactly the unguarded
+            // case, so there is no separate branch for it.
+            if (!wantsKids && !await AppLockPage.confirmKidsPin(context)) {
               // Cancelled or wrong: stay in Kids mode, and say nothing more —
-              // the dialog already reported the wrong PIN.
-              if (!unlocked || !mounted) return;
+              // the pad already reported the wrong PIN without dismissing.
+              return;
             }
+            if (!mounted) return;
             settings.kidsMode = wantsKids;
             // Reset to All and reload with the skeleton, so the switch reads as
             // an instant change rather than a frozen old feed.
@@ -689,77 +685,4 @@ class _KidsTimeUp extends StatelessWidget {
         'Kids time is up. More videos tomorrow.\n\nA grown-up can change the '
         'daily limit in Settings.',
   );
-}
-
-/// PIN prompt shown when leaving Kids mode while a Kids PIN is set.
-///
-/// A wrong PIN keeps the dialog open with an inline message instead of closing
-/// and popping a snackbar behind it, because the next thing the user wants is
-/// another try in the same box.
-class _KidsPinDialog extends StatefulWidget {
-  const _KidsPinDialog({required this.hash});
-
-  final String hash;
-
-  @override
-  State<_KidsPinDialog> createState() => _KidsPinDialogState();
-}
-
-class _KidsPinDialogState extends State<_KidsPinDialog> {
-  final _controller = TextEditingController();
-  bool _wrong = false;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    // AppLockService.verify compares hashes and refuses an empty stored hash,
-    // so the raw PIN is never held anywhere but this field.
-    if (AppLockService.verify(_controller.text, widget.hash)) {
-      Navigator.of(context).pop(true);
-      return;
-    }
-    setState(() {
-      _wrong = true;
-      _controller.clear();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Enter Kids PIN'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('Kids mode is locked. Enter the PIN to turn it off.'),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _controller,
-            autofocus: true,
-            obscureText: true,
-            keyboardType: TextInputType.number,
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
-            decoration: InputDecoration(
-              labelText: 'PIN',
-              errorText: _wrong ? 'Wrong PIN' : null,
-              border: const OutlineInputBorder(),
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(false),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(onPressed: _submit, child: const Text('Turn off')),
-      ],
-    );
-  }
 }

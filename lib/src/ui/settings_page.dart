@@ -62,9 +62,12 @@ class SettingsPage extends StatelessWidget {
             subtitle: const Text('Continue with the up-next queue when a video ends.'),
             onChanged: (value) => settings.autoplayNext = value,
           ),
-          // iOS only: Android has its own system PiP on leaving the app, so the
-          // row would promise something it does not control there.
-          if (defaultTargetPlatform == TargetPlatform.iOS && !kIsWeb)
+          // Both platforms now: iOS arms an inline AVPlayerLayer, Android sets
+          // setAutoEnterEnabled on the Activity. Different mechanisms, one
+          // promise, so it is one setting.
+          if (!kIsWeb &&
+              (defaultTargetPlatform == TargetPlatform.iOS ||
+                  defaultTargetPlatform == TargetPlatform.android))
             SwitchListTile(
               value: settings.autoPip,
               title: const Text('Automatic Picture in Picture'),

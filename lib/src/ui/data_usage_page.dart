@@ -49,14 +49,10 @@ class _DataUsagePageState extends State<DataUsagePage> {
   @override
   void initState() {
     super.initState();
-    // Built here rather than taken from a provider: the service holds no state
-    // of its own, it is a thin query wrapper over the database and settings,
-    // both of which are provided app-wide. A second instance costs nothing and
-    // the screen does not depend on a provider registration to exist.
-    _service = DataUsageService(
-      database: context.read<AppDatabase>(),
-      settings: context.read<SettingsService>(),
-    );
+    // The app-wide instance, the same one PlaybackController and
+    // DownloadManager write through. read, not watch: this runs in initState,
+    // and the service is a stateless query wrapper with nothing to rebuild on.
+    _service = context.read<DataUsageService>();
     _load();
   }
 

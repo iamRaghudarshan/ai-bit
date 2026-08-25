@@ -1313,13 +1313,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// Called after every data source rather than once at startup: iOS needs a
   /// layer bound to the player that is playing now, and this app reuses one
   /// long-lived controller across videos, so a layer armed for the previous
-  /// video would be pointing at the wrong thing. A no-op off iOS and when the
-  /// setting is off, and deliberately not awaited by the caller - failing to
-  /// arm a convenience must never delay playback starting.
+  /// video would be pointing at the wrong thing. Android arms the Activity
+  /// instead and does not care, but re-arming costs nothing there.
+  ///
+  /// A no-op on other platforms and when the setting is off, and deliberately
+  /// not awaited by the caller - failing to arm a convenience must never delay
+  /// playback starting.
   Future<void> _syncAutomaticPip() async {
     final player = _player;
     if (player == null) return;
-    if (defaultTargetPlatform != TargetPlatform.iOS) return;
+    if (defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
     try {
       await player.setAutomaticPictureInPicture(
         playerKey,

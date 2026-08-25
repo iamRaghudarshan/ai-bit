@@ -27,8 +27,12 @@ D:/flutter/bin/flutter.bat test test/unit_test.dart --plain-name "compactCount"
 
 Tests are pure unit tests (`test/unit_test.dart`) covering formatters, the
 `VideoBrief` ⇄ SQLite round trip, the "did the video really end" rule, download
-target sizing and the media-processor fallback contract. They do no I/O and need
-no device.
+target sizing and the media-processor fallback contract, plus the pure helpers
+the later waves added — `KidsGuard.daysSinceEpoch`, PIN hashing and its
+constant-time compare, `DataUsageService.estimateStreamBytes` and the queue
+shuffle's ordering. They do no I/O and need no device. Anything whose answer is
+only wrong once a day, or only wrong on a 60fps stream, belongs here: both of
+those bugs shipped, and both are now pinned by a test.
 
 **Neither platform can be built here.** iOS needs Xcode on macOS; the Android
 SDK is not installed. Native code — `ios/Runner/*.swift`, the vendored plugin's
@@ -181,10 +185,51 @@ Watch history is **three tabs — Videos, Shorts, Kids** (`history_page.dart`).
 feed, `isKids` at play time from the current mode. Videos and Shorts exclude
 Kids-mode content; the You-page recent shelf shows regular videos only.
 
+Privacy is three settings that people conflate, so keep them distinct. **App
+lock** holds a shield over the whole app until a PIN — or the device's
+biometric — is accepted (`app_lock_service.dart`, `app_lock_page.dart`, and the
+`_AppLockGate` in `main.dart`, which sits in `MaterialApp.builder` so it wraps
+the Navigator and covers every pushed route). It raises the shield on `paused`,
+not on the way back in, because the recents thumbnail is captured on the way
+out and a lock that still lets the task switcher show your watch history is
+theatre; the *prompt* then waits for `resumed`, since a biometric sheet raised
+while backgrounded comes back as a failure the user never caused. **Incognito**
+stops recording — and it skips the *search* history as well as the watch
+history, which is not tidiness: recorded queries are what personalise the home
+feed, so an incognito search would have surfaced in the recommendations
+afterwards. It skips resume positions too, which is the deliberate price of the
+mode. **History retention** auto-deletes rows older than N days, run once per
+launch from a post-frame callback in `main.dart` so nothing on screen waits for
+it; 0 means keep forever and is both the default and the old behaviour.
+
+None of it is a security boundary, and the code says so out loud: the PIN is a
+sha256 digest in SharedPreferences, which is a plain XML file that anyone with
+root or an adb backup can read — and clear. It is hashed anyway because people
+reuse PINs.
+
 Kids mode: a pill toggle in the Home top bar (default off). On, the home feed
 and Shorts draw only from curated kid-friendly topics (`_kidsTopics` /
 `_kidsShortsTopics` in `yt_repository.dart`) and the category chips hide. It
-curates, it does not enforce — the app cannot apply YouTube's own age gating.
+still only *curates* the content — the app cannot apply YouTube's own age
+gating — but the mode itself is now **enforceable**: an optional PIN is asked
+for on the way out, and an optional daily allowance stops playback once it is
+spent (`kids_guard.dart`, with a countdown bar and a time's-up panel on Home).
+
+Turning Kids mode ON is free; only turning it OFF is guarded, because a child
+switching it *on* is not the threat. That asymmetry is a `&&` short-circuit at
+**one** write site — `home_page.dart`, inside `_ModeSwitch.onChanged` — and
+`grep -rn "kidsMode = " lib/` outside `settings.dart` must keep returning
+exactly that one line. A second path into the setter is a second way out of the
+mode. All three Kids-PIN asks (leave the mode, remove the PIN, set or change
+it) go through the same `AppLockPage.confirmKidsPin`, which returns true when
+no PIN is set, so an unset guard blocks nothing.
+
+The same reasoning is why `StorageService.clearAll` deliberately does **not**
+clear preferences. Wiping every table and leaving the prefs looks like an
+oversight and is not: prefs hold `kidsPinHash` and `appLockPinHash`, so
+clearing them would turn "Clear all app data" into the escape hatch from Kids
+mode for exactly the person the PIN was meant to stop. Content is device-local
+and re-obtainable; the guards are the point.
 
 Shorts smoothness: only the active page watches the player (siblings are a
 static thumbnail behind a `RepaintBoundary`), and `YtRepository.prefetch` warms
@@ -222,16 +267,55 @@ single-column `ListView` they always had; a phone in landscape does cross the
 threshold, which matches the real app. Used by Home, Subscriptions and the
 channel Videos/Shorts/Live tabs; search results stay rows, as on YouTube.
 
+Also in the later wave, each in the surface it belongs to: Home's category
+chips gained a **Subscribed** feed built from the local `subscriptions` table
+(newest first, and deliberately taking no refresh token — every other feed
+rotates its topic window on pull-to-refresh because it is *assembling* a
+selection, but this one has a single correct order, so shifting the window
+would only hide the newest upload the user pulled down to find); a **Surprise
+me** tile on the You page that opens a random *unwatched* video from those same
+channels, random rather than newest so tapping twice is worth doing; **search
+and bulk delete** in watch history, the search filtered in SQL per tab rather
+than fetched wide and split in Dart; and a queue that can be **shuffled**
+reversibly — the pre-shuffle order is kept, so the button is a toggle and not a
+one-way door — or **saved as a playlist**.
+
+Data usage (`data_usage_service.dart`, its own screen) bills bytes to the
+channel that spent them, and every row is labelled `exact` or `estimated`
+because the two are not the same kind of number. Downloads are exact: every
+byte passes through our own download manager. Streams cannot be — the native
+player opens the googlevideo URL itself, so no Dart code ever sees that
+traffic, and what gets stored is watched-duration times an approximate bitrate
+for the rendition. A 30% error either way is entirely possible, and
+re-buffering, seeking and prefetch are invisible to it. Keep that distinction
+on screen: presented as a carrier figure it would simply be wrong, and someone
+would eventually reconcile it against a real bill.
+
 Platform: lock-screen and notification transport controls including skip,
 AirPlay via the system route picker, call and Bluetooth interruption handling.
 Android's lock-screen widget needs the media session to carry title/channel/
 artwork metadata, not just duration — see PATCHES.md #15/#16.
 
+Casting is **DLNA/UPnP in pure Dart** (`dlna_client.dart`, `cast_sheet.dart`),
+and it is what Chromecast turned into. The Cast SDK was ruled out because it
+needs a registered receiver application id and a Google dependency; DLNA asks
+nothing of us, since discovery is an SSDP M-SEARCH datagram and control is a
+handful of SOAP posts, and nearly every smart TV of the last decade answers it.
+The renderer is handed the resolved stream URL, so the same one-URL constraint
+as the in-app player applies. **iOS 14+ gates the multicast that discovery
+needs behind `com.apple.developer.networking.multicast`**, an entitlement Apple
+grants only on request; without it the datagram is silently dropped and a scan
+finds nothing. So "no devices found" on an iPhone is very likely the platform
+rather than a bug in the client — reproduce on Android before debugging it.
+That is also why the cast button does not offer the DLNA sheet on iOS at all:
+AirPlay through the system route picker is the answer there.
+
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
-account behind a ToS-violating client), Chromecast (needs the Cast SDK and a
-receiver id), live chat, channel About (YouTube returns no parseable data for
-it), and pasting non-YouTube links — Instagram and the rest serve a login wall
-to anonymous clients, so there is nothing to extract.
+account behind a ToS-violating client), the Google Cast SDK (needs a registered
+receiver id — DLNA replaced it, above), live chat, channel About (YouTube
+returns no parseable data for it), and pasting non-YouTube links — Instagram
+and the rest serve a login wall to anonymous clients, so there is nothing to
+extract.
 
 **Not publishable.** Guideline 5.2.2 forbids exactly this, and repeated
 submissions risk the developer account. TestFlight internal testing and
@@ -282,6 +366,112 @@ no-op so popping the watch page does not tear down the native player.
 
 Playback always prefers a completed download over the network — see
 `_offlineFile()`.
+
+### Floating the video out of the app
+
+"Keep playing while I use another app" is one sentence with two completely
+different implementations, and `lib/src/player/floating_player.dart` holds both
+behind `FloatingPlayer.isSupported`.
+
+**Android** gets a real overlay window: `SYSTEM_ALERT_WINDOW` plus a foreground
+service holding a view in the `WindowManager` at `TYPE_APPLICATION_OVERLAY`,
+driven over the `ai.bit/floating_player` channel. Until the latest wave that
+window could only ever be a title and a close button, because nothing let the
+host app render the plugin's video anywhere but the Flutter texture. It now
+shows the real picture, and it does so by **moving the one ExoPlayer's output
+surface** — not by starting a second player. A second decoder would decode the
+same stream twice and fight the first for audio focus, and every stale
+notification bug in this project came from assuming a player per video.
+`BetterPlayerSurfaceBridge` (PATCHES.md #18) is the seam, and it speaks **only**
+`android.view.Surface` and `Boolean` on purpose: `BetterPlayer` is `internal`
+and media3 is `implementation`-scoped in the plugin module, so putting either
+type in the signature would break the *app's* build, not the plugin's.
+
+The handoff is reversible for exactly one reason, and it is the property to
+preserve through any edit here: `attachExternalSurface` never writes to the
+`surface` field. That field is Flutter's, assigned once in `setupVideoPlayer`;
+the borrowed surface lives in a separate `externalSurface`. Detaching is
+therefore a re-set of a field still held, not a reconstruction. Restore fires
+from three independent places — `surfaceDestroyed`, the first line of
+`onDestroy`, and a Dart-side lifecycle observer that stops the overlay on
+`resumed` — because a user who comes back through the launcher instead of
+tapping the bubble must still get the picture back.
+
+The in-app surface goes blank while the overlay is up. One decoder has one
+output; system PiP behaves identically and the audio never stops. That is the
+intended behaviour, not the bug to fix.
+
+The foreground service can be *refused* rather than merely fail: Android 14
+requires a `foregroundServiceType`, and a `mediaPlayback` service is only
+allowed to start while something is actually playing. So both Dart and Kotlin
+gate on playback being active, `startInForeground` returns a boolean, and a
+failure reports over the channel and then calls `stopSelf()`. That `stopSelf`
+is not tidying up — it is what cancels the `ForegroundServiceDidNotStartInTime`
+watchdog `startForegroundService` armed, so a soft refusal does not become a
+crash five seconds later.
+
+**iOS cannot have an app-drawn overlay at all, and it is not worth
+re-attempting.** A third-party app has no window level above another app's —
+`UIWindowLevel` is per-application and the sandbox simply has no such thing —
+and an app that found a way would be rejected for it. Picture-in-Picture is
+Apple's deliberate answer to the same need, so `isSupported` is false on iOS
+and the pop-out button falls back to
+`PlaybackController.enterPictureInPicture()` rather than pretending there is an
+overlay to ask for.
+
+New in this wave and **opt-in**: iOS can now enter PiP *automatically* when the
+app is left mid-video, which is what people expect from YouTube and Safari.
+`canStartPictureInPictureAutomaticallyFromInline` only affects a controller
+that already exists while the video plays inline, and the plugin built its
+`AVPlayerLayer` at the moment PiP was requested — after the fact — because
+Flutter renders video into a texture, not a layer. PATCHES.md #17 therefore
+creates the layer up front and inserts it *behind* Flutter's view: iOS refuses
+automatic PiP for a hidden or offscreen layer, but the texture draws over it so
+nothing changes on screen. Guarded to iOS 14.2+ and left off by default,
+because it touches the main playback path and cannot be verified here.
+
+### The services `main.dart` hangs off the tree
+
+Everything below is constructed once in `main.dart` and handed down by
+provider, each taking its dependencies by injection the way `DownloadManager`
+and `PlaybackController` always have — so there is still exactly one
+`AppDatabase` and one `SettingsService` for the whole app, and a test can hand
+any of them a throwaway database.
+
+- `app_lock_service.dart` — hashes and verifies the PIN, and raises the
+  biometric prompt. Every biometric unhappy path (cancelled, no sensor, nothing
+  enrolled, plugin missing on the web target) collapses to `false` rather than
+  an exception, because the caller's only sensible reaction to all of them is
+  the same one — fall back to the PIN — and collapsing keeps that decision in
+  one place instead of spreading platform error codes through the UI. It is
+  logged, not silently swallowed.
+- `kids_guard.dart` — today's Kids-mode watch seconds and whether the allowance
+  is spent, upserting one `kids_usage` row per day. A session that crosses
+  midnight re-reads the new day's row mid-flight, so a child watching at
+  11:58pm is not still blocked the next morning.
+- `data_usage_service.dart` — the per-channel byte accounting described above.
+- `network_service.dart` — whether the active transport is cellular, so "mobile
+  data saver" and "audio only on mobile data" can tell Wi-Fi from a metered
+  connection. Not inferable from Dart alone, which is why `connectivity_plus`
+  is a dependency.
+- `battery_service.dart` — charge level, so battery saver can step quality down
+  before the phone dies rather than after. `isLow` excludes charging on
+  purpose: a phone on a charger at 15% is filling up, and degrading playback
+  there is pure annoyance.
+- `dlna_client.dart` — casting, above.
+
+`NetworkService` and `BatteryService` both subscribe in `start()` and **must**
+cancel in `dispose()`, or the stream and poll timer outlive the notifier and
+keep firing into a disposed object.
+
+**`KidsGuard.daysSinceEpoch` keys on the LOCAL calendar day, and both new
+tables bucket through it.** It re-reads the local y/m/d as a UTC instant before
+dividing by a day. Dividing the raw local timestamp instead — the obvious
+version — rolls the day over at local midnight *minus the UTC offset*, so in
+IST (+5:30) a child's allowance would reset at 5:30am and every evening would
+be charged to the following day. `DataUsageService` borrows the same function
+rather than reimplementing it, because the two tables must bucket identically
+and a trap that is invisible until midnight is worth solving exactly once.
 
 ### better_player_plus is vendored, not a pub dependency
 
@@ -347,12 +537,17 @@ downloads fall back to the 360p combined file.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 7**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 8**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
 `history.is_kids` (v6) added columns via `ALTER TABLE` so existing history
-survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7).
+survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7);
+`data_usage` and `kids_usage` arrived as whole tables in v8. Both of those are
+keyed by a *day index*, not a timestamp — one row per day, so the tables stay
+tiny and yesterday's total can never leak into today's allowance — and that
+index comes from `KidsGuard.daysSinceEpoch`, for the local-calendar reason
+given above.
 
 **A row is persisted through `VideoBrief.toMap()`, which is shared across the
 `history`, `downloads` and `playlist_items` tables** — so a column added to
@@ -461,6 +656,28 @@ twice with error 90683 for purpose strings the app never needed: `gal` links
 photo-library reads, FFmpeg links AVFoundation capture. Adding a dependency
 means checking what it links, and the release workflow's purpose-string step
 should gain a line for it — a rejection costs a build number and a round trip.
+`local_auth` is the third instance and the worst of them: it links
+LocalAuthentication, so the scanner demands `NSFaceIDUsageDescription`, and a
+missing one does not merely fail the upload — iOS kills the app the instant the
+prompt is raised on a Face ID device. (Touch ID uses the system's own text and
+needs no key, but one binary covers both, so the key is unconditional. There is
+no `NSBiometricUsageDescription`; that string is the whole of it.) The workflow
+now checks all three before it builds.
+
+**Parse the label you actually get, not the one you pictured.** The data-usage
+estimator read a rendition's height by stripping every non-digit from the
+quality spec and parsing what was left. `1080p` works, so it looked correct.
+But `youtube_explode` reports any 60fps stream as `1080p60`, which became
+**108060**, and an HLS track label is `1280x720`, which became 1280720 — both
+then snapped to the nearest ladder rung, 2160p, charging a 1080p60 stream 4x
+and a 720p track 7x what they really cost. The fix reads the two real shapes
+explicitly: `WIDTHxHEIGHT` first, because a "first run of digits" rule would
+return the width, then a leading digit run with any suffix ignored. The lesson
+is not about resolutions. A string coming out of someone else's API has more
+shapes than the one in front of you, and "strip everything that isn't a digit"
+quietly assumes you have seen them all. Write the shapes down, then write a
+test per shape — this one is now pinned by a test asserting `1080p60` costs the
+same as `1080p` and *not* the same as `2160p`.
 
 **Check both platforms.** iOS and Android needed entirely different fixes for
 the same symptom every time: lock-screen skip, call interruptions, notification

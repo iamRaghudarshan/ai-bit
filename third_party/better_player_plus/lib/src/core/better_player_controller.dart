@@ -1021,7 +1021,7 @@ class BetterPlayerController {
     required bool enabled,
   }) async {
     if (videoPlayerController == null) return;
-    if (!Platform.isIOS) return;
+    if (!Platform.isIOS && !Platform.isAndroid) return;
     final bool isPipSupported =
         (await videoPlayerController!.isPictureInPictureSupported()) ?? false;
     if (!isPipSupported) return;
@@ -1029,6 +1029,15 @@ class BetterPlayerController {
     // Turning it off does not need a frame, and the widget may already be gone.
     if (!enabled) {
       await videoPlayerController?.setAutomaticPictureInPicture(enabled: false);
+      return;
+    }
+
+    // Android arms this on the Activity and never looks at a layer, so it must
+    // not be gated on the player widget being measurable - doing so would make
+    // auto-PiP fail exactly when the app is being left, which is the only
+    // moment it matters.
+    if (Platform.isAndroid) {
+      await videoPlayerController?.setAutomaticPictureInPicture(enabled: true);
       return;
     }
 

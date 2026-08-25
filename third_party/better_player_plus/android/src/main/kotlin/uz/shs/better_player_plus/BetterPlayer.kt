@@ -90,6 +90,12 @@ internal class BetterPlayer(
     private val loadControl: LoadControl
     private var isInitialized = false
     private var surface: Surface? = null
+    // PATCH 18: the surface an overlay window has lent us, or null when the
+    // video is going to Flutter as usual. Kept SEPARATE from `surface` above on
+    // purpose — `surface` is Flutter's, is assigned exactly once in
+    // setupVideoPlayer, and is never overwritten by the handoff, which is what
+    // makes detaching a guaranteed restore rather than a hope.
+    private var externalSurface: Surface? = null
     private var key: String? = null
     private var playerNotificationManager: PlayerNotificationManager? = null
     private var refreshHandler: Handler? = null
@@ -530,6 +536,10 @@ internal class BetterPlayer(
         )
         surface = Surface(textureEntry.surfaceTexture())
         exoPlayer?.setVideoSurface(surface)
+        // PATCH 18: make this the player the surface bridge means by "current".
+        // Registering at creation as well as in play() means a paused player
+        // that has never been started can still be floated.
+        BetterPlayerSurfaceBridge.register(this)
         // PATCH: was `true`, which passes handleAudioFocus = false and leaves
         // ExoPlayer ignoring audio focus entirely — an incoming call ducked the
         // audio while the video carried on playing underneath it, and kept
@@ -603,6 +613,9 @@ internal class BetterPlayer(
     }
 
     fun play() {
+        // PATCH 18: whichever player was last told to play is the one the
+        // floating overlay should borrow video from. Cheap volatile write.
+        BetterPlayerSurfaceBridge.register(this)
         exoPlayer?.playWhenReady = true
     }
 
@@ -825,7 +838,60 @@ internal class BetterPlayer(
         setAudioAttributes(exoPlayer, mixWithOthers)
     }
 
+    /**
+     * PATCH 18: send the video to a surface owned by someone else — AI BIT's
+     * floating overlay window. See BetterPlayerSurfaceBridge for why this is a
+     * surface move rather than a second player.
+     *
+     * The Flutter texture goes blank (in practice it holds the last decoded
+     * frame) for as long as this is attached. That is correct and is exactly
+     * how system Picture-in-Picture behaves: there is one decoder and one
+     * output, and the output is now somewhere else.
+     */
+    internal fun attachExternalSurface(external: Surface) {
+        if (!external.isValid) {
+            Log.w(TAG, "attachExternalSurface: surface already dead, ignoring")
+            return
+        }
+        externalSurface = external
+        exoPlayer?.setVideoSurface(external)
+    }
+
+    /**
+     * PATCH 18: give the video back to Flutter.
+     *
+     * This is the path most likely to leave the app broken if it is wrong — a
+     * missed restore means every video is black until the process restarts —
+     * so it is deliberately blunt: idempotent, never assumes it was called from
+     * the same place twice, and falls back to clearing the surface rather than
+     * leaving ExoPlayer rendering into a destroyed one.
+     */
+    internal fun detachExternalSurface() {
+        if (externalSurface == null) return
+        externalSurface = null
+        val flutterSurface = surface
+        if (flutterSurface != null && flutterSurface.isValid) {
+            exoPlayer?.setVideoSurface(flutterSurface)
+        } else {
+            // The engine tore the texture down while the overlay held the
+            // video. Clearing beats leaving a dangling surface attached:
+            // ExoPlayer keeps decoding audio and the next setDataSource
+            // rebuilds the output.
+            Log.w(TAG, "detachExternalSurface: Flutter surface is gone, clearing instead")
+            exoPlayer?.setVideoSurface(null)
+        }
+    }
+
+    /** PATCH 18: whether an overlay currently holds this player's video. */
+    internal fun hasExternalSurface(): Boolean = externalSurface != null
+
     fun dispose() {
+        // PATCH 18: unregister BEFORE the player is released, or a detach
+        // racing in from the overlay service touches a dead ExoPlayer. The
+        // borrowed surface belongs to the overlay window and is NOT released
+        // here; that window owns its own lifecycle.
+        BetterPlayerSurfaceBridge.unregister(this)
+        externalSurface = null
         disposeMediaSession()
         disposeRemoteNotifications()
         if (isInitialized) {

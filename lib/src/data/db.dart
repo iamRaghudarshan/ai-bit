@@ -464,20 +464,44 @@ class AppDatabase {
   /// Watch history matching [query] in either the title or the channel name,
   /// newest first. An empty query is the unfiltered list.
   ///
+  /// [shorts] and [kids] filter exactly as they do in [history] — null is
+  /// "don't care". They belong in SQL rather than in a caller's `where` over
+  /// the result, because [limit] is spent *before* any Dart-side split: one
+  /// unfiltered query capped at 200 can come back all regular videos and
+  /// leave the Kids tab empty while matching Kids rows sit further down.
+  ///
   /// SQLite's LIKE folds case for ASCII only, which is what the history search
   /// box needs and all it promises; an accented or Cyrillic title matches only
   /// when the case already agrees.
   Future<List<HistoryEntry>> searchWatchHistory(
     String query, {
     int limit = 200,
+    bool? shorts,
+    bool? kids,
   }) async {
     final trimmed = query.trim();
-    if (trimmed.isEmpty) return history(limit: limit);
+    if (trimmed.isEmpty) {
+      return history(limit: limit, shorts: shorts, kids: kids);
+    }
     final pattern = '%${_escapeLike(trimmed)}%';
+    // The two LIKEs are bracketed: left bare, their OR would swallow the
+    // is_short / is_kids term and every tab would show every match.
+    final clauses = <String>[
+      "(title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\')",
+    ];
+    final args = <Object>[pattern, pattern];
+    if (shorts != null) {
+      clauses.add('is_short = ?');
+      args.add(shorts ? 1 : 0);
+    }
+    if (kids != null) {
+      clauses.add('is_kids = ?');
+      args.add(kids ? 1 : 0);
+    }
     final rows = await _db.query(
       'history',
-      where: "title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\'",
-      whereArgs: [pattern, pattern],
+      where: clauses.join(' AND '),
+      whereArgs: args,
       orderBy: 'watched_at DESC',
       limit: limit,
     );

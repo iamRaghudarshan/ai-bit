@@ -60,6 +60,38 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    the async image load produces a bitmap. This is what makes the Android lock
    screen match what iOS already shows.
 
+18. Nothing let the host app render this plugin's video anywhere but the
+   Flutter texture, so AI BIT's Android floating window could only ever be a
+   title and a close button — the one thing users asked it for, the picture,
+   was the one thing it could not have. A second ExoPlayer was not an option:
+   it would decode the same stream twice and fight the first for audio focus,
+   and every stale-notification bug in this project came from assuming a player
+   per video. So the video's *output* moves instead. A new public
+   `BetterPlayerSurfaceBridge` object holds the current player and exposes
+   `hasPlayer()` / `attach(Surface)` / `detach()` / `isAttached()`, backed by
+   new `attachExternalSurface` / `detachExternalSurface` / `hasExternalSurface`
+   members on `BetterPlayer`; `register(this)` is called from
+   `setupVideoPlayer` and `play()`, `unregister(this)` from `dispose()` before
+   the player is released.
+
+   Three properties are load-bearing and must survive any edit:
+
+   * The bridge speaks **only** `android.view.Surface` and `Boolean`.
+     `BetterPlayer` is `internal` and media3 is `implementation`-scoped in this
+     module, so neither is on the app module's compile classpath — exposing one
+     would break the *app's* build, not this one's.
+   * `attachExternalSurface` never touches the `surface` field. That field is
+     Flutter's surface, assigned exactly once in `setupVideoPlayer`; the
+     borrowed surface lives in a separate `externalSurface`. Detaching is
+     therefore a re-set of something still held, not a reconstruction — which
+     is the only reason the handoff is reversible at all.
+   * The borrowed surface is **not** released by `dispose()`. It belongs to the
+     overlay window, which has its own lifecycle.
+
+   While a surface is attached the Flutter texture stops updating (it holds the
+   last decoded frame). That is correct and unavoidable — one decoder, one
+   output — and is exactly what system Picture-in-Picture does.
+
 ## Dart
 
 5. `VideoEventType` gained `skipToNext` and `skipToPrevious`
@@ -122,6 +154,18 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    a hidden or offscreen layer, but the texture draws over it so nothing
    changes visually. Guarded to iOS 14.2+, torn down on dispose, and left
    opt-in from Dart because it cannot be verified without a real device.
+
+
+19. Android's Picture in Picture params were built with an aspect ratio only, so
+   `setAutoEnterEnabled` — the Android counterpart to iOS's
+   `canStartPictureInPictureAutomaticallyFromInline` (#17) — was never set and
+   swiping home stopped the picture instead of floating it. A new
+   `setAutomaticPictureInPicture` method channel call arms it on the Activity.
+   Android 12 (S) and up, where the flag exists; below that an explicit tap
+   stays the only way in. Arming touches the Activity rather than entering PiP,
+   so it is safe to call on every data source and whenever the setting changes.
+   Together with #17 this makes one app-level setting mean the same thing on
+   both platforms, through two entirely different mechanisms.
 
 
 ## Housekeeping

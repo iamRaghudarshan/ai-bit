@@ -222,6 +222,11 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                 result.success(null)
             }
 
+            SET_AUTOMATIC_PICTURE_IN_PICTURE_METHOD -> {
+                setAutomaticPictureInPicture(call.argument(ENABLED_PARAMETER) ?: false)
+                result.success(null)
+            }
+
             DISABLE_PICTURE_IN_PICTURE_METHOD -> {
                 disablePictureInPicture(player)
                 result.success(null)
@@ -464,6 +469,37 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         }
     }
 
+    /// PATCH: ask Android to enter Picture in Picture by itself when the user
+    /// leaves the app mid-video, rather than requiring an explicit tap.
+    ///
+    /// `setAutoEnterEnabled` is the Android counterpart to iOS's
+    /// `canStartPictureInPictureAutomaticallyFromInline`, and the params were
+    /// only ever built with an aspect ratio - so swiping home stopped the
+    /// picture instead of floating it. Android 12 (S) and up; below that the
+    /// flag does not exist and the tap remains the only way in.
+    ///
+    /// Applied to the Activity rather than entered immediately: this only
+    /// *arms* the behaviour, so it is safe to call whenever playback starts or
+    /// the setting changes.
+    private fun setAutomaticPictureInPicture(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val currentActivity = activity ?: return
+        try {
+            currentActivity.setPictureInPictureParams(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .setAutoEnterEnabled(enabled)
+                    .build()
+            )
+        } catch (exception: IllegalStateException) {
+            // Thrown when the Activity cannot currently accept PiP params (it is
+            // finishing, or the device has PiP disabled in settings). Logged
+            // rather than swallowed: an auto-PiP that silently never arms is
+            // exactly the dead feature this project keeps re-learning about.
+            Log.e(TAG, "Could not arm automatic picture in picture", exception)
+        }
+    }
+
     private fun disablePictureInPicture(player: BetterPlayer) {
         stopPipHandler()
         activity!!.moveTaskToBack(false)
@@ -540,6 +576,7 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         private const val TAG = "BetterPlayerPlugin"
         private const val CHANNEL = "better_player_channel"
         private const val EVENTS_CHANNEL = "better_player_channel/videoEvents"
+        private const val ENABLED_PARAMETER = "enabled"
         private const val DATA_SOURCE_PARAMETER = "dataSource"
         private const val KEY_PARAMETER = "key"
         private const val HEADERS_PARAMETER = "headers"
@@ -594,6 +631,8 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         private const val SET_TRACK_PARAMETERS_METHOD = "setTrackParameters"
         private const val SET_AUDIO_TRACK_METHOD = "setAudioTrack"
         private const val ENABLE_PICTURE_IN_PICTURE_METHOD = "enablePictureInPicture"
+        // PATCH: see setAutomaticPictureInPicture.
+        private const val SET_AUTOMATIC_PICTURE_IN_PICTURE_METHOD = "setAutomaticPictureInPicture"
         private const val DISABLE_PICTURE_IN_PICTURE_METHOD = "disablePictureInPicture"
         private const val IS_PICTURE_IN_PICTURE_SUPPORTED_METHOD = "isPictureInPictureSupported"
         private const val SET_MIX_WITH_OTHERS_METHOD = "setMixWithOthers"
