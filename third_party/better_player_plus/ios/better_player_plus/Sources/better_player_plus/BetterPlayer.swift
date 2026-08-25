@@ -576,6 +576,13 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     }
 
     private func usePlayerLayer(_ frame: CGRect) {
+        // PATCH: the automatic-PiP layer (#17) is a second AVPlayerLayer living
+        // behind Flutter's view. Entering PiP explicitly builds its own layer
+        // and rebinds the controller, so without this the inline one would be
+        // orphaned in the view hierarchy - still retaining the player, no
+        // longer reachable. Torn down first; _syncAutomaticPip re-arms it on
+        // the next data source.
+        teardownInlinePipLayer()
         let layer = AVPlayerLayer(player: player)
         layer.videoGravity = self.videoGravity
         if #available(iOS 13.0, *) {
