@@ -141,7 +141,14 @@ class DlnaClient {
       if (remaining > Duration.zero) {
         await Future<void>.delayed(remaining);
       }
-    } catch (_) {
+    } catch (e) {
+      // An empty list is the honest answer - the sheet's empty state already
+      // explains the ordinary causes (wrong Wi-Fi, guest network, client
+      // isolation). But binding a UDP socket also fails for reasons that are
+      // NOT "no TV here": a missing multicast entitlement, or a platform with
+      // no datagram socket at all. Logged so those are distinguishable in a
+      // logcat instead of looking identical to an empty room.
+      debugPrint('AI BIT: SSDP discovery could not run - $e');
       return const [];
     } finally {
       socket?.close();

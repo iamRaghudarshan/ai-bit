@@ -78,6 +78,19 @@
 	<string>AI BIT does not use the camera. This declaration is required because the media library that joins downloaded video and audio links Apple's capture APIs.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AI BIT does not record audio. This declaration is required because the media library that joins downloaded video and audio links Apple's capture APIs.</string>
+	<!-- Third time the same rule applies, and this one is declared BEFORE a
+	     rejection rather than after. The app lock offers fingerprint / Face ID
+	     unlock, so local_auth links LocalAuthentication - and any binary that
+	     references LAContext's biometric APIs is required to carry this string.
+	     Face ID specifically: without it, iOS does not merely reject the
+	     upload, it kills the app the moment the prompt is raised on a Face ID
+	     device. Touch ID uses the system's own text and needs no key, but the
+	     same binary covers both, so the key is unconditional.
+
+	     There is no NSBiometricUsageDescription - NSFaceIDUsageDescription is
+	     the whole of it. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>AI BIT uses Face ID to unlock the app, so your watch history stays yours when someone else has your phone.</string>
 	<!-- Answers App Store Connect's export-compliance question at build time.
 	     Without it every uploaded build stops at "Missing Compliance" and waits
 	     for someone to click through the web form before testers can install

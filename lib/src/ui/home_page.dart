@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../data/app_lock_service.dart';
+import '../data/kids_guard.dart';
 import '../data/settings.dart';
 import '../data/db.dart';
 import '../data/models.dart';
@@ -33,6 +35,13 @@ class HomePageState extends State<HomePage>
   int _refreshToken = 0;
   String _category = _CategoryChips.all;
 
+  /// True when the Subscribed chip found nothing followed on this device.
+  ///
+  /// Kept apart from [_error] because it is not a failure: an empty feed here
+  /// needs an invitation to subscribe, not a Retry button that would fetch
+  /// nothing again.
+  bool _noSubscriptions = false;
+
   /// The interest signals the visible feed was built from.
   ///
   /// The tab is built once at startup and kept alive, so a feed loaded before
@@ -59,6 +68,7 @@ class HomePageState extends State<HomePage>
       _loading = reset || _feed.isEmpty;
       if (reset) _feed = const [];
       _error = null;
+      _noSubscriptions = false;
     });
     try {
       final repo = context.read<YtRepository>();
@@ -81,6 +91,32 @@ class HomePageState extends State<HomePage>
           _feed = feed;
           _loading = false;
           _error = feed.isEmpty ? 'Nothing came back.' : null;
+        });
+        return;
+      }
+
+      // Subscribed builds the feed only from channels followed on this
+      // device — the local subscriptions table, since there is no account to
+      // read real subscriptions from.
+      if (_category == _CategoryChips.subscribed) {
+        final channels = await context.read<AppDatabase>().subscriptions();
+        if (!mounted) return;
+        if (channels.isEmpty) {
+          setState(() {
+            _feed = const [];
+            _loading = false;
+            _noSubscriptions = true;
+          });
+          return;
+        }
+        final feed = await repo.subscribedFeed(channels: channels);
+        if (!mounted) return;
+        setState(() {
+          _feed = feed;
+          _loading = false;
+          _error = feed.isEmpty
+              ? 'No recent uploads from the channels you follow.'
+              : null;
         });
         return;
       }
@@ -150,6 +186,14 @@ class HomePageState extends State<HomePage>
 
   /// Called by the shell when Home is selected again.
   Future<void> onTabOpened() async {
+    // Coming back to an empty Subscribed feed is almost always the return trip
+    // from a channel page where something was just subscribed to, so refetch
+    // that one case. A populated Subscribed feed is left alone: refetching it
+    // is fifteen browse requests, too expensive for a plain tab switch.
+    if (_category == _CategoryChips.subscribed) {
+      if (_feed.isEmpty) await _load(reset: true);
+      return;
+    }
     if (_category != _CategoryChips.all) return;
     final db = context.read<AppDatabase>();
     final seeds = await db.feedSeeds();
@@ -159,16 +203,67 @@ class HomePageState extends State<HomePage>
     await _load();
   }
 
+  /// The Kids allowance tracker, or null when the app was built without one
+  /// in the widget tree.
+  ///
+  /// KidsGuard is injected by main.dart the same way PlaybackController takes
+  /// it — optionally. Looked up with a catch rather than assumed present so
+  /// Home still renders in a harness that provides only the essentials, and
+  /// logged rather than swallowed, because a countdown that silently never
+  /// appears is exactly the dead feature a bare catch has hidden here before.
+  KidsGuard? _kidsGuard(BuildContext context) {
+    try {
+      return Provider.of<KidsGuard>(context);
+    } on ProviderNotFoundException {
+      // Once per session, not once per rebuild: this runs on every build of
+      // Home, and a line repeated that often would drown the log it exists to
+      // help.
+      if (!_loggedMissingGuard) {
+        _loggedMissingGuard = true;
+        debugPrint('AI BIT: no KidsGuard provided - daily limit UI is off.');
+      }
+      return null;
+    }
+  }
+
+  static bool _loggedMissingGuard = false;
+
+  /// Asks for the Kids PIN. True only when the right one was typed.
+  Future<bool> _askKidsPin(String hash) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      // Not dismissible by tapping outside: a stray tap is the easiest way
+      // past a lock, and Cancel is right there.
+      barrierDismissible: false,
+      builder: (_) => _KidsPinDialog(hash: hash),
+    );
+    return ok ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    final settings = context.watch<SettingsService>();
+    final kids = settings.kidsMode;
+    final guard = _kidsGuard(context);
+    // A spent allowance replaces the feed rather than the whole screen, so the
+    // mode switch stays reachable for a grown-up with the PIN.
+    final timeUp = kids && (guard?.limitReached ?? false);
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 16,
         title: _ModeSwitch(
-          kids: context.watch<SettingsService>().kidsMode,
-          onChanged: (kids) {
-            context.read<SettingsService>().kidsMode = kids;
+          kids: kids,
+          onChanged: (wantsKids) async {
+            // Turning Kids mode ON is free. Turning it OFF is the move a child
+            // makes to get out of it, so that is the direction the PIN guards.
+            if (!wantsKids && settings.kidsPinHash.isNotEmpty) {
+              final unlocked = await _askKidsPin(settings.kidsPinHash);
+              // Cancelled or wrong: stay in Kids mode, and say nothing more —
+              // the dialog already reported the wrong PIN.
+              if (!unlocked || !mounted) return;
+            }
+            settings.kidsMode = wantsKids;
             // Reset to All and reload with the skeleton, so the switch reads as
             // an instant change rather than a frozen old feed.
             _category = _CategoryChips.all;
@@ -196,9 +291,14 @@ class HomePageState extends State<HomePage>
       body: Column(
         children: [
           if (YtRepository.isPreview) const _PreviewBanner(),
+          // The countdown is a thin strip, not a dialog: it should be
+          // glanceable without interrupting anything. Hidden once the time is
+          // up, since the panel below then says so in full.
+          if (kids && guard != null && guard.hasLimit && !timeUp)
+            _KidsTimeBar(remainingSeconds: guard.remainingSeconds),
           // Category chips are meaningless in Kids mode, where the whole feed
           // is curated.
-          if (!context.watch<SettingsService>().kidsMode) ...[
+          if (!kids) ...[
             _CategoryChips(
               selected: _category,
               onSelected: (value) {
@@ -208,7 +308,7 @@ class HomePageState extends State<HomePage>
             ),
             const Divider(height: 1),
           ],
-          Expanded(child: _buildFeed()),
+          Expanded(child: timeUp ? const _KidsTimeUp() : _buildFeed()),
         ],
       ),
     );
@@ -221,6 +321,32 @@ class HomePageState extends State<HomePage>
           builder: (context) {
             if (_loading) return const FeedSkeleton(count: 4);
             if (_feed.isEmpty) {
+              // Nothing followed yet is not a broken feed, so it gets an
+              // invitation and a way back to All rather than a Retry that
+              // would fetch nothing again.
+              if (_noSubscriptions) {
+                return ListView(
+                  children: [
+                    const SizedBox(height: 80),
+                    EmptyState(
+                      icon: Icons.subscriptions_outlined,
+                      title: 'No subscriptions yet',
+                      message:
+                          'Open any channel and tap Subscribe. Their newest '
+                          'videos will fill this feed.\n\nSubscriptions live '
+                          'on this device only, not in a Google account — this '
+                          'app has no sign-in.',
+                      action: FilledButton(
+                        onPressed: () {
+                          setState(() => _category = _CategoryChips.all);
+                          _load(reset: true);
+                        },
+                        child: const Text('Back to All'),
+                      ),
+                    ),
+                  ],
+                );
+              }
               return ListView(
                 children: [
                   const SizedBox(height: 80),
@@ -412,8 +538,10 @@ class _CategoryChips extends StatelessWidget {
 
   static const all = 'All';
   static const trending = 'Trending';
+  static const subscribed = 'Subscribed';
   static const _categories = [
     all,
+    subscribed,
     trending,
     'Music',
     'Gaming',
@@ -490,4 +618,148 @@ class _PreviewBanner extends StatelessWidget {
       ),
     ),
   );
+}
+
+
+/// Thin strip under the app bar counting down the Kids allowance.
+///
+/// Deliberately quiet — a child should be able to ignore it and a parent
+/// should be able to check it at a glance. It refreshes when KidsGuard
+/// notifies, which happens as playback records time, so there is no ticker
+/// burning a frame a second on a screen that is mostly idle.
+class _KidsTimeBar extends StatelessWidget {
+  const _KidsTimeBar({required this.remainingSeconds});
+
+  final int remainingSeconds;
+
+  /// "8 min left today". Minutes round **up** so the last 30 seconds still
+  /// read as "1 min left" rather than a "0 min left" that sits there while
+  /// the video keeps playing.
+  static String label(int seconds) {
+    if (seconds <= 0) return 'No time left today';
+    if (seconds >= 3600) {
+      final hours = seconds ~/ 3600;
+      final minutes = (seconds % 3600) ~/ 60;
+      final tail = minutes == 0 ? '' : ' $minutes min';
+      return '$hours hr$tail left today';
+    }
+    return '${(seconds / 60).ceil()} min left today';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // The same green the Kids side of the mode switch uses, so the strip reads
+    // as part of Kids mode rather than as a warning.
+    const kidsGreen = Color(0xFF34A853);
+    return Container(
+      width: double.infinity,
+      color: kidsGreen.withValues(alpha: 0.12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.timer_outlined, size: 15, color: kidsGreen),
+          const SizedBox(width: 6),
+          Text(
+            label(remainingSeconds),
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: kidsGreen,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown in place of the Kids feed once the daily allowance is spent.
+///
+/// Replaces only the feed, not the whole screen: the mode switch stays in the
+/// app bar so a grown-up with the PIN can still leave Kids mode, and Settings
+/// stays reachable to raise the limit.
+class _KidsTimeUp extends StatelessWidget {
+  const _KidsTimeUp();
+
+  @override
+  Widget build(BuildContext context) => const EmptyState(
+    icon: Icons.bedtime_outlined,
+    title: "That's all for today",
+    message:
+        'Kids time is up. More videos tomorrow.\n\nA grown-up can change the '
+        'daily limit in Settings.',
+  );
+}
+
+/// PIN prompt shown when leaving Kids mode while a Kids PIN is set.
+///
+/// A wrong PIN keeps the dialog open with an inline message instead of closing
+/// and popping a snackbar behind it, because the next thing the user wants is
+/// another try in the same box.
+class _KidsPinDialog extends StatefulWidget {
+  const _KidsPinDialog({required this.hash});
+
+  final String hash;
+
+  @override
+  State<_KidsPinDialog> createState() => _KidsPinDialogState();
+}
+
+class _KidsPinDialogState extends State<_KidsPinDialog> {
+  final _controller = TextEditingController();
+  bool _wrong = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    // AppLockService.verify compares hashes and refuses an empty stored hash,
+    // so the raw PIN is never held anywhere but this field.
+    if (AppLockService.verify(_controller.text, widget.hash)) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+    setState(() {
+      _wrong = true;
+      _controller.clear();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Enter Kids PIN'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Kids mode is locked. Enter the PIN to turn it off.'),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
+            decoration: InputDecoration(
+              labelText: 'PIN',
+              errorText: _wrong ? 'Wrong PIN' : null,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Turn off')),
+      ],
+    );
+  }
 }

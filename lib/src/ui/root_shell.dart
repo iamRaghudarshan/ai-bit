@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../core/theme.dart';
+import '../player/floating_player.dart';
+import '../player/playback_controller.dart';
 import 'home_page.dart';
 import 'library_page.dart';
 import 'shorts_page.dart';
@@ -71,7 +75,7 @@ class _RootShellState extends State<RootShell> {
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (!isShorts) const MiniPlayer(),
+          if (!isShorts) const _NowPlayingBar(),
           const Divider(height: 1),
           NavigationBar(
             selectedIndex: _index,
@@ -99,6 +103,72 @@ class _RootShellState extends State<RootShell> {
               ),
             ],
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The mini player plus the pop-out button.
+///
+/// The button is here rather than inside `MiniPlayer` because the shell is the
+/// one surface that is on screen for every tab, and because [FloatingPlayer]
+/// is a whole-app concern (an Android overlay window, or iOS PiP) rather than
+/// a control belonging to one row of UI.
+class _NowPlayingBar extends StatefulWidget {
+  const _NowPlayingBar();
+
+  @override
+  State<_NowPlayingBar> createState() => _NowPlayingBarState();
+}
+
+class _NowPlayingBarState extends State<_NowPlayingBar> {
+  /// Whether the previous build had something playing, so the transition to
+  /// "nothing playing" can be spotted.
+  bool _wasPlaying = false;
+
+  @override
+  void dispose() {
+    // The bubble is a handle back to something that is playing. Once this
+    // shell is gone there is nothing for it to be a handle to.
+    FloatingPlayer.stop();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // select rather than watch: this bar only cares whether *something* is
+    // playing, and the mini player below rebuilds itself on the rest.
+    final hasVideo = context.select<PlaybackController, bool>(
+      (playback) => playback.current != null,
+    );
+
+    if (_wasPlaying && !hasVideo) {
+      _wasPlaying = false;
+      // Playback stopped, so the floating bubble is now a dead button sitting
+      // above every other app on the phone. Deferred off the frame because it
+      // is a platform call, not something build should be doing.
+      WidgetsBinding.instance.addPostFrameCallback((_) => FloatingPlayer.stop());
+    } else if (hasVideo) {
+      _wasPlaying = true;
+    }
+
+    // MiniPlayer collapses itself to nothing when there is no current video;
+    // returning it unwrapped keeps that behaviour exactly as it was.
+    if (!hasVideo) return const MiniPlayer();
+
+    final theme = Theme.of(context);
+    return Material(
+      // The same surface MiniPlayer paints, repeated here so the strip the
+      // button sits on does not read as a seam beside it.
+      color: theme.brightness == Brightness.dark
+          ? AppColors.darkElevated
+          : AppColors.lightSurface,
+      child: Row(
+        children: [
+          const Expanded(child: MiniPlayer()),
+          const FloatingPlayerButton(),
+          const SizedBox(width: 4),
         ],
       ),
     );

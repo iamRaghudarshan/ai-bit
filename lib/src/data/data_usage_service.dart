@@ -77,16 +77,36 @@ class DataUsageService {
   static double _mbpsFor(String quality) {
     final spec = quality.toLowerCase();
     if (spec.contains('audio') || spec.contains('mp3')) return _audioMbps;
-    final height = int.tryParse(spec.replaceAll(RegExp('[^0-9]'), ''));
+    final height = _heightIn(spec);
     if (height == null || height == 0) return _autoMbps;
-    // Nearest rung rather than an exact lookup: HLS labels arrive as things
-    // like `1280x720` or `722p`, and an unknown height should still cost
-    // roughly what its neighbours do instead of silently falling back to Auto.
+    // Nearest rung rather than an exact lookup: an unknown height should still
+    // cost roughly what its neighbours do instead of falling back to Auto.
     var best = _rungMbps.entries.first;
     for (final entry in _rungMbps.entries) {
       if ((entry.key - height).abs() < (best.key - height).abs()) best = entry;
     }
     return best.value;
+  }
+
+  /// The vertical resolution named by a quality spec, or null when it names
+  /// none (`Auto`, an empty string, a word).
+  ///
+  /// This deliberately does NOT strip every non-digit and parse what is left,
+  /// which is what it used to do. That fused both halves of the two shapes
+  /// YouTube actually hands us and priced them off the top of the ladder:
+  /// `1080p60` (youtube_explode's qualityLabel for any 60fps stream) became
+  /// 108060 and `1280x720` (an HLS track label) became 1280720, and both
+  /// snapped to the 2160p rung — charging a 1080p60 stream 4x and a 720p
+  /// track 7x what they cost.
+  static int? _heightIn(String spec) {
+    // `WIDTHxHEIGHT` first: the height is the half after the separator, so a
+    // plain "first run of digits" rule would read the width instead.
+    final sized = RegExp(r'(\d+)\s*[x\u00d7]\s*(\d+)').firstMatch(spec);
+    if (sized != null) return int.tryParse(sized.group(2)!);
+    // Otherwise the leading run of digits is the height and anything after it
+    // is a frame rate or other suffix to ignore: `1080p60` is 1080.
+    final digits = RegExp(r'\d+').firstMatch(spec);
+    return digits == null ? null : int.tryParse(digits.group(0)!);
   }
 
   /// Books an estimated stream cost against [video]'s channel.

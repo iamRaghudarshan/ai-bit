@@ -186,6 +186,18 @@ class SettingsService extends ChangeNotifier {
   bool get batterySaver => _prefs.getBool(_kBatterySaver) ?? false;
   set batterySaver(bool value) => _write(_kBatterySaver, value);
 
+  static const _kAutoPip = 'auto_pip';
+
+  /// iOS only: let the system move the video into Picture in Picture by itself
+  /// when the app is left mid-video, instead of waiting for a tap.
+  ///
+  /// Off by default deliberately. Making this work needs a real AVPlayerLayer
+  /// alive during inline playback (see PATCHES.md #17), and neither platform
+  /// builds on the machine this was written on - so it ships opt-in until it
+  /// has been tried on a device rather than risking the main playback path.
+  bool get autoPip => _prefs.getBool(_kAutoPip) ?? false;
+  set autoPip(bool value) => _write(_kAutoPip, value);
+
   static const _kMobileDataSaver = 'mobile_data_saver';
   static const _kMobileAudioOnly = 'mobile_audio_only';
 

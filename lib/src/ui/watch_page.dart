@@ -24,6 +24,7 @@ import 'widgets/comments_sheet.dart';
 import 'widgets/end_screen.dart';
 import 'widgets/stats_overlay.dart';
 import 'widgets/cast_button.dart';
+import 'widgets/cast_sheet.dart';
 import 'widgets/description_sheet.dart';
 import 'widgets/player_gestures.dart';
 import 'widgets/queue_sheet.dart';
@@ -1396,6 +1397,20 @@ class _ActionRow extends StatelessWidget {
                             child: Center(child: CastButton(size: 22)),
                           ),
                           title: const Text('Cast / AirPlay'),
+                          // iOS puts a native AirPlay route picker in the
+                          // leading slot and that platform view owns its own
+                          // taps, so the row stays inert there. Everywhere else
+                          // the leading widget is an ordinary icon, and once
+                          // CastButton.isSupported widened past iOS this row
+                          // started appearing on Android with only its 22dp
+                          // icon live - tapping the words did nothing. Give the
+                          // whole row the action the icon already has.
+                          onTap: CastButton.isAirPlay
+                              ? null
+                              : () {
+                                  Navigator.pop(sheetContext);
+                                  showCastSheet(context);
+                                },
                         ),
                       SwitchListTile(
                         secondary: const Icon(Icons.analytics_outlined),

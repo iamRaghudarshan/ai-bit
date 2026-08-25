@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -6,6 +8,7 @@ import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/download_manager.dart';
 import '../data/models.dart';
+import '../data/yt_repository.dart';
 import 'downloads_page.dart';
 import 'history_page.dart';
 import 'playlist_detail_page.dart';
@@ -23,6 +26,65 @@ class LibraryPage extends StatefulWidget {
 
 class LibraryPageState extends State<LibraryPage> {
   late Future<_LibraryData> _future = _load();
+
+  /// True while Surprise me is fetching. The tile shows a spinner and stops
+  /// accepting taps — the fetch is fifteen browse requests, long enough that a
+  /// second tap would otherwise queue a second one.
+  bool _surprising = false;
+
+  /// Picks a random video from the subscribed channels that is not in watch
+  /// history, and opens it.
+  ///
+  /// Every unhappy path says which one it is. "Nothing happened" would be
+  /// indistinguishable between no subscriptions, a failed fetch and having
+  /// genuinely watched everything, and a control that silently does nothing is
+  /// how a dead feature hides.
+  Future<void> _surpriseMe() async {
+    if (_surprising) return;
+    setState(() => _surprising = true);
+    final db = context.read<AppDatabase>();
+    final repo = context.read<YtRepository>();
+    try {
+      final channels = await db.subscriptions();
+      if (!mounted) return;
+      if (channels.isEmpty) {
+        _say(
+          'Subscribe to a channel first — Surprise me picks from your '
+          'subscriptions.',
+        );
+        return;
+      }
+
+      final watched = await db.watchedVideoIds();
+      final videos = await repo.subscribedFeed(channels: channels);
+      if (!mounted) return;
+      if (videos.isEmpty) {
+        _say('Could not reach your subscriptions. Check your connection.');
+        return;
+      }
+
+      final unwatched = videos.where((v) => !watched.contains(v.id)).toList();
+      if (unwatched.isEmpty) {
+        _say('You have already watched everything recent from your channels.');
+        return;
+      }
+
+      // Random rather than "the newest one", so tapping twice is worth doing.
+      final pick = unwatched[Random().nextInt(unwatched.length)];
+      await WatchPage.open(context, pick);
+      reload();
+    } catch (e) {
+      // Left visible on purpose: the alternative is a tile that shrugs.
+      debugPrint('AI BIT: surprise me failed — $e');
+      if (mounted) _say('Surprise me could not load anything just now.');
+    } finally {
+      if (mounted) setState(() => _surprising = false);
+    }
+  }
+
+  void _say(String message) => ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(message)));
 
   Future<_LibraryData> _load() async {
     final db = context.read<AppDatabase>();
@@ -85,6 +147,22 @@ class LibraryPageState extends State<LibraryPage> {
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(builder: (_) => const DownloadsPage()),
                   ),
+                ),
+                ListTile(
+                  leading: _surprising
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.shuffle),
+                  title: const Text('Surprise me'),
+                  subtitle: const Text(
+                    'A random video you have not watched, from your '
+                    'subscriptions',
+                  ),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _surprising ? null : _surpriseMe,
                 ),
                 const Divider(height: 1),
                 _SectionHeader(

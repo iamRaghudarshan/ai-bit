@@ -4,8 +4,10 @@ import 'package:provider/provider.dart';
 
 import '../../core/format.dart';
 import '../../core/theme.dart';
+import '../../data/db.dart';
 import '../../data/models.dart';
 import '../../player/playback_controller.dart';
+import 'sheets.dart';
 
 /// The up-next queue: what is playing, what follows, and the ability to
 /// reorder or drop entries.
@@ -18,6 +20,54 @@ Future<void> showQueueSheet(BuildContext context) {
     isScrollControlled: true,
     useSafeArea: true,
     builder: (_) => const _QueueSheet(),
+  );
+}
+
+/// Writes the visible queue — what is playing, then everything after it — into
+/// a new local playlist.
+///
+/// A queue is throwaway state: it does not survive `replaceQueue`, and nothing
+/// persists it across a restart. This is the one way to keep an up-next list
+/// that took some assembling.
+Future<void> _saveQueueAsPlaylist(BuildContext context) async {
+  final playback = context.read<PlaybackController>();
+  final db = context.read<AppDatabase>();
+  // Captured before the await: a messenger looked up afterwards would come from
+  // a context this sheet may already have been popped from.
+  final messenger = ScaffoldMessenger.of(context);
+
+  final current = playback.current;
+  // De-duplicated by id, because `addToPlaylist` inserts with
+  // ConflictAlgorithm.replace against the (playlist_id, video_id) primary key —
+  // a video queued twice collapses to one row, and counting the raw list would
+  // report a number the playlist does not contain.
+  final seen = <String>{};
+  final videos = <VideoBrief>[
+    for (final video in [?current, ...playback.queue])
+      if (seen.add(video.id)) video,
+  ];
+  if (videos.isEmpty) return;
+
+  final name = await showNewPlaylistDialog(context);
+  if (name == null) return;
+
+  final id = await db.createPlaylist(name);
+  // Written back to front, and serially, because `playlistItems` sorts on
+  // `added_at DESC` and `addToPlaylist` stamps that from the clock as it
+  // inserts: saving front to back would show the playlist reversed. Best
+  // effort only — several inserts can land in the same millisecond, and rows
+  // that tie on the sort key come back in no defined order.
+  for (final video in videos.reversed) {
+    await db.addToPlaylist(id, video);
+  }
+
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(
+        'Saved ${videos.length} ${videos.length == 1 ? 'video' : 'videos'} '
+        'to "$name"',
+      ),
+    ),
   );
 }
 
@@ -49,9 +99,28 @@ class _QueueSheet extends StatelessWidget {
                 ),
                 const Spacer(),
                 IconButton(
+                  icon: const Icon(Icons.playlist_add),
+                  tooltip: 'Save queue as playlist',
+                  // The currently playing video counts, so a queue of one that
+                  // has just started is still worth saving.
+                  onPressed: current == null && queue.isEmpty
+                      ? null
+                      : () => _saveQueueAsPlaylist(context),
+                ),
+                IconButton(
                   icon: const Icon(Icons.shuffle),
-                  tooltip: 'Shuffle queue',
-                  onPressed: queue.length < 2 ? null : playback.shuffleQueue,
+                  // Coloured while shuffled, because shuffleQueue is a toggle —
+                  // without the state showing, the second tap looks like a
+                  // second shuffle rather than the way back.
+                  color: playback.isQueueShuffled
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                  tooltip: playback.isQueueShuffled
+                      ? 'Restore the original order'
+                      : 'Shuffle queue',
+                  onPressed: queue.length < 2 && !playback.isQueueShuffled
+                      ? null
+                      : playback.shuffleQueue,
                 ),
                 IconButton(
                   icon: const Icon(Icons.close),

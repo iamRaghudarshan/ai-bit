@@ -3,7 +3,8 @@ import 'dart:io';
 import 'dart:math' show Random;
 
 import 'package:better_player_plus/better_player_plus.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart'
+    show kIsWeb, debugPrint, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 
 import '../core/chapters.dart';
@@ -514,6 +515,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         ..setBetterPlayerGlobalKey(playerKey)
         ..addEventsListener(_onPlayerEvent);
       await _player!.setupDataSource(dataSource);
+      unawaited(_syncAutomaticPip());
     } else {
       await _player!.setupDataSource(dataSource);
       if (startAt != null) await _player!.seekTo(startAt);
@@ -1304,6 +1306,30 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (player == null) return;
     if (!await player.isPictureInPictureSupported()) return;
     await player.enablePictureInPicture(playerKey);
+  }
+
+  /// Arms or disarms iOS's automatic Picture in Picture for the current video.
+  ///
+  /// Called after every data source rather than once at startup: iOS needs a
+  /// layer bound to the player that is playing now, and this app reuses one
+  /// long-lived controller across videos, so a layer armed for the previous
+  /// video would be pointing at the wrong thing. A no-op off iOS and when the
+  /// setting is off, and deliberately not awaited by the caller - failing to
+  /// arm a convenience must never delay playback starting.
+  Future<void> _syncAutomaticPip() async {
+    final player = _player;
+    if (player == null) return;
+    if (defaultTargetPlatform != TargetPlatform.iOS) return;
+    try {
+      await player.setAutomaticPictureInPicture(
+        playerKey,
+        enabled: _config.autoPip,
+      );
+    } catch (e) {
+      // Logged, not swallowed: an auto-PiP that silently never arms is exactly
+      // the dead feature CLAUDE.md warns about.
+      debugPrint('AI BIT: could not arm automatic PiP - $e');
+    }
   }
 
   Future<void> stop() async {

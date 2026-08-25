@@ -159,6 +159,104 @@ class YtRepository {
     return _interleave(results, skip: refreshToken);
   }
 
+  /// Newest uploads from the channels followed on this device, for the
+  /// "Subscribed" chip on Home.
+  ///
+  /// [channels] comes from the local `subscriptions` table — there is no
+  /// Google account here, so "subscribed" only ever means "followed on this
+  /// phone". An empty [channels] returns an empty list rather than throwing:
+  /// having subscribed to nothing is a normal state the caller shows an
+  /// invitation for, not a failure.
+  ///
+  /// Deliberately takes no refreshToken. Every other feed rotates its topic
+  /// window on pull-to-refresh because it is assembling a selection; this one
+  /// has a single correct order — newest first — so a refresh means "go and
+  /// see whether anything new was posted", and shifting the window would only
+  /// hide the newest upload the user pulled down to find.
+  Future<List<VideoBrief>> subscribedFeed({
+    List<ChannelInfo> channels = const [],
+    int perChannel = 8,
+  }) async {
+    if (isPreview) return _previewRows(0);
+    if (channels.isEmpty) return const [];
+
+    // Each channel is its own browse request, so cap the fan-out the way the
+    // Subscriptions tab does; beyond ~15 the feed is longer than anyone
+    // scrolls and the request burst starts getting throttled.
+    final results = await Future.wait(
+      channels.take(15).map(
+        (c) => _safe(
+          () => channelUploads(c.id, limit: perChannel, channelTitle: c.title),
+        ),
+      ),
+    );
+    // Round-robin first so the recency sort has a sensible tiebreak order for
+    // rows whose age we cannot read, then order by age.
+    return _newestFirst(_interleave(results));
+  }
+
+  /// Rough age in seconds of [video], or null when YouTube gave nothing
+  /// usable.
+  ///
+  /// The browse endpoint returns "3 days ago" as text and no timestamp, which
+  /// is why the Subscriptions tab settles for interleaving instead of sorting.
+  /// Parsing that phrase back is coarse — every month counts as 30 days — but
+  /// it is enough to put today's upload above last year's, which is the whole
+  /// job. Pure and static so it can be unit-tested without a network.
+  static int? uploadAgeSeconds(VideoBrief video) {
+    final date = video.uploadDate;
+    if (date != null) {
+      final seconds = DateTime.now().difference(date).inSeconds;
+      return seconds < 0 ? 0 : seconds;
+    }
+    final raw = video.uploadRaw;
+    if (raw == null || raw.isEmpty) return null;
+    // Leading text is common ("Streamed 2 days ago"), so search rather than
+    // anchor. An ISO timestamp — which uploadRaw sometimes is — has no unit
+    // word and simply fails to match, which is the right answer.
+    final match = RegExp(
+      r'(\d+)\s*(second|minute|hour|day|week|month|year)',
+    ).firstMatch(raw.toLowerCase());
+    if (match == null) return null;
+    final count = int.tryParse(match.group(1)!);
+    if (count == null) return null;
+    const perUnit = {
+      'second': 1,
+      'minute': 60,
+      'hour': 3600,
+      'day': 86400,
+      'week': 604800,
+      'month': 2592000,
+      'year': 31536000,
+    };
+    return count * perUnit[match.group(2)]!;
+  }
+
+  /// Orders a merged feed newest-first.
+  ///
+  /// Rows whose age cannot be read sink to the bottom rather than floating to
+  /// the top: an unreadable date is far more likely to be an odd renderer
+  /// than a brand-new upload. Ties keep their incoming order — the sort is
+  /// decorated with the original index because Dart's List.sort is not stable,
+  /// and without that the round-robin interleave would collapse and one
+  /// prolific channel could take the whole top of the feed.
+  static List<VideoBrief> _newestFirst(List<VideoBrief> videos) {
+    const unknownAge = 1 << 40;
+    final ranked = <({int age, int index, VideoBrief video})>[
+      for (var i = 0; i < videos.length; i++)
+        (
+          age: uploadAgeSeconds(videos[i]) ?? unknownAge,
+          index: i,
+          video: videos[i],
+        ),
+    ];
+    ranked.sort(
+      (a, b) =>
+          a.age != b.age ? a.age.compareTo(b.age) : a.index.compareTo(b.index),
+    );
+    return [for (final r in ranked) r.video];
+  }
+
   /// Most-viewed videos across a rotating topic — the closest thing to a
   /// "Trending" tab available without the official Data API.
   Future<List<VideoBrief>> trending({int refreshToken = 0}) async {

@@ -1,4 +1,5 @@
-import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, kIsWeb, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -7,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../data/settings.dart';
 import '../data/update_service.dart';
 import '../player/playback_controller.dart';
+import 'app_lock_page.dart';
+import 'data_usage_page.dart';
 import 'storage_page.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -59,6 +62,21 @@ class SettingsPage extends StatelessWidget {
             subtitle: const Text('Continue with the up-next queue when a video ends.'),
             onChanged: (value) => settings.autoplayNext = value,
           ),
+          // iOS only: Android has its own system PiP on leaving the app, so the
+          // row would promise something it does not control there.
+          if (defaultTargetPlatform == TargetPlatform.iOS && !kIsWeb)
+            SwitchListTile(
+              value: settings.autoPip,
+              title: const Text('Automatic Picture in Picture'),
+              subtitle: const Text(
+                'Float the video automatically when you leave the app '
+                'mid-video, instead of waiting for a tap. Off by default — it '
+                'has not been tried on a device yet. Applies from the next '
+                'video.',
+              ),
+              isThreeLine: true,
+              onChanged: (value) => settings.autoPip = value,
+            ),
           ListTile(
             enabled: !settings.dataSaver,
             title: const Text('Default quality'),
@@ -105,6 +123,141 @@ class SettingsPage extends StatelessWidget {
             ),
             isThreeLine: true,
             onChanged: (value) => settings.sponsorBlock = value,
+          ),
+          const Divider(),
+          const _SectionLabel('Data & battery'),
+          SwitchListTile(
+            value: settings.mobileDataSaver,
+            title: const Text('Data saver on mobile data'),
+            subtitle: const Text(
+              'Drop to the lowest quality only while off Wi-Fi, so a metered '
+              'connection costs less and Wi-Fi still plays at full quality. '
+              'Data saver above applies everywhere, all the time.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) => settings.mobileDataSaver = value,
+          ),
+          SwitchListTile(
+            value: settings.mobileAudioOnly,
+            title: const Text('Audio only on mobile data'),
+            subtitle: const Text(
+              'Leave the picture behind whenever you are off Wi-Fi — the '
+              'least data any setting here can use. Applies from the next '
+              'video.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) => settings.mobileAudioOnly = value,
+          ),
+          SwitchListTile(
+            value: settings.batterySaver,
+            title: const Text('Battery saver'),
+            subtitle: const Text(
+              'Step the quality down, and drop the video track, once the '
+              'battery is running low.',
+            ),
+            onChanged: (value) => settings.batterySaver = value,
+          ),
+          SwitchListTile(
+            value: settings.trackDataUsage,
+            title: const Text('Track data usage'),
+            subtitle: const Text(
+              'Record what each channel costs in data. Turning it off freezes '
+              'the totals — it does not delete what was already counted.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) => settings.trackDataUsage = value,
+          ),
+          ListTile(
+            leading: const Icon(Icons.data_usage_outlined),
+            title: const Text('Data usage'),
+            subtitle: const Text(
+              'What you have spent, broken down by channel.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const DataUsagePage()),
+            ),
+          ),
+          const Divider(),
+          const _SectionLabel('Privacy & lock'),
+          SwitchListTile(
+            value: settings.appLockEnabled,
+            title: const Text('App lock'),
+            subtitle: Text(
+              settings.appLockPinHash.isEmpty
+                  ? 'Ask for a PIN before the app opens. No PIN set yet — '
+                        'turning this on will ask you to choose one.'
+                  : 'Ask for a PIN before the app opens.',
+            ),
+            isThreeLine: settings.appLockPinHash.isEmpty,
+            onChanged: (value) => _toggleAppLock(context, settings, value),
+          ),
+          ListTile(
+            leading: const Icon(Icons.password_outlined),
+            title: Text(
+              settings.appLockPinHash.isEmpty ? 'Set PIN' : 'Change PIN',
+            ),
+            subtitle: const Text(
+              'Four digits, asked for twice. Only the hash is stored.',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => AppLockPage.setUp(context),
+          ),
+          SwitchListTile(
+            value: settings.appLockBiometric,
+            title: const Text('Unlock with biometrics'),
+            subtitle: const Text(
+              'Offer fingerprint or face unlock first, with the PIN always '
+              'available as the fallback.',
+            ),
+            // Off limits until there is a PIN behind it: biometrics can be
+            // declined or unavailable on the device, and the PIN is the only
+            // way back in when they are.
+            onChanged:
+                settings.appLockEnabled && settings.appLockPinHash.isNotEmpty
+                ? (value) => settings.appLockBiometric = value
+                : null,
+          ),
+          SwitchListTile(
+            value: settings.incognito,
+            title: const Text('Incognito mode'),
+            subtitle: const Text(
+              'Stop recording watch and search history. Stays on until you '
+              'turn it off, including across restarts.',
+            ),
+            isThreeLine: true,
+            onChanged: (value) => settings.incognito = value,
+          ),
+          ListTile(
+            leading: const Icon(Icons.auto_delete_outlined),
+            title: const Text('Clear history automatically'),
+            subtitle: Text(_retentionLabel(settings.historyRetentionDays)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickRetention(context, settings),
+          ),
+          const Divider(),
+          const _SectionLabel('Kids'),
+          ListTile(
+            leading: const Icon(Icons.lock_person_outlined),
+            title: Text(
+              settings.kidsPinHash.isEmpty ? 'Set Kids PIN' : 'Change Kids PIN',
+            ),
+            subtitle: Text(
+              settings.kidsPinHash.isEmpty
+                  ? 'Without one, Kids mode can be switched off by anyone '
+                        'holding the phone.'
+                  : 'Asked for before Kids mode can be switched off.',
+            ),
+            isThreeLine: settings.kidsPinHash.isEmpty,
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _kidsPin(context, settings),
+          ),
+          ListTile(
+            leading: const Icon(Icons.hourglass_bottom_outlined),
+            title: const Text('Daily time limit'),
+            subtitle: Text(_limitLabel(settings.kidsDailyLimitMinutes)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _pickKidsLimit(context, settings),
           ),
           const Divider(),
           const _SectionLabel('Storage'),
@@ -312,6 +465,148 @@ class SettingsPage extends StatelessWidget {
       ),
     );
   }
+
+  /// Turning the lock on with no PIN chosen would arm nothing: an empty hash
+  /// never verifies, so [AppLockPage.unlock] treats it as already unlocked and
+  /// the switch would be a lie. Collect the PIN first, and leave the switch
+  /// off if the setup was abandoned.
+  Future<void> _toggleAppLock(
+    BuildContext context,
+    SettingsService settings,
+    bool value,
+  ) async {
+    if (!value) {
+      settings.appLockEnabled = false;
+      return;
+    }
+    if (settings.appLockPinHash.isEmpty) {
+      await AppLockPage.setUp(context);
+      if (settings.appLockPinHash.isEmpty) return;
+    }
+    settings.appLockEnabled = true;
+  }
+
+  String _retentionLabel(int days) =>
+      days <= 0 ? 'Never — history is kept until you clear it' : 'After $days days';
+
+  Future<void> _pickRetention(
+    BuildContext context,
+    SettingsService settings,
+  ) async {
+    final choice = await _pickInt(
+      context,
+      title: 'Clear history automatically',
+      current: settings.historyRetentionDays,
+      options: const [
+        (0, 'Never'),
+        (7, 'After 7 days'),
+        (30, 'After 30 days'),
+        (90, 'After 90 days'),
+      ],
+    );
+    if (choice != null) settings.historyRetentionDays = choice;
+  }
+
+  String _limitLabel(int minutes) {
+    if (minutes <= 0) return 'Off — Kids mode can be watched all day';
+    if (minutes < 60) return '$minutes minutes a day';
+    final hours = minutes / 60;
+    final label = hours == hours.roundToDouble()
+        ? hours.round().toString()
+        : hours.toStringAsFixed(1);
+    return '$label ${hours == 1 ? 'hour' : 'hours'} a day';
+  }
+
+  Future<void> _pickKidsLimit(
+    BuildContext context,
+    SettingsService settings,
+  ) async {
+    final choice = await _pickInt(
+      context,
+      title: 'Daily time limit in Kids mode',
+      current: settings.kidsDailyLimitMinutes,
+      options: const [
+        (0, 'Off'),
+        (15, '15 minutes'),
+        (30, '30 minutes'),
+        (60, '1 hour'),
+        (120, '2 hours'),
+      ],
+    );
+    if (choice != null) settings.kidsDailyLimitMinutes = choice;
+  }
+
+  /// Set, change or remove the PIN that guards leaving Kids mode.
+  Future<void> _kidsPin(BuildContext context, SettingsService settings) async {
+    if (settings.kidsPinHash.isEmpty) {
+      await AppLockPage.setUpKidsPin(context);
+      return;
+    }
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.password_outlined),
+              title: const Text('Change Kids PIN'),
+              onTap: () => Navigator.pop(sheet, 'change'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.lock_open_outlined),
+              title: const Text('Remove Kids PIN'),
+              subtitle: const Text('You will be asked for the current one.'),
+              onTap: () => Navigator.pop(sheet, 'remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !context.mounted) return;
+    if (choice == 'change') {
+      await AppLockPage.setUpKidsPin(context);
+      return;
+    }
+    // Removing the guard has to be proved, otherwise the child it guards
+    // against simply removes it from this screen.
+    if (await AppLockPage.confirmKidsPin(context)) settings.kidsPinHash = '';
+  }
+
+  /// A one-of-N sheet for the plain integer settings. Both pickers below want
+  /// exactly this and nothing more, so they share it rather than each growing
+  /// their own copy of the same list.
+  Future<int?> _pickInt(
+    BuildContext context, {
+    required String title,
+    required int current,
+    required List<(int, String)> options,
+  }) => showModalBottomSheet<int>(
+    context: context,
+    builder: (sheet) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                title,
+                style: Theme.of(sheet).textTheme.titleMedium,
+              ),
+            ),
+          ),
+          for (final (value, label) in options)
+            ListTile(
+              title: Text(label),
+              trailing: value == current ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(sheet, value),
+            ),
+        ],
+      ),
+    ),
+  );
 
   void _pickAccent(BuildContext context, SettingsService settings) {
     // A small palette rather than a full colour wheel: enough to personalise,

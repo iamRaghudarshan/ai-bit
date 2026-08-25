@@ -11,6 +11,13 @@
          API 29, so the permission is capped rather than requested forever. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
+    <!-- The floating player: a window above other apps. Android never grants
+         this through a runtime permission dialog - declaring it only earns the
+         right to send the user to a settings screen, which
+         FloatingPlayer.requestPermission does. It also happens to be the
+         documented exemption that lets the bubble start the app from the
+         background when it is tapped. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
 
     <!-- Auto Backup keeps the library (database + settings) in the user's
          Google backup so a reinstall restores subscriptions, history and
@@ -46,6 +53,21 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Holds the floating player's overlay window. A foreground service
+             because a view added to the WindowManager dies with the context
+             that added it, and the Activity is exactly what has gone away when
+             the bubble is supposed to be visible.
+
+             foregroundServiceType is mandatory from Android 14. mediaPlayback
+             rather than specialUse: the bubble only exists while this app is
+             playing, and FOREGROUND_SERVICE_MEDIA_PLAYBACK is already declared
+             above for the player's own notification, whereas specialUse would
+             need an extra property and a Play review this app will never
+             have. exported=false - nothing outside the app may start it. -->
+        <service
+            android:name=".FloatingPlayerService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

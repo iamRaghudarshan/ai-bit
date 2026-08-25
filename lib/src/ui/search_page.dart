@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/search_client.dart';
+import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import 'playlist_page.dart';
 import 'watch_page.dart';
@@ -138,7 +139,15 @@ class SearchPageState extends State<SearchPage> {
       if (!mounted || _controller.text.trim() != query.trim()) return;
       // Only remember searches that found something — a typo that returned
       // nothing should not shape the home feed.
-      if (results.isNotEmpty && mounted) {
+      //
+      // Incognito is checked here too, not just on the watch path. The setting
+      // promises to "stop recording watch and search history", and this was
+      // the half that kept writing: recorded queries also feed the
+      // personalised home feed, so an incognito search would have surfaced in
+      // the recommendations afterwards.
+      if (results.isNotEmpty &&
+          mounted &&
+          !context.read<SettingsService>().incognito) {
         unawaited(context.read<AppDatabase>().recordSearch(query));
       }
       setState(() {

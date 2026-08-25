@@ -197,6 +197,12 @@ jobs:
           # upload without both strings. Caught here it costs nothing; caught
           # at upload it costs a build number and a round trip.
           need ffmpeg_kit_flutter_new NSCameraUsageDescription NSMicrophoneUsageDescription
+          # The app lock's fingerprint / Face ID unlock. local_auth links
+          # LocalAuthentication, so the scanner demands the Face ID string --
+          # and unlike the two above, a missing NSFaceIDUsageDescription also
+          # crashes the app on a Face ID device the instant the prompt is
+          # raised, so this one fails twice over.
+          need local_auth NSFaceIDUsageDescription
           exit $fail
 
       - name: Build the signed app
