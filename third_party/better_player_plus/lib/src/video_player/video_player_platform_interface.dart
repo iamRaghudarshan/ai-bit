@@ -143,6 +143,17 @@ abstract class VideoPlayerPlatform {
     throw UnimplementedError('enablePictureInPicture() has not been implemented.');
   }
 
+  ///PATCH: arms iOS to enter PiP by itself when the app leaves the foreground.
+  ///
+  ///Needs a real AVPlayerLayer alive during inline playback, which is why the
+  ///frame is passed here rather than only when PiP is entered. iOS-only; the
+  ///Android side has no equivalent and ignores it.
+  Future<void> setAutomaticPictureInPicture(
+      int? textureId, bool enabled, double? top, double? left, double? width, double? height) {
+    throw UnimplementedError(
+        'setAutomaticPictureInPicture() has not been implemented.');
+  }
+
   ///Disables PiP mode.
   Future<void> disablePictureInPicture(int? textureId) {
     throw UnimplementedError('disablePictureInPicture() has not been implemented.');

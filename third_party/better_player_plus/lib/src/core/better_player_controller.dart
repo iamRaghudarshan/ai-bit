@@ -1009,6 +1009,49 @@ class BetterPlayerController {
 
   }
 
+  ///PATCH: ask iOS to move the video into PiP by itself when the app leaves
+  ///the foreground, instead of requiring an explicit tap.
+  ///
+  ///iOS needs a real AVPlayerLayer alive during inline playback for this, so
+  ///the player's on-screen frame is measured here exactly as the explicit PiP
+  ///path does. Android has no equivalent - it uses its own system PiP on
+  ///user-leave-hint - so this is a no-op there. Safe to call repeatedly.
+  Future<void> setAutomaticPictureInPicture(
+    GlobalKey betterPlayerGlobalKey, {
+    required bool enabled,
+  }) async {
+    if (videoPlayerController == null) return;
+    if (!Platform.isIOS) return;
+    final bool isPipSupported =
+        (await videoPlayerController!.isPictureInPictureSupported()) ?? false;
+    if (!isPipSupported) return;
+
+    // Turning it off does not need a frame, and the widget may already be gone.
+    if (!enabled) {
+      await videoPlayerController?.setAutomaticPictureInPicture(enabled: false);
+      return;
+    }
+
+    final RenderBox? renderBox =
+        betterPlayerGlobalKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      // Not an error worth throwing over: the watch page may simply not be on
+      // screen yet. Logged rather than swallowed so a permanently missing
+      // auto-PiP is traceable.
+      BetterPlayerUtils.log(
+          "Can't arm automatic PiP yet: the player has no RenderBox.");
+      return;
+    }
+    final Offset position = renderBox.localToGlobal(Offset.zero);
+    await videoPlayerController?.setAutomaticPictureInPicture(
+      enabled: true,
+      left: position.dx,
+      top: position.dy,
+      width: renderBox.size.width,
+      height: renderBox.size.height,
+    );
+  }
+
   ///Enable Picture in Picture (PiP) mode. [betterPlayerGlobalKey] is required
   ///to open PiP mode in iOS. When device is not supported, PiP mode won't be
   ///open.
