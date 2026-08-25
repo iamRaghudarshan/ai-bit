@@ -76,6 +76,10 @@ public class BetterPlayerPlugin: NSObject, FlutterPlugin, FlutterPlatformViewFac
     }
 
     private func setRemoteCommandsNotificationActive() {
+        // PATCH: same reason as BetterPlayer.setupPipController - activating a
+        // session whose category was never set leaves it .soloAmbient, which
+        // neither survives backgrounding nor allows Picture in Picture.
+        try? AVAudioSession.sharedInstance().setCategory(.playback)
         try? AVAudioSession.sharedInstance().setActive(true)
         UIApplication.shared.beginReceivingRemoteControlEvents()
     }

@@ -516,6 +516,36 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         }
     }
 
+    /// PATCH: starts PiP once iOS says it is possible, rather than after a
+    /// fixed 0.2s guess.
+    ///
+    /// `startPictureInPicture()` is a silent no-op while
+    /// `isPictureInPicturePossible` is false, and a freshly created
+    /// AVPlayerLayer is not ready that quickly on a cold start or a slow
+    /// network - so the old fixed delay lost the race and the button appeared
+    /// to do nothing at all. Polls briefly instead of using KVO deliberately:
+    /// this plugin has already shipped bugs from observers that were never
+    /// removed on a player that outlives many videos.
+    private func startPictureInPictureWhenPossible(attempt: Int = 0) {
+        guard #available(iOS 9.0, *) else { return }
+        guard let pip = pipController else { return }
+        if pip.isPictureInPictureActive { return }
+        if pip.isPictureInPicturePossible {
+            self.pictureInPicture = true
+            pip.startPictureInPicture()
+            return
+        }
+        // ~2s in total. Longer than any healthy layer needs, short enough that
+        // a genuine failure is not left hanging.
+        if attempt >= 20 {
+            eventSink?(["event": "pipStop"])
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.startPictureInPictureWhenPossible(attempt: attempt + 1)
+        }
+    }
+
     public func setRestoreUserInterfaceForPIPStopCompletionHandler(_ restore: Bool) {
         restoreUIOnPipStop?(restore)
         restoreUIOnPipStop = nil
@@ -523,6 +553,14 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
 
     private func setupPipController() {
         if #available(iOS 9.0, *) {
+            // PATCH: set the CATEGORY, not just activate. The plugin only ever
+            // set .playback inside setMixWithOthers, which a host app that
+            // never asks to mix (this one) never calls - so the session kept
+            // the default .soloAmbient. AVPictureInPictureController refuses to
+            // start on a non-.playback session and reports nothing, which is
+            // exactly "the PiP button does nothing". Explicitly NOT
+            // .mixWithOthers: a mixable session is also refused by PiP.
+            try? AVAudioSession.sharedInstance().setCategory(.playback)
             try? AVAudioSession.sharedInstance().setActive(true)
             UIApplication.shared.beginReceivingRemoteControlEvents()
             if pipController == nil, let layer = playerLayerRef, AVPictureInPictureController.isPictureInPictureSupported() {
@@ -551,9 +589,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
                 playerLayerRef = layer
                 pipController = nil
                 setupPipController()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.setPictureInPicture(true)
-                }
+                self.startPictureInPictureWhenPossible()
             }
         } else {
             if let window = UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first,
@@ -565,9 +601,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
                 playerLayerRef = layer
                 pipController = nil
                 setupPipController()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    self.setPictureInPicture(true)
-                }
+                self.startPictureInPictureWhenPossible()
             }
         }
     }

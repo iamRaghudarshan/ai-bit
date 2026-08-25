@@ -168,6 +168,24 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    both platforms, through two entirely different mechanisms.
 
 
+20. The iOS PiP button did nothing at all, for two independent reasons, both
+   silent. First, the audio session's **category was never set**: the plugin
+   only set `.playback` inside `setMixWithOthers`, which a host app that never
+   asks to mix never calls, so everywhere else it merely called
+   `setActive(true)` on a session still holding the default `.soloAmbient`.
+   `AVPictureInPictureController` refuses to start on a non-`.playback`
+   session and reports nothing. `setupPipController` and the plugin's
+   `setRemoteCommandsNotificationActive` now set the category explicitly - and
+   deliberately without `.mixWithOthers`, which PiP also refuses. Second,
+   `usePlayerLayer` started PiP from a fixed `asyncAfter(0.2)`, but
+   `startPictureInPicture()` is a silent no-op while
+   `isPictureInPicturePossible` is false, and a just-created AVPlayerLayer is
+   often not ready that fast. A new `startPictureInPictureWhenPossible` polls
+   for up to ~2s and starts the moment iOS says it can. Polling rather than
+   KVO on purpose: this plugin has already shipped bugs from observers never
+   removed on a player that outlives many videos (#11, #12).
+
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a
