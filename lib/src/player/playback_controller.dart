@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' show Random;
 
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -8,8 +9,12 @@ import 'package:flutter/material.dart';
 import '../core/chapters.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../data/battery_service.dart';
+import '../data/data_usage_service.dart';
 import '../data/db.dart';
+import '../data/kids_guard.dart';
 import '../data/models.dart';
+import '../data/network_service.dart';
 import '../data/settings.dart';
 import '../data/sponsorblock_client.dart';
 import '../data/yt_repository.dart';
@@ -23,13 +28,30 @@ import 'remote_commands.dart';
 /// going to the background, and the screen locking. The `BetterPlayer` widget on
 /// the watch page merely attaches a render surface to it.
 class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
+  /// [kidsGuard], [batteryService], [networkService] and [dataUsage] are
+  /// optional so the controller keeps working — exactly as it did before they
+  /// existed — when they have not been wired up yet. Every use of them is
+  /// null-guarded rather than assumed, because a missing battery reading or
+  /// connectivity result must never be able to stop playback.
+  ///
+  /// The two `…Service` names are spelt out rather than shortened to match
+  /// their fields, which would trip prefer_initializing_formals on a named
+  /// parameter that cannot be private.
   PlaybackController({
     required YtRepository repository,
     required AppDatabase database,
     required SettingsService settings,
+    KidsGuard? kidsGuard,
+    BatteryService? batteryService,
+    NetworkService? networkService,
+    DataUsageService? dataUsage,
   }) : _repo = repository,
        _db = database,
-       _config = settings {
+       _config = settings,
+       _kids = kidsGuard,
+       _battery = batteryService,
+       _network = networkService,
+       _usage = dataUsage {
     // Own the lifecycle rather than letting better_player have it: its handling
     // is disabled so background audio survives, which leaves the screen-off
     // transition ours to act on.
@@ -39,6 +61,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   final YtRepository _repo;
   final AppDatabase _db;
   final SettingsService _config;
+  final KidsGuard? _kids;
+  final BatteryService? _battery;
+  final NetworkService? _network;
+  final DataUsageService? _usage;
   final SponsorBlockClient _sponsorBlock = SponsorBlockClient();
 
   /// Attached to the `BetterPlayer` widget so native Picture-in-Picture can
@@ -151,9 +177,88 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// combined video+audio stream for it.
   bool get isAudioFallback => _sources?.videoUnavailable ?? false;
 
-  /// True whenever there is no picture — either the user asked for audio only
-  /// or we had to fall back to it.
-  bool get isAudioOnly => _config.audioOnly || isAudioFallback;
+  /// True whenever there is no picture — the user asked for audio only, this
+  /// video started on mobile data with "audio only on mobile" set, or we had to
+  /// fall back to it.
+  bool get isAudioOnly => _config.audioOnly || _mobileAudio || isAudioFallback;
+
+  // ---------------------------------------------------- saving conditions
+  //
+  // Battery and network are read **once per video**, at load, and held for its
+  // whole length. Acting on them the moment they change would mean a mid-video
+  // rendition switch, and on a progressive source that is a full data-source
+  // rebuild: the position is lost and the outgoing player reports STATE_ENDED,
+  // which the end screen then believes. So a battery going flat or Wi-Fi
+  // dropping takes effect on the *next* video, never on the one playing.
+
+  /// Battery saver is on and the battery was low when this video loaded.
+  bool _batterySaving = false;
+
+  /// Mobile data saver is on and this video loaded on a cellular route.
+  bool _mobileSaving = false;
+
+  /// Audio-only-on-mobile is on and this video loaded on a cellular route.
+  bool _mobileAudio = false;
+
+  /// True while the current video is being kept small to spare the battery.
+  bool get isBatterySaving => _batterySaving;
+
+  /// True while the current video is being kept small to spare mobile data —
+  /// either the lowest rendition or the audio-only path.
+  bool get isMobileSaving => _mobileSaving || _mobileAudio;
+
+  /// Reads the saving conditions for the video about to load. Offline playback
+  /// clears them in [_play] once the file is known: a local file spends neither
+  /// mobile data nor a meaningful amount of radio power.
+  void _captureSavingConditions() {
+    _batterySaving = _config.batterySaver && (_battery?.isLow ?? false);
+    final onMobile = _network?.isMobile ?? false;
+    _mobileSaving = onMobile && _config.mobileDataSaver;
+    _mobileAudio = onMobile && _config.mobileAudioOnly;
+  }
+
+  /// The rendition to open a video at, given its ladder and the conditions in
+  /// force. Pure and static so the rule can be tested without a player.
+  ///
+  /// [ladder] is the label list off the manifest in any order, [preferred] the
+  /// saved default (or [SettingsService.autoQuality]), [lowest] the "spend as
+  /// little as possible" modes — audio only, Data saver, mobile data saver,
+  /// screen off — and [stepDown] the softer battery-saver rule, which gives up
+  /// one rung rather than dropping to the floor.
+  static String qualityForConditions({
+    required List<String> ladder,
+    required String preferred,
+    required bool lowest,
+    required bool stepDown,
+  }) {
+    int height(String label) =>
+        int.tryParse(label.replaceAll(RegExp('[^0-9]'), '')) ?? 0;
+
+    final rungs = ladder.where((l) => height(l) > 0).toList()
+      ..sort((a, b) => height(a).compareTo(height(b)));
+    // Nothing numbered to choose from: hand back Auto for the saving modes, so
+    // the caller leaves the ladder alone rather than applying a label that
+    // means nothing here.
+    if (rungs.isEmpty) return lowest ? SettingsService.autoQuality : preferred;
+    if (lowest) return rungs.first;
+    if (!stepDown) return preferred;
+
+    // One rung below whatever would otherwise have played. Auto means the
+    // player was free to climb to the top, so the step is measured from there.
+    final ceiling = preferred == SettingsService.autoQuality
+        ? height(rungs.last)
+        : height(preferred);
+    // Measured from the rung that would really have played, not from the
+    // request: _applyQuality already snaps a preference of 1080p down to the
+    // 720p a video actually offers, so stepping from 1080p would have handed
+    // back that same 720p and saved nothing.
+    final reachable = rungs.where((l) => height(l) <= ceiling);
+    final effective = reachable.isEmpty
+        ? height(rungs.first)
+        : height(reachable.last);
+    final below = rungs.where((l) => height(l) < effective);
+    return below.isEmpty ? rungs.first : below.last;
+  }
 
   bool _loading = false;
   bool get isLoading => _loading;
@@ -302,21 +407,36 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       _pushHistory(leaving);
     }
 
+    // Bank what the outgoing video was owed before _current moves on, or its
+    // last partial batch would be charged to the video replacing it.
+    _flushWatchTime();
+    _watchMillis = 0;
+    _watchTickAt = null;
+    _captureSavingConditions();
+
     _current = video;
     _queue
       ..clear()
       ..addAll(upNext.where((v) => v.id != video.id));
+    // A new queue has no original order to restore.
+    _unshuffledQueue = null;
     _loading = true;
     _error = null;
     _position = Duration.zero;
     _duration = video.duration ?? Duration.zero;
     notifyListeners();
 
-    // Mark what was watched in Kids mode, so it lands in kids history rather
-    // than the normal videos/shorts lists.
-    unawaited(
-      _db.recordWatch(_config.kidsMode ? video.asKids() : video),
-    );
+    // Incognito records nothing at all: no history row here and no resume
+    // position later (see _persistPosition). Losing "carry on where you left
+    // off" is the deliberate price of the mode — a private session that still
+    // remembered where it got to would not be private.
+    if (!_config.incognito) {
+      // Mark what was watched in Kids mode, so it lands in kids history rather
+      // than the normal videos/shorts lists.
+      unawaited(
+        _db.recordWatch(_config.kidsMode ? video.asKids() : video),
+      );
+    }
     _loadSponsorSegments(video.id);
 
     // The browser preview has no native player plugin. Stop after recording
@@ -349,10 +469,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           : await _repo.resolve(video.id);
       _sources = sources;
       _isOffline = offlinePath != null;
+      if (_isOffline) {
+        // A file already on disk costs no mobile data and no download radio
+        // time, so there is nothing to save by degrading it.
+        _batterySaving = false;
+        _mobileSaving = false;
+        _mobileAudio = false;
+      }
       if (token != _playToken) return;
       final resumeAt = await _db.resumePosition(video.id);
       await _attach(video, sources, startAt: resumeAt);
       _loading = false;
+      // Opening a video after the day's Kids allowance is gone loads it and
+      // stops, rather than refusing: the controller never puts up a dialog, it
+      // exposes kidsLimitReached and lets the UI say so.
+      _enforceKidsLimit();
       notifyListeners();
     } catch (e) {
       if (token != _playToken) return;
@@ -533,9 +664,18 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // Computing it up front therefore always returned "Auto" and returned
         // early, so audio-only streamed the full-size video behind the artwork
         // and saved no data at all.
-        final wanted = (_config.audioOnly || _droppedVideo || _config.dataSaver)
-            ? _lowestQuality
-            : _config.preferredQuality;
+        final wanted = qualityForConditions(
+          ladder: [
+            for (final track in _player?.betterPlayerAsmsTracks ?? const [])
+              if ((track.height ?? 0) > 0) '${track.height}p',
+          ],
+          preferred: _config.preferredQuality,
+          lowest: isAudioOnly ||
+              _droppedVideo ||
+              _config.dataSaver ||
+              _mobileSaving,
+          stepDown: _batterySaving,
+        );
         if (wanted == SettingsService.autoQuality) return;
         await _applyQuality(wanted);
         if (token != _qualityToken) return;
@@ -557,7 +697,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // identifies a stream by its path extension, that URL has none, and
     // AVPlayer refuses it. There is now no branch that can reach it — if a
     // video plays, its audio plays, because they are the same source.
-    if (_config.audioOnly) return sources.url;
+    // Audio-only-on-mobile takes the same path for the same reason: it is the
+    // existing audio mode, not a second one.
+    if (_config.audioOnly || _mobileAudio) return sources.url;
 
     final wanted = _config.preferredQuality;
     if (wanted != SettingsService.autoQuality) {
@@ -883,6 +1025,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _queue
       ..clear()
       ..addAll(videos.where((v) => v.id != _current?.id));
+    // A wholesale replacement leaves nothing of the old order to restore.
+    _unshuffledQueue = null;
     notifyListeners();
   }
 
@@ -940,9 +1084,59 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Reorders the queue randomly, keeping whatever is playing where it is.
+  /// The queue as it stood before it was shuffled, or null when it is not
+  /// shuffled. Kept so the button can be a toggle rather than a one-way door —
+  /// a shuffle with no way back loses the order the up-next list was built in.
+  List<VideoBrief>? _unshuffledQueue;
+
+  bool get isQueueShuffled => _unshuffledQueue != null;
+
+  /// [items] in a random order, deterministic for a given [seed].
+  ///
+  /// Pure and static so the ordering can be tested; `List.shuffle` seeded from
+  /// the clock cannot be. Fisher–Yates, which is the only shuffle that leaves
+  /// every permutation equally likely.
+  static List<T> shuffledOrder<T>(List<T> items, int seed) {
+    final out = List<T>.of(items);
+    final random = Random(seed);
+    for (var i = out.length - 1; i > 0; i--) {
+      final j = random.nextInt(i + 1);
+      final held = out[i];
+      out[i] = out[j];
+      out[j] = held;
+    }
+    return out;
+  }
+
+  /// Toggles a random order over the queue, leaving whatever is playing alone.
+  ///
+  /// Unshuffling restores the original order of the videos still queued and
+  /// appends anything added while shuffled, rather than resurrecting entries
+  /// that were played or removed in the meantime.
   void shuffleQueue() {
-    _queue.shuffle();
+    final original = _unshuffledQueue;
+    if (original == null) {
+      _unshuffledQueue = List.of(_queue);
+      final shuffled = shuffledOrder(
+        _queue,
+        DateTime.now().microsecondsSinceEpoch,
+      );
+      _queue
+        ..clear()
+        ..addAll(shuffled);
+    } else {
+      final queued = {for (final video in _queue) video.id};
+      final restored = [
+        for (final video in original)
+          if (queued.contains(video.id)) video,
+      ];
+      final known = {for (final video in restored) video.id};
+      restored.addAll(_queue.where((v) => !known.contains(v.id)));
+      _queue
+        ..clear()
+        ..addAll(restored);
+      _unshuffledQueue = null;
+    }
     notifyListeners();
   }
 
@@ -1088,7 +1282,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           : (sources?.isHls ?? false)
               ? 'HLS adaptive'
               : 'Progressive MP4',
-      'Mode': _config.audioOnly || _droppedVideo ? 'Audio only' : 'Video',
+      'Mode': isAudioOnly || _droppedVideo ? 'Audio only' : 'Video',
       'Buffer health': ahead.isNegative
           ? '0.0 s'
           : '${(ahead.inMilliseconds / 1000).toStringAsFixed(1)} s',
@@ -1114,6 +1308,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> stop() async {
     _cancelSleepTimer();
+    // Bank the last partial batch while _current still says what it belongs to.
+    _flushWatchTime();
+    _watchMillis = 0;
+    _watchTickAt = null;
     final player = _player;
     _player = null;
     _current = null;
@@ -1168,7 +1366,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// there is no reload, no gap and no position to restore.
   Future<void> _dropVideoTrack() async {
     if (!_config.audioOnlyWhenLocked || _droppedVideo) return;
-    if (_config.audioOnly) return; // already at the lowest rung by choice
+    if (isAudioOnly) return; // already at the lowest rung by choice
     final player = _player;
     if (player == null || _current == null) return;
     if (_isOffline) return; // a local file costs no data
@@ -1197,7 +1395,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (!_droppedVideo) return;
     _droppedVideo = false;
     if (_player == null || _current == null) return;
-    await _applyQuality(_config.preferredQuality);
+    // Back to whatever this video was loaded to play at, which is not always
+    // the saved preference: a video started on a low battery or on mobile data
+    // must not silently climb back to full quality just because the screen
+    // came on.
+    await _applyQuality(
+      qualityForConditions(
+        ladder: [
+          for (final track in _player?.betterPlayerAsmsTracks ?? const [])
+            if ((track.height ?? 0) > 0) '${track.height}p',
+        ],
+        preferred: _config.preferredQuality,
+        lowest: _config.dataSaver || _mobileSaving,
+        stepDown: _batterySaving,
+      ),
+    );
   }
 
   // --------------------------------------------------------- sleep timer
@@ -1285,6 +1497,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
     _playing = value.isPlaying;
     _persistPosition();
+    _accrueWatchTime();
 
     // A–B loop: jump back to A once playback passes B.
     final a = _loopA;
@@ -1305,9 +1518,111 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (wasPlaying != _playing || hadDuration != _duration) notifyListeners();
   }
 
+  // ------------------------------------------- watched time and accounting
+
+  /// How much watched time is allowed to pile up before it is written.
+  ///
+  /// Both consumers — the Kids allowance and the data-usage estimate — are
+  /// database writes, so they are batched rather than run from the position
+  /// listener directly; that listener fires many times a second.
+  static const _accountingInterval = Duration(seconds: 15);
+
+  /// The longest gap between two position ticks that still counts as watching.
+  /// Anything longer means the listener stopped firing at all — a stall, a
+  /// suspended app — and charging that time to the allowance would be wrong.
+  static const _maxTickGap = Duration(seconds: 5);
+
+  DateTime? _watchTickAt;
+  int _watchMillis = 0;
+
+  /// Accumulates wall-clock watching time. Driven from the existing position
+  /// listener on purpose: a second timer would have to be started, stopped and
+  /// disposed in step with playback, and would be one more thing to get wrong
+  /// around backgrounding.
+  ///
+  /// Wall clock and not the position delta, because seeking, the A–B loop and
+  /// a sponsor skip all move the position without any time passing — a
+  /// twenty-minute jump would otherwise spend twenty minutes of a child's
+  /// allowance and book twenty minutes of data.
+  void _accrueWatchTime() {
+    final now = DateTime.now();
+    final last = _watchTickAt;
+    _watchTickAt = now;
+    if (!_playing) {
+      // Bank the remainder at the pause rather than holding it until playback
+      // resumes, which may be never.
+      _flushWatchTime();
+      return;
+    }
+    if (last == null) return;
+    final delta = now.difference(last);
+    if (delta <= Duration.zero || delta > _maxTickGap) return;
+    _watchMillis += delta.inMilliseconds;
+    if (_watchMillis >= _accountingInterval.inMilliseconds) _flushWatchTime();
+  }
+
+  /// Writes whole banked seconds out to the Kids allowance and the data-usage
+  /// estimate, keeping the sub-second remainder for the next batch.
+  void _flushWatchTime() {
+    final seconds = _watchMillis ~/ 1000;
+    if (seconds <= 0) return;
+    _watchMillis -= seconds * 1000;
+
+    final guard = _kids;
+    if (guard != null && _config.kidsMode) {
+      unawaited(
+        guard.addWatched(seconds).then(
+          (_) => _enforceKidsLimit(),
+          // Logged rather than swallowed: a failing write here means the
+          // allowance silently stops counting, which looks like the limit
+          // feature was never switched on.
+          onError: (Object e) =>
+              debugPrint('AI BIT: kids allowance not recorded — $e'),
+        ),
+      );
+    }
+
+    final usage = _usage;
+    final video = _current;
+    // A downloaded file spends no data, so it is not booked against anything.
+    if (usage != null && video != null && !_isOffline) {
+      unawaited(
+        usage.recordStream(
+          video: video,
+          watched: Duration(seconds: seconds),
+          // The rendition actually playing, which is what audio-only and the
+          // savers have already stepped down. Audio mode is not billed at an
+          // audio bitrate: it plays the video stream with the picture covered,
+          // so its real cost is the lowest rung, not an audio track.
+          quality: activeQuality ?? _config.preferredQuality,
+        ),
+      );
+    }
+  }
+
+  // ---------------------------------------------------------- kids allowance
+
+  /// True when Kids mode is on and today's watch allowance is spent.
+  ///
+  /// The controller only pauses; it shows nothing. What the child sees is the
+  /// UI's decision, which is why there is no dialog anywhere in here.
+  bool get kidsLimitReached =>
+      _config.kidsMode && (_kids?.limitReached ?? false);
+
+  void _enforceKidsLimit() {
+    if (!kidsLimitReached) return;
+    // Not an interruption: this must not resume by itself when a call ends.
+    _forgetInterruption();
+    unawaited(_player?.pause());
+    _playing = false;
+    notifyListeners();
+  }
+
   void _persistPosition({bool force = false}) {
     final video = _current;
     if (video == null) return;
+    // Incognito leaves no resume trail, for the reason given in _play.
+    if (_config.incognito) return;
     final now = DateTime.now();
     if (!force && now.difference(_lastPositionWrite) < const Duration(seconds: 5)) {
       return;

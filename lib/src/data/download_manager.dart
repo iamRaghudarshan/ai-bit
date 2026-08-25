@@ -6,6 +6,7 @@ import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'data_usage_service.dart';
 import 'db.dart';
 import 'models.dart';
 import 'media_processor.dart';
@@ -20,8 +21,10 @@ class DownloadManager extends ChangeNotifier {
     required YtRepository repository,
     required AppDatabase database,
     MediaProcessor? processor,
+    DataUsageService? dataUsage,
   })  : _repo = repository,
         _db = database,
+        _usage = dataUsage,
         // Injected so the native dependency can be swapped or stubbed; the
         // manager only ever talks to the interface.
         _processor = processor ?? const FfmpegMediaProcessor();
@@ -29,6 +32,12 @@ class DownloadManager extends ChangeNotifier {
   final YtRepository _repo;
   final AppDatabase _db;
   final MediaProcessor _processor;
+
+  /// Optional: downloads work identically without it. When present, a finished
+  /// transfer reports its real byte count for the per-channel usage screen.
+  /// The field is not named for its parameter so the constructor can keep a
+  /// plain parameter — a private named initialising formal is not legal Dart.
+  final DataUsageService? _usage;
 
   /// Written to disk every ~1MB rather than every chunk — SQLite writes are
   /// cheap but not free, and the bar only needs to move smoothly.
@@ -250,6 +259,11 @@ class DownloadManager extends ChangeNotifier {
       await sink.close();
       sink = null;
 
+      // What actually crossed the network, tracked separately because the MP3
+      // branch rewrites `received` with the re-encoded file's size — that is
+      // disk usage, not data usage, and reporting it would undercount.
+      var transferred = received;
+
       // HD arrives as two files; join them before the download counts as done.
       if (target.needsMux) {
         received = await _fetchAndJoin(
@@ -258,6 +272,8 @@ class DownloadManager extends ChangeNotifier {
           videoPath: file.path,
           received: received,
         );
+        // The join adds the separately fetched audio track to the total.
+        transferred = received;
       } else if (target.toMp3) {
         received = await _convertToMp3(id: id, videoPath: file.path);
       }
@@ -270,6 +286,14 @@ class DownloadManager extends ChangeNotifier {
         ),
       );
       await _db.saveDownload(_records[id]!);
+      // Exact accounting, unlike the streaming estimate: these bytes really
+      // passed through this code. Deliberately not awaited and never allowed
+      // to fail the download — the file is on disk and complete either way,
+      // and the service swallows its own write errors.
+      unawaited(
+        _usage?.recordDownload(video: queued.video, bytes: transferred) ??
+            Future<void>.value(),
+      );
     } catch (e) {
       await sink?.close();
       // Paused, not failed: keep the partial file and the record so it can
