@@ -110,6 +110,20 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    rewriting the notification with the previous video's details, and a handler
    leaked per video. It now disposes the previous set first.
 
+17. PiP could only be started by an explicit call, so swiping home mid-video
+   just stopped the picture — the floating window people expect from YouTube
+   and Safari never appeared unless they first tapped a button. iOS has a flag
+   for this, `canStartPictureInPictureAutomaticallyFromInline`, but it only
+   affects a controller that already exists while the video plays inline, and
+   this plugin built its `AVPlayerLayer` at the moment PiP was requested —
+   after the fact — because Flutter renders video into a texture, not a layer.
+   A new `setAutomaticPictureInPicture(_:frame:)` therefore creates the layer
+   up front and inserts it BEHIND Flutter's view: iOS refuses automatic PiP for
+   a hidden or offscreen layer, but the texture draws over it so nothing
+   changes visually. Guarded to iOS 14.2+, torn down on dispose, and left
+   opt-in from Dart because it cannot be verified without a real device.
+
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

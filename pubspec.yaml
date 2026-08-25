@@ -61,6 +61,15 @@ dependencies:
   file_picker: ^12.0.0
   package_info_plus: ^10.2.1
   url_launcher: ^6.3.1
+  # Metered-connection and battery awareness: the mobile-data saver has to know
+  # it is actually on mobile data, and the battery saver has to know the level.
+  # Neither is inferable from Dart alone.
+  connectivity_plus: ^7.3.1
+  battery_plus: ^7.1.1
+  # App lock. local_auth is the fingerprint/Face ID prompt; crypto hashes the
+  # PIN so the fallback never stores it in plain text in SharedPreferences.
+  local_auth: ^3.0.2
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:

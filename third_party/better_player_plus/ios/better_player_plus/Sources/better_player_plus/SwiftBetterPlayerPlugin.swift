@@ -319,6 +319,17 @@ extension BetterPlayerPlugin {
             let height = (argsMap["height"] as? NSNumber)?.doubleValue ?? 0
             player.enablePictureInPicture(CGRect(x: left, y: top, width: width, height: height))
             result(nil)
+        case "setAutomaticPictureInPicture":
+            // PATCH: opt-in automatic PiP on leaving the app. See
+            // BetterPlayer.setAutomaticPictureInPicture for why a layer has to
+            // exist during inline playback for this to work at all.
+            let enabled = (argsMap["enabled"] as? NSNumber)?.boolValue ?? false
+            let left = (argsMap["left"] as? NSNumber)?.doubleValue ?? 0
+            let top = (argsMap["top"] as? NSNumber)?.doubleValue ?? 0
+            let width = (argsMap["width"] as? NSNumber)?.doubleValue ?? 0
+            let height = (argsMap["height"] as? NSNumber)?.doubleValue ?? 0
+            player.setAutomaticPictureInPicture(enabled, frame: CGRect(x: left, y: top, width: width, height: height))
+            result(nil)
         case "isPictureInPictureSupported":
             if #available(iOS 9.0, *), AVPictureInPictureController.isPictureInPictureSupported() {
                 result(NSNumber(value: true)); return

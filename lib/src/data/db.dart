@@ -24,13 +24,15 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
         await _createDownloads(db);
         await _createSearches(db);
         await _createSubscriptions(db);
+        await _createDataUsage(db);
+        await _createKidsUsage(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -61,6 +63,10 @@ class AppDatabase {
               'ALTER TABLE $table ADD COLUMN is_kids INTEGER NOT NULL DEFAULT 0',
             );
           }
+        }
+        if (from < 8) {
+          await _createDataUsage(db);
+          await _createKidsUsage(db);
         }
       },
     );
@@ -167,6 +173,36 @@ class AppDatabase {
         title        TEXT NOT NULL,
         avatar_url   TEXT,
         subscribed_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  /// Bytes spent per channel per day, split by whether they were streamed or
+  /// downloaded. Keyed by all three so a day's usage accumulates into one row
+  /// instead of growing a row per playback — see [addDataUsage].
+  ///
+  /// `day` is days since the epoch, not a timestamp: the screen only ever asks
+  /// "since when", and a whole-day bucket keeps the table tiny.
+  static Future<void> _createDataUsage(Database db) async {
+    await db.execute('''
+      CREATE TABLE data_usage (
+        day           INTEGER NOT NULL,
+        channel_id    TEXT NOT NULL,
+        channel_title TEXT NOT NULL,
+        bytes         INTEGER NOT NULL DEFAULT 0,
+        kind          TEXT NOT NULL,
+        PRIMARY KEY (day, channel_id, kind)
+      )
+    ''');
+  }
+
+  /// Seconds watched per day in Kids mode, for the daily-limit guard. One row
+  /// per day so yesterday's total never leaks into today's allowance.
+  static Future<void> _createKidsUsage(Database db) async {
+    await db.execute('''
+      CREATE TABLE kids_usage (
+        day     INTEGER PRIMARY KEY,
+        seconds INTEGER NOT NULL DEFAULT 0
       )
     ''');
   }
@@ -395,17 +431,7 @@ class AppDatabase {
       orderBy: 'watched_at DESC',
       limit: limit,
     );
-    return rows
-        .map(
-          (r) => HistoryEntry(
-            video: VideoBrief.fromMap(r),
-            position: Duration(milliseconds: r['position_ms'] as int? ?? 0),
-            watchedAt: DateTime.fromMillisecondsSinceEpoch(
-              r['watched_at']! as int,
-            ),
-          ),
-        )
-        .toList();
+    return rows.map(_historyEntry).toList();
   }
 
   /// Watch history, filterable so Videos, Shorts and Kids can be shown apart.
@@ -432,17 +458,61 @@ class AppDatabase {
       orderBy: 'watched_at DESC',
       limit: limit,
     );
-    return rows
-        .map(
-          (r) => HistoryEntry(
-            video: VideoBrief.fromMap(r),
-            position: Duration(milliseconds: r['position_ms'] as int? ?? 0),
-            watchedAt: DateTime.fromMillisecondsSinceEpoch(
-              r['watched_at']! as int,
-            ),
-          ),
-        )
-        .toList();
+    return rows.map(_historyEntry).toList();
+  }
+
+  /// Watch history matching [query] in either the title or the channel name,
+  /// newest first. An empty query is the unfiltered list.
+  ///
+  /// SQLite's LIKE folds case for ASCII only, which is what the history search
+  /// box needs and all it promises; an accented or Cyrillic title matches only
+  /// when the case already agrees.
+  Future<List<HistoryEntry>> searchWatchHistory(
+    String query, {
+    int limit = 200,
+  }) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return history(limit: limit);
+    final pattern = '%${_escapeLike(trimmed)}%';
+    final rows = await _db.query(
+      'history',
+      where: "title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\'",
+      whereArgs: [pattern, pattern],
+      orderBy: 'watched_at DESC',
+      limit: limit,
+    );
+    return rows.map(_historyEntry).toList();
+  }
+
+  /// Neutralises the wildcards in a user-typed LIKE term, so searching for
+  /// "10_things" does not silently match "10 things".
+  static String _escapeLike(String value) => value
+      .replaceAll('\\', '\\\\')
+      .replaceAll('%', '\\%')
+      .replaceAll('_', '\\_');
+
+  static HistoryEntry _historyEntry(Map<String, Object?> row) => HistoryEntry(
+    video: VideoBrief.fromMap(row),
+    position: Duration(milliseconds: row['position_ms'] as int? ?? 0),
+    watchedAt: DateTime.fromMillisecondsSinceEpoch(row['watched_at']! as int),
+  );
+
+  /// Every video id that appears in history, for marking watched rows in a
+  /// feed. Ids only — a feed can hold hundreds of rows to check, and building
+  /// a VideoBrief for all of history to answer that would be wasteful.
+  Future<Set<String>> watchedVideoIds() async {
+    final rows = await _db.query('history', columns: ['video_id']);
+    return rows.map((r) => r['video_id']! as String).toSet();
+  }
+
+  /// Drops history older than [days], returning how many rows went. Anything
+  /// <= 0 means "keep forever" and must not delete a thing.
+  Future<int> deleteHistoryOlderThan(int days) async {
+    if (days <= 0) return 0;
+    final cutoff = DateTime.now()
+        .subtract(Duration(days: days))
+        .millisecondsSinceEpoch;
+    return _db.delete('history', where: 'watched_at < ?', whereArgs: [cutoff]);
   }
 
   Future<void> deleteHistoryEntry(String videoId) =>
@@ -560,6 +630,94 @@ class AppDatabase {
     return rows.map((r) => r['playlist_id']! as int).toSet();
   }
 
+  // ------------------------------------------------------------- data usage
+
+  /// Adds [bytes] to the running total for this day / channel / kind.
+  ///
+  /// Upserts rather than inserts: a single video reports usage many times as
+  /// it streams, and one row per report would turn the table into a log
+  /// nobody reads. Zero-byte reports are dropped so a video that was opened
+  /// but never fetched does not create an empty channel row.
+  Future<void> addDataUsage({
+    required int day,
+    required String channelId,
+    required String channelTitle,
+    required int bytes,
+    required String kind,
+  }) async {
+    if (bytes <= 0 || channelId.isEmpty) return;
+    await _db.rawInsert('''
+      INSERT INTO data_usage (day, channel_id, channel_title, bytes, kind)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(day, channel_id, kind) DO UPDATE SET
+        bytes = data_usage.bytes + excluded.bytes,
+        channel_title = excluded.channel_title
+    ''', [day, channelId, channelTitle, bytes, kind]);
+  }
+
+  /// Usage since [sinceDay] (days since epoch), heaviest first. A channel that
+  /// was both streamed and downloaded returns one row per kind, because the
+  /// two costs are worth telling apart.
+  Future<List<DataUsageRow>> dataUsageByChannel({required int sinceDay}) async {
+    final rows = await _db.rawQuery('''
+      SELECT channel_id,
+             MAX(channel_title) AS channel_title,
+             kind,
+             SUM(bytes) AS bytes
+      FROM data_usage
+      WHERE day >= ?
+      GROUP BY channel_id, kind
+      ORDER BY bytes DESC
+    ''', [sinceDay]);
+    return rows
+        .map(
+          (r) => DataUsageRow(
+            channelId: r['channel_id']! as String,
+            channelTitle: r['channel_title'] as String? ?? '',
+            bytes: r['bytes'] as int? ?? 0,
+            kind: r['kind']! as String,
+          ),
+        )
+        .toList();
+  }
+
+  /// Total bytes since [sinceDay], optionally for one [kind] only.
+  Future<int> dataUsageTotal({required int sinceDay, String? kind}) async {
+    final rows = await _db.rawQuery(
+      'SELECT SUM(bytes) AS n FROM data_usage WHERE day >= ?'
+      '${kind == null ? '' : ' AND kind = ?'}',
+      [sinceDay, ?kind],
+    );
+    return (rows.first['n'] as int?) ?? 0;
+  }
+
+  /// Forgets every recorded byte, for the storage screen's reset.
+  Future<void> clearDataUsage() => _db.delete('data_usage');
+
+  // ------------------------------------------------------------- kids usage
+
+  Future<int> kidsSecondsOn(int day) async {
+    final rows = await _db.query(
+      'kids_usage',
+      columns: ['seconds'],
+      where: 'day = ?',
+      whereArgs: [day],
+      limit: 1,
+    );
+    return rows.isEmpty ? 0 : (rows.first['seconds'] as int? ?? 0);
+  }
+
+  /// Accumulates watched seconds for [day]. Upserted for the same reason as
+  /// [addDataUsage]: it is called on a ticker while a video plays.
+  Future<void> addKidsSeconds(int day, int seconds) async {
+    if (seconds <= 0) return;
+    await _db.rawInsert('''
+      INSERT INTO kids_usage (day, seconds) VALUES (?, ?)
+      ON CONFLICT(day) DO UPDATE SET
+        seconds = kids_usage.seconds + excluded.seconds
+    ''', [day, seconds]);
+  }
+
   // ------------------------------------------------------------------ feed
 
   /// Seeds for the personalised home feed: the most recently watched videos
@@ -582,4 +740,20 @@ class AppDatabase {
     }
     return (videoIds: videoIds, channelIds: channelIds.toList());
   }
+}
+
+/// One channel's data cost over a period, as returned by
+/// [AppDatabase.dataUsageByChannel]. [kind] is 'stream' or 'download'.
+class DataUsageRow {
+  const DataUsageRow({
+    required this.channelId,
+    required this.channelTitle,
+    required this.bytes,
+    required this.kind,
+  });
+
+  final String channelId;
+  final String channelTitle;
+  final int bytes;
+  final String kind;
 }

@@ -37,6 +37,9 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
 
     private var pipController: AVPictureInPictureController?
     private var restoreUIOnPipStop: ((Bool) -> Void)?
+    // PATCH: see setAutomaticPictureInPicture. Held separately from
+    // playerLayerRef, which belongs to the explicit enter-PiP path.
+    private var inlinePipLayer: AVPlayerLayer?
 
     public override init() {
         self.player = AVPlayer()
@@ -569,6 +572,69 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         }
     }
 
+    /// PATCH: arms iOS to move the video into Picture in Picture by itself when
+    /// the app leaves the foreground, instead of requiring an explicit tap.
+    ///
+    /// `canStartPictureInPictureAutomaticallyFromInline` only has an effect on a
+    /// controller that already exists while the video plays inline. This plugin
+    /// otherwise builds its AVPlayerLayer at the moment PiP is requested — far
+    /// too late for the flag to ever fire — because Flutter renders video into a
+    /// texture rather than a layer, so no layer exists during normal playback.
+    ///
+    /// The layer is therefore created up front and inserted BEHIND Flutter's
+    /// view: iOS refuses automatic PiP for a hidden or offscreen layer, but the
+    /// Flutter texture draws over it, so nothing changes visually. Kept opt-in
+    /// from Dart because it cannot be verified without a real device.
+    public func setAutomaticPictureInPicture(_ enabled: Bool, frame: CGRect) {
+        guard #available(iOS 14.2, *) else { return }
+        if !enabled {
+            teardownInlinePipLayer()
+            return
+        }
+        guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        // The explicit PiP path owns the controller while it is active; leave it alone.
+        if playerLayerRef != nil { return }
+
+        if let existing = inlinePipLayer {
+            existing.frame = frame
+            return
+        }
+        guard let rootVC = Self.currentRootViewController() else { return }
+
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = self.videoGravity
+        layer.frame = frame
+        layer.needsDisplayOnBoundsChange = true
+        rootVC.view.layer.insertSublayer(layer, at: 0)
+        inlinePipLayer = layer
+
+        pipController = AVPictureInPictureController(playerLayer: layer)
+        pipController?.delegate = self
+        pipController?.canStartPictureInPictureAutomaticallyFromInline = true
+    }
+
+    private func teardownInlinePipLayer() {
+        guard let layer = inlinePipLayer else { return }
+        layer.removeFromSuperlayer()
+        inlinePipLayer = nil
+        // Only drop the controller if it is the one built for this layer; the
+        // explicit path rebuilds its own.
+        if playerLayerRef == nil {
+            pipController = nil
+        }
+    }
+
+    private static func currentRootViewController() -> UIViewController? {
+        if #available(iOS 13.0, *) {
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = windowScene.windows.first {
+                return window.rootViewController
+            }
+            return nil
+        }
+        return (UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first)?.rootViewController
+    }
+
     public func disablePictureInPicture() {
         setPictureInPicture(true)
         if let layer = playerLayerRef {
@@ -646,6 +712,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         pause()
         disposeSansEventChannel()
         eventChannel?.setStreamHandler(nil)
+        teardownInlinePipLayer()
         disablePictureInPicture()
         setPictureInPicture(false)
         disposed = true
