@@ -175,8 +175,14 @@ class StorageService {
     await _db.clearSearchHistory();
   }
 
-  /// Wipes everything the app stores on this device — downloads, cache,
-  /// history, playlists and subscriptions — returning it to a fresh install.
+  /// Wipes the app's stored *content* on this device — downloads, cache,
+  /// history, playlists and subscriptions.
+  ///
+  /// Settings are deliberately NOT cleared, so this is not quite a fresh
+  /// install: the app-lock and Kids PINs survive. Wiping preferences here
+  /// would turn the reset button into a way out of Kids mode for whoever the
+  /// PIN was meant to stop, which is exactly the person most likely to press
+  /// it.
   ///
   /// There is no account and no sync, so this cannot be undone: it is the
   /// "start over" button, kept behind a strong confirmation in the UI.
