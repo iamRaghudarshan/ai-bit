@@ -1321,12 +1321,15 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       return 'The player is not on screen.';
     }
     try {
-      await player.enablePictureInPicture(playerKey);
+      // The plugin now answers with the reason iOS refused, rather than
+      // returning success regardless - see PATCHES.md #21.
+      final failure = await player.enablePictureInPicture(playerKey);
+      if (failure != null) debugPrint('AI BIT: PiP refused - $failure');
+      return failure;
     } catch (e) {
       debugPrint('AI BIT: Picture in Picture failed to start - $e');
       return 'Picture in Picture could not start.';
     }
-    return null;
   }
 
   /// Arms or disarms iOS's automatic Picture in Picture for the current video.

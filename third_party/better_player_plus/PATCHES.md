@@ -186,6 +186,20 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    removed on a player that outlives many videos (#11, #12).
 
 
+21. `enablePictureInPicture` returned `result(nil)` the instant it was called,
+   before PiP had been attempted, so **every** native refusal reached Dart as a
+   success and the host app had nothing to show the user. iOS refuses PiP for
+   reasons an app cannot inspect - no video track, an audio session it does not
+   accept, the user having switched PiP off in Settings - and the plugin's own
+   Dart branches (unsupported device, null RenderBox, unsupported platform)
+   likewise just logged and fell off the end returning nothing. The whole chain
+   now carries a `String?`: nil on success, a short human-readable reason
+   otherwise, from the Swift completion up through the platform interface to
+   `BetterPlayerController.enablePictureInPicture`. A zero-sized frame is
+   rejected immediately rather than after the two-second wait, because a player
+   that is not on screen will never be accepted.
+
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

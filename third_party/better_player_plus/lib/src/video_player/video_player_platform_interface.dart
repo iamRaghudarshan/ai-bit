@@ -138,8 +138,9 @@ abstract class VideoPlayerPlatform {
     throw UnimplementedError('getAbsolutePosition() has not been implemented.');
   }
 
-  ///Enables PiP mode.
-  Future<void> enablePictureInPicture(int? textureId, double? top, double? left, double? width, double? height) {
+  ///Enables PiP mode. Resolves to null on success, or the reason it could not
+  ///start (iOS only; other platforms report nothing).
+  Future<String?> enablePictureInPicture(int? textureId, double? top, double? left, double? width, double? height) {
     throw UnimplementedError('enablePictureInPicture() has not been implemented.');
   }
 

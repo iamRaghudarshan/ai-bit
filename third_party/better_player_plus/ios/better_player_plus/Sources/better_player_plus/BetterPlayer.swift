@@ -526,23 +526,44 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
     /// to do nothing at all. Polls briefly instead of using KVO deliberately:
     /// this plugin has already shipped bugs from observers that were never
     /// removed on a player that outlives many videos.
-    private func startPictureInPictureWhenPossible(attempt: Int = 0) {
-        guard #available(iOS 9.0, *) else { return }
-        guard let pip = pipController else { return }
-        if pip.isPictureInPictureActive { return }
+    private func startPictureInPictureWhenPossible(
+        attempt: Int = 0,
+        completion: ((String?) -> Void)? = nil
+    ) {
+        guard #available(iOS 9.0, *) else {
+            completion?("Picture in Picture needs a newer version of iOS.")
+            return
+        }
+        guard let pip = pipController else {
+            completion?("Picture in Picture could not be prepared for this video.")
+            return
+        }
+        if pip.isPictureInPictureActive {
+            completion?(nil)
+            return
+        }
         if pip.isPictureInPicturePossible {
             self.pictureInPicture = true
             pip.startPictureInPicture()
+            completion?(nil)
             return
         }
         // ~2s in total. Longer than any healthy layer needs, short enough that
         // a genuine failure is not left hanging.
         if attempt >= 20 {
+            // Reported rather than swallowed. iOS refuses PiP for reasons the
+            // app cannot see - no video track, an audio session it does not
+            // like, Settings having it switched off - and a silent refusal is
+            // indistinguishable from a dead button.
             eventSink?(["event": "pipStop"])
+            completion?("iOS would not start Picture in Picture for this video.")
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.startPictureInPictureWhenPossible(attempt: attempt + 1)
+            self?.startPictureInPictureWhenPossible(
+                attempt: attempt + 1,
+                completion: completion
+            )
         }
     }
 
@@ -570,12 +591,25 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         }
     }
 
-    public func enablePictureInPicture(_ frame: CGRect) {
+    public func enablePictureInPicture(
+        _ frame: CGRect,
+        completion: ((String?) -> Void)? = nil
+    ) {
         disablePictureInPicture()
-        usePlayerLayer(frame)
+        usePlayerLayer(frame, completion: completion)
     }
 
-    private func usePlayerLayer(_ frame: CGRect) {
+    private func usePlayerLayer(
+        _ frame: CGRect,
+        completion: ((String?) -> Void)? = nil
+    ) {
+        // A zero-sized frame means the caller measured a player that is not on
+        // screen; iOS will never accept PiP for it, so say so now rather than
+        // after a two second wait.
+        if frame.width <= 0 || frame.height <= 0 {
+            completion?("The player is not on screen.")
+            return
+        }
         // PATCH: the automatic-PiP layer (#17) is a second AVPlayerLayer living
         // behind Flutter's view. Entering PiP explicitly builds its own layer
         // and rebinds the controller, so without this the inline one would be
@@ -596,7 +630,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
                 playerLayerRef = layer
                 pipController = nil
                 setupPipController()
-                self.startPictureInPictureWhenPossible()
+                self.startPictureInPictureWhenPossible(completion: completion)
             }
         } else {
             if let window = UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first,
@@ -608,7 +642,7 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
                 playerLayerRef = layer
                 pipController = nil
                 setupPipController()
-                self.startPictureInPictureWhenPossible()
+                self.startPictureInPictureWhenPossible(completion: completion)
             }
         }
     }

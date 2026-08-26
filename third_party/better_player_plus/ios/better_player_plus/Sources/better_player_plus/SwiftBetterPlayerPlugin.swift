@@ -321,8 +321,14 @@ extension BetterPlayerPlugin {
             let top = (argsMap["top"] as? NSNumber)?.doubleValue ?? 0
             let width = (argsMap["width"] as? NSNumber)?.doubleValue ?? 0
             let height = (argsMap["height"] as? NSNumber)?.doubleValue ?? 0
-            player.enablePictureInPicture(CGRect(x: left, y: top, width: width, height: height))
-            result(nil)
+            // PATCH: the result now carries the reason PiP did not start, or
+            // nil on success. It used to return immediately and unconditionally,
+            // so every native refusal reached Dart as a success.
+            player.enablePictureInPicture(
+                CGRect(x: left, y: top, width: width, height: height)
+            ) { failure in
+                result(failure)
+            }
         case "setAutomaticPictureInPicture":
             // PATCH: opt-in automatic PiP on leaving the app. See
             // BetterPlayer.setAutomaticPictureInPicture for why a layer has to

@@ -157,8 +157,8 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
   }
 
   @override
-  Future<void> enablePictureInPicture(int? textureId, double? top, double? left, double? width, double? height) =>
-      _channel.invokeMethod<void>('enablePictureInPicture', <String, dynamic>{
+  Future<String?> enablePictureInPicture(int? textureId, double? top, double? left, double? width, double? height) =>
+      _channel.invokeMethod<String>('enablePictureInPicture', <String, dynamic>{
         'textureId': textureId,
         'top': top,
         'left': left,

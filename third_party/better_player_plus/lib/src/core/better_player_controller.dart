@@ -1064,7 +1064,10 @@ class BetterPlayerController {
   ///Enable Picture in Picture (PiP) mode. [betterPlayerGlobalKey] is required
   ///to open PiP mode in iOS. When device is not supported, PiP mode won't be
   ///open.
-  Future<void>? enablePictureInPicture(GlobalKey betterPlayerGlobalKey) async {
+  ///PATCH: returns null on success, or the reason PiP did not start. Every
+  ///branch below used to fall off the end returning nothing, so a refusal was
+  ///indistinguishable from success to the host app.
+  Future<String?> enablePictureInPicture(GlobalKey betterPlayerGlobalKey) async {
     if (videoPlayerController == null) {
       throw StateError('The data source has not been initialized');
     }
@@ -1080,7 +1083,7 @@ class BetterPlayerController {
         await videoPlayerController?.enablePictureInPicture(left: 0, top: 0, width: 0, height: 0);
         enterFullScreen();
         _postEvent(BetterPlayerEvent(BetterPlayerEventType.pipStart));
-        return;
+        return null;
       }
       if (Platform.isIOS) {
         final RenderBox? renderBox = betterPlayerGlobalKey.currentContext!.findRenderObject() as RenderBox?;
@@ -1089,7 +1092,7 @@ class BetterPlayerController {
             "Can't show PiP. RenderBox is null. Did you provide valid global"
             ' key?',
           );
-          return;
+          return 'The player is not on screen.';
         }
         final Offset position = renderBox.localToGlobal(Offset.zero);
         return videoPlayerController?.enablePictureInPicture(
@@ -1100,6 +1103,7 @@ class BetterPlayerController {
         );
       } else {
         BetterPlayerUtils.log('Unsupported PiP in current platform.');
+        return 'Picture in Picture is not supported on this platform.';
       }
     } else {
       BetterPlayerUtils.log(
@@ -1107,6 +1111,7 @@ class BetterPlayerController {
         "using Android, please check if you're using activity v2 "
         'embedding.',
       );
+      return 'This device does not support Picture in Picture.';
     }
   }
 
