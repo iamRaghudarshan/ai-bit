@@ -1301,11 +1301,32 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     await _player?.play();
   }
 
-  Future<void> enterPictureInPicture() async {
+  /// Enters Picture in Picture, returning null on success or a short reason it
+  /// could not start.
+  ///
+  /// Every branch here used to return silently, so a device where PiP was
+  /// refused was indistinguishable from a dead button - which is exactly how
+  /// it was reported. The caller is expected to show the reason.
+  Future<String?> enterPictureInPicture() async {
+    if (kIsWeb) return 'Not available in the browser preview.';
     final player = _player;
-    if (player == null) return;
-    if (!await player.isPictureInPictureSupported()) return;
-    await player.enablePictureInPicture(playerKey);
+    if (player == null) return 'Nothing is playing yet.';
+    if (!await player.isPictureInPictureSupported()) {
+      return 'This device does not support Picture in Picture.';
+    }
+    // The plugin measures the player's on-screen frame through this key and
+    // force-unwraps its context, so an unmounted player throws rather than
+    // failing gracefully. Checked here instead.
+    if (playerKey.currentContext == null) {
+      return 'The player is not on screen.';
+    }
+    try {
+      await player.enablePictureInPicture(playerKey);
+    } catch (e) {
+      debugPrint('AI BIT: Picture in Picture failed to start - $e');
+      return 'Picture in Picture could not start.';
+    }
+    return null;
   }
 
   /// Arms or disarms iOS's automatic Picture in Picture for the current video.

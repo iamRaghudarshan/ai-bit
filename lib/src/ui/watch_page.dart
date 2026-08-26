@@ -1384,9 +1384,18 @@ class _ActionRow extends StatelessWidget {
                           Icons.picture_in_picture_alt_outlined,
                         ),
                         title: const Text('Picture in picture'),
-                        onTap: () {
+                        onTap: () async {
+                          // Captured before the await: the sheet's context is
+                          // gone by the time the reason comes back.
+                          final messenger = ScaffoldMessenger.of(context);
                           Navigator.pop(sheetContext);
-                          playback.enterPictureInPicture();
+                          final failure =
+                              await playback.enterPictureInPicture();
+                          if (failure != null) {
+                            messenger.showSnackBar(
+                              SnackBar(content: Text(failure)),
+                            );
+                          }
                         },
                       ),
                       if (CastButton.isSupported)

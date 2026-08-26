@@ -193,7 +193,11 @@ class FloatingPlayer {
     if (!isSupported) {
       // iOS (and anything else): PiP is the platform's answer to this, and it
       // is already wired up. See the class comment.
-      await playback.enterPictureInPicture();
+      final messenger = ScaffoldMessenger.of(context);
+      final failure = await playback.enterPictureInPicture();
+      if (failure != null) {
+        messenger.showSnackBar(SnackBar(content: Text(failure)));
+      }
       return;
     }
 
