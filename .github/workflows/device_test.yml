@@ -72,8 +72,10 @@ jobs:
             adb logcat > "${{ runner.temp }}/logcat.txt" &
             # The test never fails the job on purpose - its OUTPUT is the point,
             # and a diagnostic that stops at the first hiccup tells you nothing.
+            # -d is required: without a device, flutter treats this as a host
+            # unit test and refuses to run it at all.
             flutter test integration_test/diagnostics_test.dart \
-              --dart-define=CI=true 2>&1 | tee "${{ runner.temp }}/flutter.txt" || true
+              -d emulator-5554 2>&1 | tee "${{ runner.temp }}/flutter.txt" || true
             echo "===== AIBIT-DIAG lines ====="
             grep -a "AIBIT-DIAG" "${{ runner.temp }}/flutter.txt" || echo "(none in flutter output)"
             grep -a "AIBIT-DIAG" "${{ runner.temp }}/logcat.txt" || echo "(none in logcat)"
