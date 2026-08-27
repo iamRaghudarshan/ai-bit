@@ -1,0 +1,138 @@
+# Runs the real app on a real Android emulator and iOS Simulator.
+#
+# The development machine can build neither platform, so until now every native
+# and playback question was answered by reading source - and three consecutive
+# guesses at why iOS Picture in Picture did nothing were all wrong. This is the
+# missing feedback loop: the app actually executes, plays a video, and prints
+# what it finds.
+#
+# Run it from the Actions tab (workflow_dispatch). It is deliberately NOT tied
+# to a tag or a push: it is a diagnostic to reach for when something is wrong,
+# not a gate on every commit, and an emulator boot is slow.
+name: Device test
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which platform to run on
+        required: true
+        default: android
+        type: choice
+        options: [android, ios, both]
+
+jobs:
+  android:
+    # Ubuntu, because it is the only runner with KVM - an emulator without
+    # hardware acceleration is too slow to play video at all.
+    runs-on: ubuntu-latest
+    if: ${{ inputs.platform == 'android' || inputs.platform == 'both' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+      - run: flutter pub get
+
+      - name: Run the app on an emulator and capture the diagnostics
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # API 33: new enough for the Android 13+ paths this app cares about
+          # (POST_NOTIFICATIONS, the foreground service type), old enough to
+          # boot quickly. Google APIs image because a bare AOSP image has no
+          # WebView and unpredictable media codecs.
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          # Software rendering: the runner has no GPU, and -gpu host would hang.
+          emulator-options: >-
+            -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+            -camera-back none -camera-front none
+          disable-animations: true
+          script: |
+            adb logcat -c || true
+            adb logcat > "${{ runner.temp }}/logcat.txt" &
+            # The test never fails the job on purpose - its OUTPUT is the point,
+            # and a diagnostic that stops at the first hiccup tells you nothing.
+            flutter test integration_test/diagnostics_test.dart \
+              --dart-define=CI=true 2>&1 | tee "${{ runner.temp }}/flutter.txt" || true
+            echo "===== AIBIT-DIAG lines ====="
+            grep -a "AIBIT-DIAG" "${{ runner.temp }}/flutter.txt" || echo "(none in flutter output)"
+            grep -a "AIBIT-DIAG" "${{ runner.temp }}/logcat.txt" || echo "(none in logcat)"
+            echo "===== player / media errors ====="
+            grep -aiE "ExoPlayer|MediaCodec|BetterPlayer|AndroidRuntime|FATAL" \
+              "${{ runner.temp }}/logcat.txt" | tail -80 || true
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-device-test-logs
+          path: ${{ runner.temp }}/*.txt
+          if-no-files-found: warn
+
+  ios:
+    runs-on: macos-latest
+    if: ${{ inputs.platform == 'ios' || inputs.platform == 'both' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+      - run: flutter pub get
+
+      - name: Boot a simulator
+        run: |
+          xcrun simctl list devices available
+          UDID=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; \
+              print([x['udid'] for k,v in d.items() if 'iOS' in k for x in v \
+              if 'iPhone' in x['name']][0])")
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b || true
+
+      - name: Run the app on the simulator and capture the diagnostics
+        run: |
+          set -o pipefail
+          # NOTE: the iOS Simulator does not implement Picture in Picture -
+          # isPictureInPictureSupported() is false there - so a PiP line saying
+          # the device does not support it is EXPECTED here and proves nothing
+          # about a real iPhone. What this run does prove: the app launches,
+          # stream extraction works, a video actually plays, and the PiP call
+          # reports rather than failing silently.
+          flutter test integration_test/diagnostics_test.dart \
+            -d "$SIM_UDID" 2>&1 | tee "${{ runner.temp }}/flutter.txt" || true
+          echo "===== AIBIT-DIAG lines ====="
+          grep -a "AIBIT-DIAG" "${{ runner.temp }}/flutter.txt" || echo "(none)"
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-device-test-logs
+          path: ${{ runner.temp }}/*.txt
+          if-no-files-found: warn

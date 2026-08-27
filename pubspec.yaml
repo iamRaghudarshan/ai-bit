@@ -72,6 +72,11 @@ dependencies:
   crypto: ^3.0.7
 
 dev_dependencies:
+  # Runs the real app on a real emulator/simulator in CI. Neither platform can
+  # be built or run on the development machine, so this is the only place the
+  # app is ever actually executed - see .github/workflows/device_test.yml.
+  integration_test:
+    sdk: flutter
   flutter_test:
     sdk: flutter
 
