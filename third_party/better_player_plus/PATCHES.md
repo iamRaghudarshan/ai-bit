@@ -200,6 +200,21 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    that is not on screen will never be accepted.
 
 
+22. `usePlayerLayer` wrapped its whole body in an `if let` chain over
+   `UIApplication.shared.connectedScenes.first` / `windows.first` with **no
+   else**. Two things were wrong. `connectedScenes` is a Set, so `.first` is
+   whichever the hash order yields, and `windows.first` is as likely to be a
+   keyboard or alert window as the app's own - so the lookup could return the
+   wrong root view controller or nil. And when it did fail, execution simply
+   fell out of the block: no layer, no PiP, and (after #21) the Flutter result
+   never sent, so the caller awaited forever. A dead button with no diagnostic,
+   which is exactly how it was reported. The lookup now prefers the
+   foreground-active scene and its key window with fallbacks, and every path
+   through `usePlayerLayer` calls the completion. The Dart side additionally
+   times the call out, so a native path that still forgets to answer degrades
+   to a message rather than a hang.
+
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

@@ -617,34 +617,31 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         // longer reachable. Torn down first; _syncAutomaticPip re-arms it on
         // the next data source.
         teardownInlinePipLayer()
+
+        // PATCH: one path, and it ALWAYS calls back. Both branches used to sit
+        // inside an `if let` chain with no `else`, so a failed window lookup
+        // fell out silently - no layer, no PiP, and the Flutter result never
+        // sent, leaving the caller awaiting forever. That is precisely the
+        // reported symptom: the Picture in Picture option does nothing at all.
+        guard let rootVC = Self.currentRootViewController() else {
+            completion?("The app window could not be found for Picture in Picture.")
+            return
+        }
+
         let layer = AVPlayerLayer(player: player)
         layer.videoGravity = self.videoGravity
-        if #available(iOS 13.0, *) {
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = windowScene.windows.first,
-               let rootVC = window.rootViewController {
-                layer.frame = frame
-                layer.needsDisplayOnBoundsChange = true
-                rootVC.view.layer.addSublayer(layer)
-                rootVC.view.layer.needsDisplayOnBoundsChange = true
-                playerLayerRef = layer
-                pipController = nil
-                setupPipController()
-                self.startPictureInPictureWhenPossible(completion: completion)
-            }
-        } else {
-            if let window = UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first,
-               let rootVC = window.rootViewController {
-                layer.frame = frame
-                layer.needsDisplayOnBoundsChange = true
-                rootVC.view.layer.addSublayer(layer)
-                rootVC.view.layer.needsDisplayOnBoundsChange = true
-                playerLayerRef = layer
-                pipController = nil
-                setupPipController()
-                self.startPictureInPictureWhenPossible(completion: completion)
-            }
+        layer.frame = frame
+        layer.needsDisplayOnBoundsChange = true
+        rootVC.view.layer.addSublayer(layer)
+        rootVC.view.layer.needsDisplayOnBoundsChange = true
+        playerLayerRef = layer
+        pipController = nil
+        setupPipController()
+        guard pipController != nil else {
+            completion?("Picture in Picture could not be prepared for this video.")
+            return
         }
+        startPictureInPictureWhenPossible(completion: completion)
     }
 
     /// PATCH: arms iOS to move the video into Picture in Picture by itself when
@@ -699,15 +696,30 @@ public class BetterPlayer: NSObject, FlutterPlatformView, FlutterStreamHandler, 
         }
     }
 
+    /// PATCH: finds the window actually showing the app.
+    ///
+    /// The plugin used `connectedScenes.first` and `windows.first`, but
+    /// `connectedScenes` is a Set - `.first` is whichever the hash order
+    /// happens to yield - and `windows.first` can easily be a keyboard or
+    /// alert window rather than the app's own. Picking wrong returned a
+    /// rootViewController that was not Flutter's, or nil, and the caller then
+    /// did nothing at all. Prefer the foreground-active scene and its key
+    /// window, and fall back rather than give up.
     private static func currentRootViewController() -> UIViewController? {
         if #available(iOS 13.0, *) {
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = windowScene.windows.first {
-                return window.rootViewController
-            }
-            return nil
+            let scenes = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+            let scene = scenes.first { $0.activationState == .foregroundActive }
+                ?? scenes.first { $0.activationState == .foregroundInactive }
+                ?? scenes.first
+            guard let windowScene = scene else { return nil }
+            let window = windowScene.windows.first { $0.isKeyWindow }
+                ?? windowScene.windows.first { !$0.isHidden }
+                ?? windowScene.windows.first
+            return window?.rootViewController
         }
-        return (UIApplication.shared.keyWindow ?? UIApplication.shared.windows.first)?.rootViewController
+        return (UIApplication.shared.keyWindow
+            ?? UIApplication.shared.windows.first)?.rootViewController
     }
 
     public func disablePictureInPicture() {

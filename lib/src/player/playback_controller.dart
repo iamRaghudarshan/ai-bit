@@ -1323,7 +1323,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     try {
       // The plugin now answers with the reason iOS refused, rather than
       // returning success regardless - see PATCHES.md #21.
-      final failure = await player.enablePictureInPicture(playerKey);
+      // Timed out rather than awaited indefinitely. The native side has to
+      // answer on every path for this to resolve, and a plugin that forgets
+      // one leaves the button dead with no way to tell - which is exactly how
+      // this bug presented.
+      final failure = await player
+          .enablePictureInPicture(playerKey)
+          .timeout(
+            const Duration(seconds: 6),
+            onTimeout: () => 'Picture in Picture did not respond.',
+          );
       if (failure != null) debugPrint('AI BIT: PiP refused - $failure');
       return failure;
     } catch (e) {
