@@ -310,8 +310,25 @@ rather than a bug in the client — reproduce on Android before debugging it.
 That is also why the cast button does not offer the DLNA sheet on iOS at all:
 AirPlay through the system route picker is the answer there.
 
+**Playlists come in from a Google account through Takeout, not a sign-in**
+(`takeout_import.dart` + `takeout_service.dart`, Library top bar). Takeout is
+the one route that reaches *private* playlists without authenticating, which
+is why it was chosen over Google Sign-In - the objection to signing in was
+never the code, it was putting a real account behind a ToS-violating client.
+The parser is deliberately tolerant and pure: Takeout's layout is undocumented
+and has shifted between exports, so it prefers the column a `Video ID` header
+names and otherwise scans each row for something id-shaped, and a test pins
+every shape seen so far (header row, BOM, CRLF, blank lines, no header). The
+anchored 11-character id pattern exists to REJECT the timestamp column, which
+is the trap. Importing is slow and serial by nature: Takeout stores ids and
+nothing else, so every title and duration is its own lookup, and firing them
+concurrently gets throttled - the same reason the download queue is serial.
+Videos that are deleted, private or region-locked are counted and reported
+("40 imported - 3 unavailable") rather than dropped silently.
+
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
-account behind a ToS-violating client), the Google Cast SDK (needs a registered
+account behind a ToS-violating client - see Takeout above for how playlists
+arrive instead), the Google Cast SDK (needs a registered
 receiver id — DLNA replaced it, above), live chat, channel About (YouTube
 returns no parseable data for it), and pasting non-YouTube links — Instagram
 and the rest serve a login wall to anonymous clients, so there is nothing to

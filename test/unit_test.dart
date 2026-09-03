@@ -7,6 +7,7 @@ import 'package:ai_bit/src/data/kids_guard.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
+import 'package:ai_bit/src/data/takeout_import.dart';
 import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
@@ -850,4 +851,97 @@ Some blurb about the video.
   // KidsGuard.daysSinceEpoch — which DataUsageService explicitly borrows rather
   // than reimplementing — and it is covered above. Nothing was restructured to
   // make the rest reachable.
+
+  group('parsePlaylistCsv', () {
+    // The real shape: a header naming the id column, then rows whose second
+    // column is a timestamp that must not be mistaken for an id.
+    const typical = 'Video ID,Playlist Video Creation Timestamp\n'
+        'dQw4w9WgXcQ,2023-01-01T00:00:00+00:00\n'
+        'jNQXAC9IVRw,2023-01-02T00:00:00+00:00\n';
+
+    test('reads ids from the column the header names', () {
+      expect(parsePlaylistCsv(typical), ['dQw4w9WgXcQ', 'jNQXAC9IVRw']);
+    });
+
+    test('keeps the order the file listed', () {
+      const csv = 'Video ID,When\nBBBBBBBBBBB,x\nAAAAAAAAAAA,x\n';
+      expect(parsePlaylistCsv(csv), ['BBBBBBBBBBB', 'AAAAAAAAAAA']);
+    });
+
+    test('drops duplicates', () {
+      const csv = 'Video ID,When\ndQw4w9WgXcQ,x\ndQw4w9WgXcQ,y\n';
+      expect(parsePlaylistCsv(csv), ['dQw4w9WgXcQ']);
+    });
+
+    test('survives CRLF, blank lines and a BOM', () {
+      const csv = '\ufeffVideo ID,When\r\n\r\ndQw4w9WgXcQ,x\r\n\r\n';
+      expect(parsePlaylistCsv(csv), ['dQw4w9WgXcQ']);
+    });
+
+    test('still imports when the header is missing or unfamiliar', () {
+      // The fallback scan is the whole reason an export whose layout drifted
+      // does not silently import nothing.
+      const csv = 'Some Future Column,When\ndQw4w9WgXcQ,2023-01-01\n';
+      expect(parsePlaylistCsv(csv), ['dQw4w9WgXcQ']);
+    });
+
+    test('does not mistake a timestamp for a video id', () {
+      // 11 characters, but not an id - this is the trap the anchored pattern
+      // and the header column both exist to avoid.
+      const csv = 'Video ID,When\ndQw4w9WgXcQ,2023-01-01T\n';
+      expect(parsePlaylistCsv(csv), ['dQw4w9WgXcQ']);
+    });
+
+    test('returns nothing for a file with no ids at all', () {
+      expect(parsePlaylistCsv('Channel Id,Channel Title\n'), isEmpty);
+      expect(parsePlaylistCsv(''), isEmpty);
+    });
+  });
+
+  group('playlistNameFromFileName', () {
+    test('strips the -videos.csv Takeout appends', () {
+      expect(playlistNameFromFileName('Road trip-videos.csv'), 'Road trip');
+    });
+
+    test('handles a full path and mixed case', () {
+      expect(
+        playlistNameFromFileName('Takeout/playlists/Chill-VIDEOS.CSV'),
+        'Chill',
+      );
+    });
+
+    test('keeps the stem when the convention does not hold', () {
+      // A wrong-looking name beats a refused import.
+      expect(playlistNameFromFileName('mystery.csv'), 'mystery');
+    });
+
+    test('never returns an empty name', () {
+      expect(playlistNameFromFileName('-videos.csv'), 'Imported playlist');
+    });
+  });
+
+  group('readPlaylistFile', () {
+    test('pairs the name with the ids', () {
+      final playlist = readPlaylistFile(
+        fileName: 'Focus-videos.csv',
+        contents: 'Video ID,When\ndQw4w9WgXcQ,x\n',
+      );
+      expect(playlist, isNotNull);
+      expect(playlist!.name, 'Focus');
+      expect(playlist.videoIds, ['dQw4w9WgXcQ']);
+    });
+
+    test('returns null for a file that holds no videos', () {
+      // An export folder contains files that are not playlists; creating an
+      // empty local playlist for each would be worse than skipping them.
+      expect(
+        readPlaylistFile(
+          fileName: 'subscriptions.csv',
+          contents: 'Channel Id,Channel Url,Channel Title\n',
+        ),
+        isNull,
+      );
+    });
+  });
+
 }
