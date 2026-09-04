@@ -10,6 +10,7 @@ import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
 import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
+import 'package:ai_bit/src/ui/widgets/feed_preview.dart';
 import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -1066,6 +1067,96 @@ Some blurb about the video.
       expect(
         parseWatchHistoryHtml('<html><body>nothing</body></html>'),
         isEmpty,
+      );
+    });
+  });
+
+
+  group('feedPreviewBlockedReason', () {
+    // The five causes are indistinguishable from outside the class, which is
+    // how "previews do not work" was first reported. Each is pinned so a
+    // future edit cannot make one of them silent again.
+    test('nothing to say when previews are simply off', () {
+      // The switch already shows off; a reason would be noise.
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: false,
+          previewsOnMobile: false,
+          dataSaver: false,
+          audioOnly: false,
+          isMobile: false,
+          somethingPlaying: false,
+        ),
+        isNull,
+      );
+    });
+
+    test('explains that playback wins', () {
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: true,
+          previewsOnMobile: false,
+          dataSaver: false,
+          audioOnly: false,
+          isMobile: false,
+          somethingPlaying: true,
+        ),
+        contains('playing'),
+      );
+    });
+
+    test('explains Data saver', () {
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: true,
+          previewsOnMobile: false,
+          dataSaver: true,
+          audioOnly: false,
+          isMobile: false,
+          somethingPlaying: false,
+        ),
+        contains('Data saver'),
+      );
+    });
+
+    test('explains mobile data, and names the setting that fixes it', () {
+      final reason = feedPreviewBlockedReason(
+        previewsEnabled: true,
+          previewsOnMobile: false,
+          dataSaver: false,
+          audioOnly: false,
+        isMobile: true,
+        somethingPlaying: false,
+      );
+      expect(reason, contains('mobile data'));
+      expect(reason, contains('Previews on mobile data'));
+    });
+
+    test('says nothing when previews will actually run', () {
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: true,
+          previewsOnMobile: false,
+          dataSaver: false,
+          audioOnly: false,
+          isMobile: false,
+          somethingPlaying: false,
+        ),
+        isNull,
+      );
+    });
+
+    test('allows mobile data once it is permitted', () {
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: true,
+          previewsOnMobile: true,
+          dataSaver: false,
+          audioOnly: false,
+          isMobile: true,
+          somethingPlaying: false,
+        ),
+        isNull,
       );
     });
   });

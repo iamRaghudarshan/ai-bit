@@ -5,16 +5,28 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../data/network_service.dart';
 import '../data/settings.dart';
 import '../data/update_service.dart';
 import '../player/playback_controller.dart';
 import 'app_lock_page.dart';
 import 'data_usage_page.dart';
 import 'storage_page.dart';
+import 'widgets/feed_preview.dart';
 import 'widgets/library_transfer.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
+
+  /// NetworkService is injected optionally, like the other later services, so
+  /// Settings still renders without it.
+  static bool _isMobile(BuildContext context) {
+    try {
+      return context.watch<NetworkService>().isMobile;
+    } on ProviderNotFoundException {
+      return false;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,13 +87,29 @@ class SettingsPage extends StatelessWidget {
             ),
               onChanged: (value) => settings.autoPip = value,
             ),
-          SwitchListTile(
-            value: settings.feedPreviews,
-            title: const Text('Preview videos in the feed'),
-            subtitle: const Text(
-              'Play a silent preview of the video you stop on. Wi-Fi only.',
-            ),
-            onChanged: (value) => settings.feedPreviews = value,
+          Builder(
+            builder: (context) {
+              // Says out loud when previews are switched on but something else
+              // is stopping them. Silently doing nothing is how this feature
+              // was first reported as broken.
+              final blocked = feedPreviewBlockedReason(
+                previewsEnabled: settings.feedPreviews,
+                previewsOnMobile: settings.feedPreviewsOnMobile,
+                dataSaver: settings.dataSaver,
+                audioOnly: settings.audioOnly,
+                isMobile: _isMobile(context),
+                somethingPlaying: false,
+              );
+              return SwitchListTile(
+                value: settings.feedPreviews,
+                title: const Text('Preview videos in the feed'),
+                subtitle: Text(
+                  blocked ??
+                      'Play a silent preview of the video you stop on.',
+                ),
+                onChanged: (value) => settings.feedPreviews = value,
+              );
+            },
           ),
           if (settings.feedPreviews)
             SwitchListTile(

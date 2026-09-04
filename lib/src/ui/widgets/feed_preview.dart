@@ -29,6 +29,36 @@ import '../../player/playback_controller.dart';
 ///  * It refuses to run at all while the main player has something going, and
 ///    off Wi-Fi unless explicitly allowed. A feed that silently streams video
 ///    on mobile data is a nasty way to discover where your data went.
+/// Why feed previews will not run right now, or null when they will.
+///
+/// A free function so the Settings screen can say the same thing the
+/// coordinator decided, without owning a coordinator. "Previews do not work"
+/// has five separate causes here and they are indistinguishable from the
+/// outside - which is exactly how this was reported, and why the reason is now
+/// shown rather than kept internal.
+/// Takes plain booleans rather than SettingsService so it is a pure function
+/// the tests can call directly - the same reason the other rules in this app
+/// that are easy to get quietly wrong live as pure helpers.
+String? feedPreviewBlockedReason({
+  required bool previewsEnabled,
+  required bool previewsOnMobile,
+  required bool dataSaver,
+  required bool audioOnly,
+  required bool isMobile,
+  required bool somethingPlaying,
+}) {
+  // Nothing to say when the switch is simply off: it already shows off, and a
+  // reason underneath would be noise.
+  if (!previewsEnabled) return null;
+  if (somethingPlaying) return 'Paused while a video is playing.';
+  if (dataSaver) return 'Off because Data saver is on.';
+  if (audioOnly) return 'Off because Audio only is on.';
+  if (isMobile && !previewsOnMobile) {
+    return 'Off on mobile data. Turn on "Previews on mobile data" below.';
+  }
+  return null;
+}
+
 class FeedPreviewCoordinator extends ChangeNotifier {
   FeedPreviewCoordinator({
     required YtRepository repository,
@@ -62,25 +92,19 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   Timer? _stopTimer;
 
   /// Why previews are not running, or null when they are allowed.
-  ///
-  /// Exposed rather than kept inside a bool because "previews do not work" has
-  /// five different causes here and no way to tell them apart from the outside
-  /// - which is exactly how this was first reported.
-  String? get blockedReason {
-    if (kIsWeb) return 'not supported in the browser preview';
-    if (!_config.feedPreviews) return 'turned off in Settings';
-    if (_playback.current != null && _playback.isPlaying) {
-      return 'something is playing';
-    }
-    if (_config.dataSaver) return 'Data saver is on';
-    if (_config.audioOnly) return 'Audio only is on';
-    if ((_network?.isMobile ?? false) && !_config.feedPreviewsOnMobile) {
-      return 'on mobile data (allow it in Settings)';
-    }
-    return null;
-  }
+  String? get blockedReason => feedPreviewBlockedReason(
+        previewsEnabled: _config.feedPreviews,
+        previewsOnMobile: _config.feedPreviewsOnMobile,
+        dataSaver: _config.dataSaver,
+        audioOnly: _config.audioOnly,
+        isMobile: _network?.isMobile ?? false,
+        somethingPlaying: _playback.current != null && _playback.isPlaying,
+      );
 
-  bool get _allowed => blockedReason == null;
+  // The switch being off is not a "reason" the user needs telling, but it does
+  // mean no previews - so it is checked separately from blockedReason.
+  bool get _allowed =>
+      !kIsWeb && _config.feedPreviews && blockedReason == null;
 
   /// Called as cards scroll in and out. [fraction] is how much of the card is
   /// on screen; the most-visible card wins.

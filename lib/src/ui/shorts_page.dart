@@ -111,11 +111,15 @@ class ShortsPageState extends State<ShortsPage> {
 
   void _playCurrent() {
     _settle?.cancel();
-    _settle = Timer(const Duration(milliseconds: 180), () {
+    // Warmed BEFORE the settle, not after. The resolve is the slow part of a
+    // swipe, so starting it while the page is still animating buys most of a
+    // second; waiting until playback begins meant every swipe paid for it in
+    // full.
+    _prefetchAhead();
+    _settle = Timer(const Duration(milliseconds: 120), () {
       if (_shorts.isEmpty || !mounted) return;
       // Shorts loop, so the queue is left empty and repeat handles the rest.
       context.read<PlaybackController>().play(_shorts[_index]);
-      _prefetchAhead();
     });
   }
 
@@ -124,10 +128,16 @@ class ShortsPageState extends State<ShortsPage> {
   /// YouTube preloads ahead.
   void _prefetchAhead() {
     final repo = context.read<YtRepository>();
-    for (var ahead = 1; ahead <= 2; ahead++) {
+    // Three ahead rather than two: a fast swiper outruns two, and a resolve
+    // that has not finished is exactly the pause being complained about.
+    for (var ahead = 1; ahead <= 3; ahead++) {
       final next = _index + ahead;
       if (next < _shorts.length) repo.prefetch(_shorts[next].id);
     }
+    // And one behind, because swiping back up is common and was always a cold
+    // resolve - the cache entry for the previous short may have expired.
+    final previous = _index - 1;
+    if (previous >= 0) repo.prefetch(_shorts[previous].id);
   }
 
   @override
@@ -162,6 +172,10 @@ class ShortsPageState extends State<ShortsPage> {
       body: PageView.builder(
         controller: _pages,
         scrollDirection: Axis.vertical,
+        // Builds the adjacent pages instead of only the visible one, so the
+        // next short's thumbnail is already decoded when the swipe lands
+        // rather than appearing as a black frame first.
+        allowImplicitScrolling: true,
         itemCount: _shorts.length,
         onPageChanged: (i) {
           setState(() => _index = i);
