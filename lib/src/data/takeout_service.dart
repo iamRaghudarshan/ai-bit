@@ -110,10 +110,11 @@ class TakeoutService {
       }
 
       // Merge into a playlist of the same name rather than creating a second
-      // one. This is not hypothetical tidiness: the app seeds a playlist
-      // literally called "Watch later", and Takeout exports
-      // "Watch later-videos.csv", so a plain create would leave every user
-      // with two playlists of that name and their videos split across them.
+      // one. Not hypothetical tidiness: the app seeds a playlist literally
+      // called "Watch later" and Takeout exports "Watch later-videos.csv", so
+      // a plain create left two playlists of that name with the videos split
+      // across them. Found by running tool/check_takeout.dart over a real
+      // export, not by reasoning about it.
       final existing = await _db.playlists();
       int? matchId;
       for (final playlist in existing) {
