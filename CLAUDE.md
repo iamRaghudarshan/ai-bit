@@ -145,6 +145,7 @@ D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
 D:/flutter/bin/dart.bat run tool/check_takeout.dart <playlists dir> # does the Takeout parser match a real export
+D:/flutter/bin/dart.bat run tool/takeout_to_backup.dart <takeout dir> # Takeout -> one importable backup file
 ```
 
 If `check_streams.dart` fails, the fix is usually
@@ -333,6 +334,14 @@ the app seeds a playlist called exactly "Watch later" and Takeout exports
 identically named playlists. That was found by running
 `tool/check_takeout.dart` over a real export, which is also the only way these
 layouts have ever been confirmed rather than guessed.
+
+**The easiest route is `tool/takeout_to_backup.dart`**, which converts a whole
+export into ONE file in the app's own backup format, doing the playlist video
+lookups on a desktop instead of on the phone. The user then moves one file and
+uses Settings → Import & export → Import library. It sets `reserved: true` on a
+playlist named "Watch later", which is what makes restore merge it into the
+seeded one rather than creating a duplicate. The in-app Takeout importer still
+exists for importing the raw export directly.
 
 **Subscriptions and history need no network at all**, unlike playlists:
 `subscriptions.csv` already carries the channel id and title, and

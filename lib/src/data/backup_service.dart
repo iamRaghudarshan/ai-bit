@@ -102,10 +102,22 @@ class BackupService {
     for (final h in (raw['history'] as List? ?? const [])) {
       if (h is! Map) continue;
       final video = _videoFromMap(h);
-      await _db.recordWatch(
-        video,
-        position: Duration(milliseconds: (h['position_ms'] as int?) ?? 0),
-      );
+      final stamp = h['watched_at'] as int?;
+      if (stamp != null) {
+        // The backup carries the time each video was ACTUALLY watched, and
+        // recordWatch stamps now - restoring through it collapsed a whole
+        // history onto today and destroyed the ordering the history screen
+        // and the feed both read.
+        await _db.importWatch(
+          video,
+          DateTime.fromMillisecondsSinceEpoch(stamp),
+        );
+      } else {
+        await _db.recordWatch(
+          video,
+          position: Duration(milliseconds: (h['position_ms'] as int?) ?? 0),
+        );
+      }
       watched++;
     }
 
