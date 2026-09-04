@@ -333,20 +333,87 @@ class _SaveToPlaylistSheetState extends State<_SaveToPlaylistSheet> {
 
 typedef _SaveSheetData = ({List<LocalPlaylist> playlists, Set<int> containing});
 
-Future<String?> showNewPlaylistDialog(BuildContext context, {String? initial}) {
+Future<String?> showNewPlaylistDialog(
+  BuildContext context, {
+  String? initial,
+}) async {
   final controller = TextEditingController(text: initial);
-  return showDialog<String>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: Text(initial == null ? 'New playlist' : 'Rename playlist'),
-      content: TextField(
+  try {
+    return await showDialog<String>(
+      context: context,
+      builder: (context) => _NewPlaylistDialog(
         controller: controller,
+        isRename: initial != null,
+      ),
+    );
+  } finally {
+    // Disposed in a finally: the dialog can also be dismissed by the back
+    // button or a barrier tap, and every one of those paths leaked a
+    // controller before.
+    controller.dispose();
+  }
+}
+
+/// The name prompt, as a stateful widget so Save can be DISABLED while the
+/// name is empty.
+///
+/// It used to be an enabled button whose onPressed silently did nothing on an
+/// empty name - a control that looks live and ignores you, which is the same
+/// complaint that was made about feed previews.
+class _NewPlaylistDialog extends StatefulWidget {
+  const _NewPlaylistDialog({required this.controller, required this.isRename});
+
+  final TextEditingController controller;
+  final bool isRename;
+
+  @override
+  State<_NewPlaylistDialog> createState() => _NewPlaylistDialogState();
+}
+
+class _NewPlaylistDialogState extends State<_NewPlaylistDialog> {
+  late bool _valid = widget.controller.text.trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_check);
+  }
+
+  @override
+  void dispose() {
+    // The listener only, never the controller: it belongs to the caller, which
+    // outlives this widget and disposes it itself.
+    widget.controller.removeListener(_check);
+    super.dispose();
+  }
+
+  void _check() {
+    final valid = widget.controller.text.trim().isNotEmpty;
+    if (valid != _valid) setState(() => _valid = valid);
+  }
+
+  void _save() {
+    final value = widget.controller.text.trim();
+    if (value.isEmpty) return;
+    Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.isRename ? 'Rename playlist' : 'New playlist'),
+      content: TextField(
+        controller: widget.controller,
         autofocus: true,
         textCapitalization: TextCapitalization.sentences,
-        decoration: const InputDecoration(hintText: 'Playlist name'),
-        onSubmitted: (value) {
-          if (value.trim().isNotEmpty) Navigator.pop(context, value.trim());
-        },
+        // A name long enough to break the row is not worth allowing; YouTube
+        // caps its own at 150.
+        maxLength: 150,
+        decoration: const InputDecoration(
+          hintText: 'Playlist name',
+          counterText: '',
+        ),
+        onSubmitted: (_) => _save(),
       ),
       actions: [
         TextButton(
@@ -354,15 +421,12 @@ Future<String?> showNewPlaylistDialog(BuildContext context, {String? initial}) {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () {
-            final value = controller.text.trim();
-            if (value.isNotEmpty) Navigator.pop(context, value);
-          },
+          onPressed: _valid ? _save : null,
           child: const Text('Save'),
         ),
       ],
-    ),
-  );
+    );
+  }
 }
 
 /// Download picker: what is available, and how big it is.
