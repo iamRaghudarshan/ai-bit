@@ -656,6 +656,19 @@ from `_onTabSelected` via a `GlobalKey` — `SearchPage.focusInput()` and
 The watch screen is a non-opaque route that slides up, so the feed stays visible
 while the player is dragged down to minimise into the mini player.
 
+### Settings that override each other say so
+
+`lib/src/core/settings_rules.dart` holds one pure function per case where a
+setting quietly makes another inert — Data saver beating the quality picker,
+Audio only beating anything with a picture, a battery saver stopping feed
+previews, a PIN-less app lock locking nothing, a Kids time limit with no Kids
+PIN behind it. The screen used to show all of these as equally live switches,
+and flipping one to watch nothing happen is indistinguishable from a bug: that
+is exactly how feed previews were reported broken when the real answer was
+"you are on mobile data". Each rule returns null or a sentence to show under
+the row, and each has a test, because this is the kind of logic that rots
+silently the next time a setting is added beside it.
+
 ## Working on this codebase
 
 Things learned the hard way here, most of them more than once:

@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
+import '../../core/settings_rules.dart';
+import '../../data/battery_service.dart';
 import '../../data/models.dart';
 import '../../data/network_service.dart';
 import '../../data/settings.dart';
@@ -29,42 +31,13 @@ import '../../player/playback_controller.dart';
 ///  * It refuses to run at all while the main player has something going, and
 ///    off Wi-Fi unless explicitly allowed. A feed that silently streams video
 ///    on mobile data is a nasty way to discover where your data went.
-/// Why feed previews will not run right now, or null when they will.
-///
-/// A free function so the Settings screen can say the same thing the
-/// coordinator decided, without owning a coordinator. "Previews do not work"
-/// has five separate causes here and they are indistinguishable from the
-/// outside - which is exactly how this was reported, and why the reason is now
-/// shown rather than kept internal.
-/// Takes plain booleans rather than SettingsService so it is a pure function
-/// the tests can call directly - the same reason the other rules in this app
-/// that are easy to get quietly wrong live as pure helpers.
-String? feedPreviewBlockedReason({
-  required bool previewsEnabled,
-  required bool previewsOnMobile,
-  required bool dataSaver,
-  required bool audioOnly,
-  required bool isMobile,
-  required bool somethingPlaying,
-}) {
-  // Nothing to say when the switch is simply off: it already shows off, and a
-  // reason underneath would be noise.
-  if (!previewsEnabled) return null;
-  if (somethingPlaying) return 'Paused while a video is playing.';
-  if (dataSaver) return 'Off because Data saver is on.';
-  if (audioOnly) return 'Off because Audio only is on.';
-  if (isMobile && !previewsOnMobile) {
-    return 'Off on mobile data. Turn on "Previews on mobile data" below.';
-  }
-  return null;
-}
-
 class FeedPreviewCoordinator extends ChangeNotifier {
   FeedPreviewCoordinator({
     required YtRepository repository,
     required SettingsService settings,
     required this._playback,
     this._network,
+    this._battery,
   })  : _repo = repository,
         _config = settings;
 
@@ -72,6 +45,7 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   final SettingsService _config;
   final PlaybackController _playback;
   final NetworkService? _network;
+  final BatteryService? _battery;
 
   /// How long a card must stay put before it is worth resolving a stream for.
   static const _dwell = Duration(milliseconds: 900);
@@ -99,6 +73,8 @@ class FeedPreviewCoordinator extends ChangeNotifier {
         audioOnly: _config.audioOnly,
         isMobile: _network?.isMobile ?? false,
         somethingPlaying: _playback.current != null && _playback.isPlaying,
+        batterySaver: _config.batterySaver,
+        batteryLow: _battery?.isLow ?? false,
       );
 
   // The switch being off is not a "reason" the user needs telling, but it does

@@ -11,6 +11,7 @@ import 'app_lock_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'watch_page.dart';
+import '../data/battery_service.dart';
 import '../data/network_service.dart';
 import '../player/playback_controller.dart';
 import 'widgets/feed_preview.dart';
@@ -76,6 +77,7 @@ class HomePageState extends State<HomePage>
       settings: context.read<SettingsService>(),
       playback: context.read<PlaybackController>(),
       network: _networkOrNull(),
+      battery: _batteryOrNull(),
     );
   }
 
@@ -84,6 +86,14 @@ class HomePageState extends State<HomePage>
   NetworkService? _networkOrNull() {
     try {
       return context.read<NetworkService>();
+    } on ProviderNotFoundException {
+      return null;
+    }
+  }
+
+  BatteryService? _batteryOrNull() {
+    try {
+      return context.read<BatteryService>();
     } on ProviderNotFoundException {
       return null;
     }

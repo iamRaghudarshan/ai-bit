@@ -5,6 +5,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/settings_rules.dart';
+import '../data/battery_service.dart';
 import '../data/network_service.dart';
 import '../data/settings.dart';
 import '../data/update_service.dart';
@@ -12,7 +14,7 @@ import '../player/playback_controller.dart';
 import 'app_lock_page.dart';
 import 'data_usage_page.dart';
 import 'storage_page.dart';
-import 'widgets/feed_preview.dart';
+
 import 'widgets/library_transfer.dart';
 
 class SettingsPage extends StatelessWidget {
@@ -23,6 +25,14 @@ class SettingsPage extends StatelessWidget {
   static bool _isMobile(BuildContext context) {
     try {
       return context.watch<NetworkService>().isMobile;
+    } on ProviderNotFoundException {
+      return false;
+    }
+  }
+
+  static bool _batteryLow(BuildContext context) {
+    try {
+      return context.watch<BatteryService>().isLow;
     } on ProviderNotFoundException {
       return false;
     }
@@ -99,6 +109,8 @@ class SettingsPage extends StatelessWidget {
                 audioOnly: settings.audioOnly,
                 isMobile: _isMobile(context),
                 somethingPlaying: false,
+                batterySaver: settings.batterySaver,
+                batteryLow: _batteryLow(context),
               );
               return SwitchListTile(
                 value: settings.feedPreviews,
@@ -118,18 +130,22 @@ class SettingsPage extends StatelessWidget {
               subtitle: const Text('Allow previews when off Wi-Fi too.'),
               onChanged: (value) => settings.feedPreviewsOnMobile = value,
             ),
-          ListTile(
-            enabled: !settings.dataSaver,
-            title: const Text('Default quality'),
-            subtitle: Text(
-              settings.dataSaver
-                  ? 'Overridden by Data saver (lowest)'
-                  : settings.preferredQuality,
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: settings.dataSaver
-                ? null
-                : () => _pickQuality(context, settings),
+          Builder(
+            builder: (context) {
+              final inert = qualityInertReason(
+                dataSaver: settings.dataSaver,
+                audioOnly: settings.audioOnly,
+              );
+              return ListTile(
+                enabled: inert == null,
+                title: const Text('Default quality'),
+                subtitle: Text(inert ?? settings.preferredQuality),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: inert == null
+                    ? () => _pickQuality(context, settings)
+                    : null,
+              );
+            },
           ),
           SwitchListTile(
             value: settings.dataSaver,
@@ -160,21 +176,31 @@ class SettingsPage extends StatelessWidget {
           ),
           const Divider(),
           const _SectionLabel('Data & battery'),
-          SwitchListTile(
-            value: settings.mobileDataSaver,
-            title: const Text('Data saver on mobile data'),
-            subtitle: const Text(
-              'Lowest quality only when off Wi-Fi.',
-            ),
-            onChanged: (value) => settings.mobileDataSaver = value,
+          Builder(
+            builder: (context) {
+              final inert =
+                  mobileDataSaverInertReason(dataSaver: settings.dataSaver);
+              return SwitchListTile(
+                value: settings.mobileDataSaver,
+                title: const Text('Data saver on mobile data'),
+                subtitle: Text(inert ?? 'Lowest quality only when off Wi-Fi.'),
+                onChanged: (value) => settings.mobileDataSaver = value,
+              );
+            },
           ),
-          SwitchListTile(
-            value: settings.mobileAudioOnly,
-            title: const Text('Audio only on mobile data'),
-            subtitle: const Text(
-              'Drop the picture when off Wi-Fi. Uses the least data.',
-            ),
-            onChanged: (value) => settings.mobileAudioOnly = value,
+          Builder(
+            builder: (context) {
+              final inert =
+                  mobileAudioOnlyInertReason(audioOnly: settings.audioOnly);
+              return SwitchListTile(
+                value: settings.mobileAudioOnly,
+                title: const Text('Audio only on mobile data'),
+                subtitle: Text(
+                  inert ?? 'Drop the picture when off Wi-Fi. Uses the least data.',
+                ),
+                onChanged: (value) => settings.mobileAudioOnly = value,
+              );
+            },
           ),
           SwitchListTile(
             value: settings.batterySaver,
@@ -209,10 +235,11 @@ class SettingsPage extends StatelessWidget {
             value: settings.appLockEnabled,
             title: const Text('App lock'),
             subtitle: Text(
-              settings.appLockPinHash.isEmpty
-                  ? 'Ask for a PIN before the app opens. No PIN set yet — '
-                        'turning this on will ask you to choose one.'
-                  : 'Ask for a PIN before the app opens.',
+              appLockInertReason(
+                    enabled: settings.appLockEnabled,
+                    hasPin: settings.appLockPinHash.isNotEmpty,
+                  ) ??
+                  'Ask for a PIN before the app opens.',
             ),
             isThreeLine: settings.appLockPinHash.isEmpty,
             onChanged: (value) => _toggleAppLock(context, settings, value),
@@ -231,8 +258,11 @@ class SettingsPage extends StatelessWidget {
           SwitchListTile(
             value: settings.appLockBiometric,
             title: const Text('Unlock with biometrics'),
-            subtitle: const Text(
-              'Use your fingerprint or face instead of the PIN.',
+            subtitle: Text(
+              biometricUnavailableReason(
+                    hasPin: settings.appLockPinHash.isNotEmpty,
+                  ) ??
+                  'Use your fingerprint or face instead of the PIN.',
             ),
             // Off limits until there is a PIN behind it: biometrics can be
             // declined or unavailable on the device, and the PIN is the only
@@ -277,7 +307,13 @@ class SettingsPage extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.hourglass_bottom_outlined),
             title: const Text('Daily time limit'),
-            subtitle: Text(_limitLabel(settings.kidsDailyLimitMinutes)),
+            subtitle: Text(
+              kidsLimitWeakReason(
+                    limitMinutes: settings.kidsDailyLimitMinutes,
+                    hasKidsPin: settings.kidsPinHash.isNotEmpty,
+                  ) ??
+                  _limitLabel(settings.kidsDailyLimitMinutes),
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _pickKidsLimit(context, settings),
           ),

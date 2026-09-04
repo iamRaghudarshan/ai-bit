@@ -10,7 +10,7 @@ import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
 import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
-import 'package:ai_bit/src/ui/widgets/feed_preview.dart';
+import 'package:ai_bit/src/core/settings_rules.dart';
 import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -1158,6 +1158,94 @@ Some blurb about the video.
         ),
         isNull,
       );
+    });
+  });
+
+
+  group('settings rules', () {
+    // Each of these is a setting that silently overrides another. They are
+    // pinned individually because the failure mode is not a crash - it is a
+    // switch that does nothing, which reads as a bug and was reported as one.
+    test('Data saver stops previews, and says so', () {
+      expect(
+        feedPreviewBlockedReason(
+          previewsEnabled: true,
+          previewsOnMobile: true,
+          dataSaver: true,
+          audioOnly: false,
+          isMobile: false,
+          somethingPlaying: false,
+        ),
+        contains('Data saver'),
+      );
+    });
+
+    test('a low battery stops previews only when battery saver is on', () {
+      String? reason({required bool saver, required bool low}) =>
+          feedPreviewBlockedReason(
+            previewsEnabled: true,
+            previewsOnMobile: true,
+            dataSaver: false,
+            audioOnly: false,
+            isMobile: false,
+            somethingPlaying: false,
+            batterySaver: saver,
+            batteryLow: low,
+          );
+      expect(reason(saver: true, low: true), contains('battery'));
+      // A low battery alone is not a reason: the user did not ask for it.
+      expect(reason(saver: false, low: true), isNull);
+      // Nor is the setting alone, while the battery is fine.
+      expect(reason(saver: true, low: false), isNull);
+    });
+
+    test('the mobile-only savers go quiet once the global one is on', () {
+      expect(mobileDataSaverInertReason(dataSaver: true), isNotNull);
+      expect(mobileDataSaverInertReason(dataSaver: false), isNull);
+      expect(mobileAudioOnlyInertReason(audioOnly: true), isNotNull);
+      expect(mobileAudioOnlyInertReason(audioOnly: false), isNull);
+    });
+
+    test('the quality picker names whichever setting took it over', () {
+      // Telling someone about Data saver when they turned on Audio only sends
+      // them to the wrong switch.
+      expect(
+        qualityInertReason(dataSaver: false, audioOnly: true),
+        contains('Audio only'),
+      );
+      expect(
+        qualityInertReason(dataSaver: true, audioOnly: false),
+        contains('Data saver'),
+      );
+      // Audio only wins when both are on: it is the one with no picture at all.
+      expect(
+        qualityInertReason(dataSaver: true, audioOnly: true),
+        contains('Audio only'),
+      );
+      expect(qualityInertReason(dataSaver: false, audioOnly: false), isNull);
+    });
+
+    test('biometrics need a PIN to fall back to', () {
+      expect(biometricUnavailableReason(hasPin: false), isNotNull);
+      expect(biometricUnavailableReason(hasPin: true), isNull);
+    });
+
+    test('a Kids limit without a PIN is worth warning about', () {
+      // The limit works; what does not work is stopping the child leaving
+      // Kids mode when it runs out, which is the whole point of setting one.
+      expect(
+        kidsLimitWeakReason(limitMinutes: 30, hasKidsPin: false),
+        isNotNull,
+      );
+      expect(kidsLimitWeakReason(limitMinutes: 30, hasKidsPin: true), isNull);
+      // No limit set, nothing to warn about.
+      expect(kidsLimitWeakReason(limitMinutes: 0, hasKidsPin: false), isNull);
+    });
+
+    test('app lock enabled without a PIN locks nothing', () {
+      expect(appLockInertReason(enabled: true, hasPin: false), isNotNull);
+      expect(appLockInertReason(enabled: true, hasPin: true), isNull);
+      expect(appLockInertReason(enabled: false, hasPin: false), isNull);
     });
   });
 
