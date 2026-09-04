@@ -61,17 +61,26 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   Timer? _dwellTimer;
   Timer? _stopTimer;
 
-  bool get _allowed {
-    if (kIsWeb) return false;
-    if (!_config.feedPreviews) return false;
-    // Never over the top of real playback: the user may be listening with the
-    // screen off, and a preview would take the audio session.
-    if (_playback.current != null && _playback.isPlaying) return false;
-    if (_config.dataSaver || _config.audioOnly) return false;
-    final mobile = _network?.isMobile ?? false;
-    if (mobile && !_config.feedPreviewsOnMobile) return false;
-    return true;
+  /// Why previews are not running, or null when they are allowed.
+  ///
+  /// Exposed rather than kept inside a bool because "previews do not work" has
+  /// five different causes here and no way to tell them apart from the outside
+  /// - which is exactly how this was first reported.
+  String? get blockedReason {
+    if (kIsWeb) return 'not supported in the browser preview';
+    if (!_config.feedPreviews) return 'turned off in Settings';
+    if (_playback.current != null && _playback.isPlaying) {
+      return 'something is playing';
+    }
+    if (_config.dataSaver) return 'Data saver is on';
+    if (_config.audioOnly) return 'Audio only is on';
+    if ((_network?.isMobile ?? false) && !_config.feedPreviewsOnMobile) {
+      return 'on mobile data (allow it in Settings)';
+    }
+    return null;
   }
+
+  bool get _allowed => blockedReason == null;
 
   /// Called as cards scroll in and out. [fraction] is how much of the card is
   /// on screen; the most-visible card wins.

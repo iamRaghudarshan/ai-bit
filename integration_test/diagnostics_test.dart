@@ -20,7 +20,9 @@
 
 import 'package:ai_bit/main.dart' as app;
 import 'package:ai_bit/src/data/yt_repository.dart';
+import 'package:ai_bit/src/data/settings.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
+import 'package:ai_bit/src/ui/widgets/feed_preview.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -141,6 +143,31 @@ void main() {
         'res=${stats['Resolution'] ?? '?'} '
         'playing=${playback.isPlaying}',
       );
+    }
+
+    // ---------------------------------------------------------- feed preview
+    // "Previews do not work" has five possible causes and no way to tell them
+    // apart from the outside, so ask the coordinator directly and then make it
+    // actually try one.
+    try {
+      final previews = FeedPreviewCoordinator(
+        repository: repo,
+        settings: context.read<SettingsService>(),
+        playback: playback,
+      );
+      report('preview blockedReason: ${previews.blockedReason ?? 'ALLOWED'}');
+
+      final subject = playback.current;
+      if (subject != null) {
+        previews.onCardVisibility(subject, 1);
+        // Longer than the dwell plus a resolve.
+        await pumpFor(tester, const Duration(seconds: 12));
+        report('preview activeId: ${previews.activeId ?? 'NONE'}');
+        report('preview player: ${previews.player != null}');
+      }
+      previews.dispose();
+    } catch (e) {
+      report('preview check THREW: $e');
     }
 
     // -------------------------------------------------------------- the PiP
