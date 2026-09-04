@@ -168,17 +168,13 @@ class LibraryPageState extends State<LibraryPage> {
 
     // Said plainly, including what did not come through: an import that
     // silently drops deleted or private videos looks like it worked.
-    final message = result.isEmpty
-        ? result.skippedFiles > 0
-              ? 'Those files held no playlist videos. Pick the '
-                    '"<name>-videos.csv" files from the playlists folder.'
-              : 'Nothing was imported.'
-        : 'Imported ${result.imported} '
-              '${result.imported == 1 ? 'video' : 'videos'} into '
-              '${result.playlists} '
-              '${result.playlists == 1 ? 'playlist' : 'playlists'}'
-              '${result.failed > 0 ? ' — ${result.failed} unavailable' : ''}.';
-    messenger.showSnackBar(SnackBar(content: Text(message)));
+    final message = result.isEmpty && result.skippedFiles > 0
+        ? 'Those files held nothing to import. Pick the "-videos.csv" '
+              'playlist files, subscriptions.csv, or watch-history.html.'
+        : result.summary;
+    messenger.showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 6)),
+    );
   }
 
   @override
@@ -194,7 +190,7 @@ class LibraryPageState extends State<LibraryPage> {
           ),
           IconButton(
             icon: const Icon(Icons.drive_folder_upload_outlined),
-            tooltip: 'Import playlists from Google Takeout',
+            tooltip: 'Import from Google Takeout',
             onPressed: _importFromTakeout,
           ),
         ],

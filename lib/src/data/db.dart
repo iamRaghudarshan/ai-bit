@@ -392,6 +392,30 @@ class AppDatabase {
     await _trimHistory();
   }
 
+  /// Inserts a watched row with the time it was ACTUALLY watched.
+  ///
+  /// [recordWatch] stamps `DateTime.now()`, which is right when the user just
+  /// watched something and wrong for an import: a Takeout export carries the
+  /// real timestamps, and collapsing years of history onto today would destroy
+  /// the ordering the history screen and the feed both read.
+  ///
+  /// Does not trim - an import calls [trimHistory] once at the end rather than
+  /// after every row.
+  Future<void> importWatch(VideoBrief video, DateTime watchedAt) => _db.insert(
+    'history',
+    {
+      ...video.toMap(),
+      'position_ms': 0,
+      'watched_at': watchedAt.millisecondsSinceEpoch,
+    },
+    // Ignore, not replace: anything already in history was watched in the app
+    // and knows its own resume position, which an import must not clobber.
+    conflictAlgorithm: ConflictAlgorithm.ignore,
+  );
+
+  /// Trims history to its cap. Public so a bulk import can call it once.
+  Future<void> trimHistory() => _trimHistory();
+
   /// Cheap position-only write, called every few seconds while playing.
   Future<void> savePosition(String videoId, Duration position) async {
     await _db.update(

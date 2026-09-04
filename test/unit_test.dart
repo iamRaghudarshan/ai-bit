@@ -944,4 +944,130 @@ Some blurb about the video.
     });
   });
 
+
+  group('parsePlaylistCsv rejects other Takeout files', () {
+    test('does not read subscriptions.csv as a playlist', () {
+      // Found by running the parser over a REAL export, not by reasoning: the
+      // fallback id scan matched channel NAMES, because "CodingPhase" and
+      // "Geekyranjit" are eleven characters of the same alphabet a video id
+      // uses. The header is the only thing that can tell them apart.
+      const csv = 'Channel Id,Channel Url,Channel Title\n'
+          'UC-gY8K7vS7WQzmBBxwrStDQ,http://youtube.com/x,CodingPhase\n'
+          'UC0HLXWlZV6RV0mkDdpUo73w,http://youtube.com/y,Geekyranjit\n';
+      expect(parsePlaylistCsv(csv), isEmpty);
+    });
+
+    test('does not read the playlist index as a playlist', () {
+      const csv = 'Playlist ID,Playlist Title\nPLabcdefghij,Road trip\n';
+      expect(parsePlaylistCsv(csv), isEmpty);
+    });
+  });
+
+  group('splitCsvLine', () {
+    test('keeps a quoted field containing a comma intact', () {
+      expect(
+        splitCsvLine('UC123,http://x,"Banwasi, English Classes"'),
+        ['UC123', 'http://x', 'Banwasi, English Classes'],
+      );
+    });
+
+    test('unescapes a doubled quote', () {
+      expect(splitCsvLine('a,"He said ""hi"""'), ['a', 'He said "hi"']);
+    });
+
+    test('leaves an unquoted line alone', () {
+      expect(splitCsvLine('a,b,c'), ['a', 'b', 'c']);
+    });
+  });
+
+  group('parseSubscriptionsCsv', () {
+    const real = 'Channel Id,Channel Url,Channel Title\n'
+        'UC-gY8K7vS7WQzmBBxwrStDQ,http://www.youtube.com/channel/UC-gY8K7vS7WQzmBBxwrStDQ,Prathap T M\n'
+        'UC0HLXWlZV6RV0mkDdpUo73w,http://www.youtube.com/channel/UC0HLXWlZV6RV0mkDdpUo73w,Master Anand\n';
+
+    test('reads the id and title of each channel', () {
+      final channels = parseSubscriptionsCsv(real);
+      expect(channels.length, 2);
+      expect(channels.first.id, 'UC-gY8K7vS7WQzmBBxwrStDQ');
+      expect(channels.first.title, 'Prathap T M');
+    });
+
+    test('does not mistake the channel URL for the title', () {
+      // The URL contains the id and sits between it and the title.
+      expect(parseSubscriptionsCsv(real).last.title, 'Master Anand');
+    });
+
+    test('drops duplicates and ignores the header', () {
+      const csv = 'Channel Id,Channel Url,Channel Title\n'
+          'UC-gY8K7vS7WQzmBBxwrStDQ,http://x,One\n'
+          'UC-gY8K7vS7WQzmBBxwrStDQ,http://x,One again\n';
+      expect(parseSubscriptionsCsv(csv).length, 1);
+    });
+
+    test('returns nothing for a file with no channel ids', () {
+      expect(parseSubscriptionsCsv('Video ID,When\ndQw4w9WgXcQ,x\n'), isEmpty);
+    });
+  });
+
+  group('parseHistoryTimestamp', () {
+    test('reads the format Takeout actually writes', () {
+      // The space before AM is U+202F, a NARROW no-break space - not a plain
+      // space. A parser that splits on ' ' silently fails on every row.
+      expect(
+        parseHistoryTimestamp('Sep 4, 2026, 11:07:12\u202fAM IST'),
+        DateTime(2026, 9, 4, 11, 7, 12),
+      );
+    });
+
+    test('converts PM correctly', () {
+      expect(
+        parseHistoryTimestamp('Feb 24, 2013, 12:41:28\u202fPM IST'),
+        DateTime(2013, 2, 24, 12, 41, 28),
+      );
+    });
+
+    test('treats 12 AM as midnight', () {
+      expect(
+        parseHistoryTimestamp('Jan 1, 2020, 12:30:00\u202fAM IST'),
+        DateTime(2020, 1, 1, 0, 30, 0),
+      );
+    });
+
+    test('returns null rather than guessing at nonsense', () {
+      expect(parseHistoryTimestamp('sometime last year'), isNull);
+    });
+  });
+
+  group('parseWatchHistoryHtml', () {
+    const entry =
+        'Watched\u00a0<a href="https://www.youtube.com/watch?v=s2lye-G90Pg">'
+        'A &amp; B title</a><br>'
+        '<a href="https://www.youtube.com/channel/UCucUR4lXSo2CRtaTJDddHQg">'
+        'Karnataka Auction Properties</a><br>'
+        'Sep 4, 2026, 11:07:12\u202fAM IST<br>';
+
+    test('reads the video, title, channel and time from a real entry', () {
+      final watches = parseWatchHistoryHtml(entry);
+      expect(watches.length, 1);
+      expect(watches.first.videoId, 's2lye-G90Pg');
+      expect(watches.first.title, 'A & B title');
+      expect(watches.first.channelId, 'UCucUR4lXSo2CRtaTJDddHQg');
+      expect(watches.first.author, 'Karnataka Auction Properties');
+      expect(watches.first.watchedAt, DateTime(2026, 9, 4, 11, 7, 12));
+    });
+
+    test('keeps only the first of a rewatched video', () {
+      // Takeout writes newest first, so the first occurrence is the latest
+      // watch and the rest are older views of the same video.
+      expect(parseWatchHistoryHtml(entry + entry).length, 1);
+    });
+
+    test('returns nothing for html with no entries', () {
+      expect(
+        parseWatchHistoryHtml('<html><body>nothing</body></html>'),
+        isEmpty,
+      );
+    });
+  });
+
 }

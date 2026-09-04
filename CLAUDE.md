@@ -311,7 +311,8 @@ rather than a bug in the client — reproduce on Android before debugging it.
 That is also why the cast button does not offer the DLNA sheet on iOS at all:
 AirPlay through the system route picker is the answer there.
 
-**Playlists come in from a Google account through Takeout, not a sign-in**
+**Playlists, subscriptions and watch history come in from a Google account
+through Takeout, not a sign-in**
 (`takeout_import.dart` + `takeout_service.dart`, Library top bar). Takeout is
 the one route that reaches *private* playlists without authenticating, which
 is why it was chosen over Google Sign-In - the objection to signing in was
@@ -330,8 +331,26 @@ Videos that are deleted, private or region-locked are counted and reported
 the app seeds a playlist called exactly "Watch later" and Takeout exports
 `Watch later-videos.csv`, so a plain create would split those videos across two
 identically named playlists. That was found by running
-`tool/check_takeout.dart` over a real export, which is also the only way the
-CSV layout has ever been confirmed rather than guessed.
+`tool/check_takeout.dart` over a real export, which is also the only way these
+layouts have ever been confirmed rather than guessed.
+
+**Subscriptions and history need no network at all**, unlike playlists:
+`subscriptions.csv` already carries the channel id and title, and
+`watch-history.html` carries the video id, title, channel and timestamp - so
+those two imports are instant while a playlist import of the same size takes
+minutes. Three traps, all found only by running the parser over a real export:
+the timestamp's space before AM/PM is U+202F, a NARROW no-break space, so
+splitting on `' '` silently fails every row; channel titles carry commas, so a
+naive `split(',')` tears them apart (hence `splitCsvLine`); and
+`subscriptions.csv` was read as a *playlist* of four videos, because channel
+names like "CodingPhase" and "Geekyranjit" are exactly eleven characters of the
+same alphabet a video id uses — only the header can tell them apart, which is
+what `_foreignHeaders` is for. History import reads a bounded 6 MB prefix and
+keeps 500 rows: a real export was 28 MB and 28,000 entries, it is newest-first,
+and the history table caps itself anyway, so reading it all would spend a
+phone's memory producing rows that are trimmed away. It writes through
+`AppDatabase.importWatch`, which takes the REAL watched time — `recordWatch`
+stamps `now`, which would collapse years of history onto today.
 
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
 account behind a ToS-violating client - see Takeout above for how playlists
