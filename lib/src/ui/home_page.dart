@@ -11,6 +11,9 @@ import 'app_lock_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'watch_page.dart';
+import '../data/network_service.dart';
+import '../player/playback_controller.dart';
+import 'widgets/feed_preview.dart';
 import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
@@ -51,6 +54,11 @@ class HomePageState extends State<HomePage>
   /// plain tab switch stays instant.
   String _signals = '';
 
+  /// Owns the muted feed preview. Built here rather than provided globally
+  /// because it must die with this screen: a preview player outliving the feed
+  /// is a decoder nobody can see and nobody can stop.
+  FeedPreviewCoordinator? _previews;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -58,6 +66,33 @@ class HomePageState extends State<HomePage>
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _previews ??= FeedPreviewCoordinator(
+      repository: context.read<YtRepository>(),
+      settings: context.read<SettingsService>(),
+      playback: context.read<PlaybackController>(),
+      network: _networkOrNull(),
+    );
+  }
+
+  /// NetworkService is optional the way the other injected services are, so a
+  /// harness that provides only the essentials still renders Home.
+  NetworkService? _networkOrNull() {
+    try {
+      return context.read<NetworkService>();
+    } on ProviderNotFoundException {
+      return null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _previews?.dispose();
+    super.dispose();
   }
 
   Future<void> _load({bool reset = false}) async {
@@ -383,13 +418,30 @@ class HomePageState extends State<HomePage>
                     if (mounted) setState(() => _continue = resumeable);
                   },
                 );
-            VideoCard card(VideoBrief video, {bool inGrid = false}) =>
-                VideoCard(
-                  video: video,
-                  inGrid: inGrid,
-                  onTap: () => WatchPage.open(context, video),
-                  onMenu: () => showVideoMenu(context, video),
-                );
+            final previews = _previews;
+            Widget card(VideoBrief video, {bool inGrid = false}) {
+              final tile = VideoCard(
+                video: video,
+                inGrid: inGrid,
+                onTap: () {
+                  // Stopped before opening: the watch page is about to take
+                  // the audio session, and two players negotiating it at once
+                  // is how the notification ends up showing the wrong video.
+                  previews?.stop();
+                  WatchPage.open(context, video);
+                },
+                onMenu: () => showVideoMenu(context, video),
+                previewOverlay: previews == null
+                    ? null
+                    : FeedPreviewSurface(video: video, coordinator: previews),
+              );
+              if (previews == null) return tile;
+              return FeedPreviewSlot(
+                video: video,
+                coordinator: previews,
+                child: tile,
+              );
+            }
 
             // Phones keep the single-column list exactly as before; only wider
             // screens (tablets, foldables, landscape) fan the feed out into a

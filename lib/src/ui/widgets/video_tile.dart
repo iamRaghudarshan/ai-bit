@@ -94,12 +94,20 @@ class VideoCard extends StatelessWidget {
     this.onMenu,
     this.progress = 0,
     this.inGrid = false,
+    this.previewOverlay,
   });
 
   final VideoBrief video;
   final VoidCallback onTap;
   final VoidCallback? onMenu;
   final double progress;
+
+  /// Drawn over the thumbnail while this card is previewing, or null.
+  ///
+  /// Passed in rather than built here so the widget that owns the preview
+  /// player also owns its lifetime; a card is rebuilt constantly while
+  /// scrolling and must not be able to create or destroy a player.
+  final Widget? previewOverlay;
 
   /// True when the card is a cell in the tablet grid rather than a full-width
   /// phone row: the thumbnail gets YouTube's rounded corners (the gutters
@@ -118,7 +126,26 @@ class VideoCard extends StatelessWidget {
           // Edge-to-edge thumbnail on a phone, the way the YouTube home feed
           // shows it; rounded inside the tablet grid, also the way YouTube
           // shows it there.
-          VideoThumb(video: video, progress: progress, radius: inGrid ? 12 : 0),
+          if (previewOverlay == null)
+            VideoThumb(video: video, progress: progress, radius: inGrid ? 12 : 0)
+          else
+            ClipRRect(
+              borderRadius: BorderRadius.circular(inGrid ? 12 : 0),
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    VideoThumb(
+                      video: video,
+                      progress: progress,
+                      radius: inGrid ? 12 : 0,
+                    ),
+                    previewOverlay!,
+                  ],
+                ),
+              ),
+            ),
           Padding(
             padding: inGrid
                 ? const EdgeInsets.fromLTRB(0, 10, 0, 0)

@@ -62,6 +62,9 @@ dependencies:
   # Reading a Google Takeout .zip without asking the user to unzip it first,
   # which is awkward on a phone and impossible on some of them.
   archive: ^4.0.7
+  # Knowing which feed card is actually on screen, for muted previews. Doing
+  # it from scroll offsets alone is unreliable once the feed is a grid.
+  visibility_detector: ^0.4.0+2
   package_info_plus: ^10.2.1
   url_launcher: ^6.3.1
   # Metered-connection and battery awareness: the mobile-data saver has to know

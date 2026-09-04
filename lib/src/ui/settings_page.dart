@@ -75,6 +75,21 @@ class SettingsPage extends StatelessWidget {
             ),
               onChanged: (value) => settings.autoPip = value,
             ),
+          SwitchListTile(
+            value: settings.feedPreviews,
+            title: const Text('Preview videos in the feed'),
+            subtitle: const Text(
+              'Play a silent preview of the video you stop on. Wi-Fi only.',
+            ),
+            onChanged: (value) => settings.feedPreviews = value,
+          ),
+          if (settings.feedPreviews)
+            SwitchListTile(
+              value: settings.feedPreviewsOnMobile,
+              title: const Text('Previews on mobile data'),
+              subtitle: const Text('Allow previews when off Wi-Fi too.'),
+              onChanged: (value) => settings.feedPreviewsOnMobile = value,
+            ),
           ListTile(
             enabled: !settings.dataSaver,
             title: const Text('Default quality'),

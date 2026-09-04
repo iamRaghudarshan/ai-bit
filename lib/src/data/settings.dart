@@ -186,6 +186,26 @@ class SettingsService extends ChangeNotifier {
   bool get batterySaver => _prefs.getBool(_kBatterySaver) ?? false;
   set batterySaver(bool value) => _write(_kBatterySaver, value);
 
+  static const _kFeedPreviews = 'feed_previews';
+
+  /// Play a muted preview of the card you pause on in the feed.
+  ///
+  /// On by default but gated hard at the call site: only when nothing else is
+  /// playing, and only off mobile data unless [feedPreviewsOnMobile] is set.
+  /// Unlike YouTube's, a preview here costs a full stream resolve - roughly a
+  /// second or two - because there are no pre-generated preview clips to fetch.
+  bool get feedPreviews => _prefs.getBool(_kFeedPreviews) ?? true;
+  set feedPreviews(bool value) => _write(_kFeedPreviews, value);
+
+  static const _kFeedPreviewsMobile = 'feed_previews_mobile';
+
+  /// Allow those previews on a metered connection too. Off by default: a feed
+  /// that quietly streams video while you scroll is an unpleasant way to find
+  /// out where your data went.
+  bool get feedPreviewsOnMobile =>
+      _prefs.getBool(_kFeedPreviewsMobile) ?? false;
+  set feedPreviewsOnMobile(bool value) => _write(_kFeedPreviewsMobile, value);
+
   static const _kAutoPip = 'auto_pip';
 
   /// iOS only: let the system move the video into Picture in Picture by itself
