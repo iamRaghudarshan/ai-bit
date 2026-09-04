@@ -46,7 +46,7 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest release is 2.22.0** — Android build 124, iOS build 123 — published to
+**Latest release is 2.23.0** — Android build 127, iOS build 128 — published to
 the download site. Check `git tag --sort=-creatordate` rather than trusting
 this line, which ages.
 
