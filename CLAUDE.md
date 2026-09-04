@@ -144,6 +144,7 @@ D:/flutter/bin/dart.bat run tool/check_streams.dart [videoId]    # is extraction
 D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
+D:/flutter/bin/dart.bat run tool/check_takeout.dart <playlists dir> # does the Takeout parser match a real export
 ```
 
 If `check_streams.dart` fails, the fix is usually
@@ -324,7 +325,13 @@ is the trap. Importing is slow and serial by nature: Takeout stores ids and
 nothing else, so every title and duration is its own lookup, and firing them
 concurrently gets throttled - the same reason the download queue is serial.
 Videos that are deleted, private or region-locked are counted and reported
-("40 imported - 3 unavailable") rather than dropped silently.
+("40 imported - 3 unavailable") rather than dropped silently. An import
+**merges into a playlist of the same name** instead of creating a second one:
+the app seeds a playlist called exactly "Watch later" and Takeout exports
+`Watch later-videos.csv`, so a plain create would split those videos across two
+identically named playlists. That was found by running
+`tool/check_takeout.dart` over a real export, which is also the only way the
+CSV layout has ever been confirmed rather than guessed.
 
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
 account behind a ToS-violating client - see Takeout above for how playlists

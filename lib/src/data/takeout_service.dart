@@ -109,7 +109,20 @@ class TakeoutService {
         continue;
       }
 
-      final playlistId = await _db.createPlaylist(parsed.name);
+      // Merge into a playlist of the same name rather than creating a second
+      // one. This is not hypothetical tidiness: the app seeds a playlist
+      // literally called "Watch later", and Takeout exports
+      // "Watch later-videos.csv", so a plain create would leave every user
+      // with two playlists of that name and their videos split across them.
+      final existing = await _db.playlists();
+      int? matchId;
+      for (final playlist in existing) {
+        if (playlist.name.toLowerCase() == parsed.name.toLowerCase()) {
+          matchId = playlist.id;
+          break;
+        }
+      }
+      final playlistId = matchId ?? await _db.createPlaylist(parsed.name);
       playlists++;
 
       var done = 0;
