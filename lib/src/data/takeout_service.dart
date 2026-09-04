@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
+import 'package:archive/archive_io.dart';
+
 import 'package:flutter/foundation.dart';
 
 import 'db.dart';
@@ -102,6 +105,53 @@ class TakeoutService {
   /// [_historyImportCap] newest entries occupy in a real export.
   static const _maxReadBytes = 6 * 1024 * 1024;
 
+  /// Pulls the files worth importing out of a Takeout .zip.
+  ///
+  /// Only the entries this app understands are decoded: a real export also
+  /// carries a 600 MB video, and expanding that on a phone would be both slow
+  /// and pointless. The history file is truncated for the same reason it is
+  /// when read from disk - it is newest-first and only the newest entries
+  /// survive the cap.
+  Future<List<({String name, String contents})>> _readZip(String path) async {
+    // Streamed, NOT readAsBytes. A real Takeout download was 586 MB because it
+    // carries the user's uploaded videos; pulling that into memory works on a
+    // desktop and would be killed on a phone. InputFileStream reads the
+    // central directory and only the entries actually asked for.
+    final input = InputFileStream(path);
+    final found = <({String name, String contents})>[];
+    try {
+      final archive = ZipDecoder().decodeStream(input);
+
+      for (final file in archive.files) {
+        if (!file.isFile) continue;
+        final lower = file.name.toLowerCase();
+        final wanted = lower.endsWith('-videos.csv') ||
+            lower.endsWith('subscriptions.csv') ||
+            lower.endsWith('watch-history.html');
+        if (!wanted) continue;
+        // Nothing this app reads is anywhere near this big; the guard is what
+        // keeps a stray huge entry from being decompressed at all.
+        if (file.size > _maxReadBytes * 8) continue;
+
+        final content = file.readBytes();
+        if (content == null) continue;
+        final slice = content.length > _maxReadBytes
+            ? content.sublist(0, _maxReadBytes)
+            : content;
+        found.add((
+          name: file.name,
+          contents: utf8.decode(slice, allowMalformed: true),
+        ));
+        // Freed as we go: three of these still fit comfortably, the zip they
+        // came from does not.
+        file.clear();
+      }
+    } finally {
+      await input.close();
+    }
+    return found;
+  }
+
   /// Reads [paths] and creates one local playlist per file that holds videos.
   ///
   /// [onProgress] fires per video so a long import can show a count. A file
@@ -118,8 +168,30 @@ class TakeoutService {
     var subscriptions = 0;
     var historyRows = 0;
 
+    // A Takeout download is a .zip, and asking someone to unzip it on a phone
+    // is a poor trade when we can just read it. Each interesting entry inside
+    // becomes a virtual path so the rest of this loop is unchanged.
+    final expanded = <({String name, String contents})>[];
     for (final path in paths) {
+      if (path.toLowerCase().endsWith('.zip')) {
+        try {
+          expanded.addAll(await _readZip(path));
+        } catch (e) {
+          debugPrint('AI BIT: could not read the zip $path - $e');
+          skipped++;
+        }
+        continue;
+      }
+      expanded.add((name: path, contents: ''));
+    }
+
+    for (final entry in expanded) {
+      final path = entry.name;
       String contents;
+      if (entry.contents.isNotEmpty) {
+        // Already read out of the zip.
+        contents = entry.contents;
+      } else {
       try {
         // Latin-1 fallback: Takeout is UTF-8, but a playlist named with an
         // emoji has arrived mis-encoded before, and refusing the whole file
@@ -145,6 +217,7 @@ class TakeoutService {
         debugPrint('AI BIT: could not read $path - $e');
         skipped++;
         continue;
+      }
       }
 
       // watch-history.html: also instant, and read only as far as needed.

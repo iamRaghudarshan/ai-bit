@@ -114,6 +114,7 @@ class YtRepository {
   Future<List<VideoBrief>> homeFeed({
     List<String> channelIds = const [],
     List<String> searches = const [],
+    List<String> subscribedIds = const [],
     int refreshToken = 0,
     bool kids = false,
   }) async {
@@ -136,18 +137,33 @@ class YtRepository {
     final rotatedSearches = _rotate(searches, refreshToken);
     final rotatedChannels = _rotate(channelIds, refreshToken);
 
+    // Subscriptions were not consulted here at all, which is why the feed felt
+    // generic to someone who had subscribed to a lot: the only personal
+    // signals were recent searches and the channels behind recent watches.
+    final rotatedSubs = _rotate(subscribedIds, refreshToken);
+
     final tasks = <Future<List<VideoBrief>>>[
-      // What you searched for is the strongest signal of what you want next,
-      // and it is the only interest signal available without an account.
-      for (final q in rotatedSearches.take(4)) _safe(() => search(q)),
-      for (final id in rotatedChannels.take(3))
-        _safe(() => channelUploads(id, limit: 8)),
+      // Channels the user actually follows are the strongest statement of
+      // intent available without an account, so they lead and get the most
+      // slots.
+      for (final id in rotatedSubs.take(6))
+        _safe(() => channelUploads(id, limit: 6)),
+      // Channels behind recent watches: followed or not, they are what is
+      // being watched right now.
+      for (final id in rotatedChannels.take(4))
+        _safe(() => channelUploads(id, limit: 6)),
+      // What was searched for recently.
+      for (final q in rotatedSearches.take(3)) _safe(() => search(q)),
     ];
 
-    // Top up with popular topics so a fresh install is not empty and the feed
-    // does not collapse into the same few channels once history builds up.
+    // Filler, kept deliberately small. A fresh install has no signals at all
+    // and would otherwise show an empty screen; once there is any history or
+    // any subscription, popular topics are one source among thirteen rather
+    // than a third of the feed.
+    final hasSignals =
+        searches.isNotEmpty || channelIds.isNotEmpty || subscribedIds.isNotEmpty;
     final topics = _rotate(_coldStartTopics, refreshToken);
-    final topicCount = (searches.isEmpty && channelIds.isEmpty) ? 4 : 1;
+    final topicCount = hasSignals ? 1 : 4;
     tasks.addAll(
       topics.take(topicCount).map((t) => _safe(() => search(t, sortByViews: true))),
     );

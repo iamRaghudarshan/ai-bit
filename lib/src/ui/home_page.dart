@@ -155,9 +155,12 @@ class HomePageState extends State<HomePage>
       final resumeable = await db.continueWatching();
       if (!mounted) return;
       _continue = resumeable;
+      final subscribed = await db.subscriptions();
+      if (!mounted) return;
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
         searches: searches,
+        subscribedIds: [for (final c in subscribed) c.id],
         refreshToken: _refreshToken,
         kids: context.read<SettingsService>().kidsMode,
       );
@@ -183,6 +186,17 @@ class HomePageState extends State<HomePage>
 
   static String _signature(List<String> searches, List<String> channelIds) =>
       '${searches.join('|')}##${channelIds.join('|')}';
+
+  /// Tapping Home while already on Home: reload, the way the real app does.
+  ///
+  /// Distinct from [onTabOpened], which is a cheap "did anything change?"
+  /// check for arriving from another tab. This one is a deliberate ask for
+  /// fresh rows, so it rotates the window as a pull-to-refresh would rather
+  /// than returning the identical feed and looking broken.
+  Future<void> reloadFeed() async {
+    _refreshToken++;
+    await _load(reset: true);
+  }
 
   /// Called by the shell when Home is selected again.
   Future<void> onTabOpened() async {

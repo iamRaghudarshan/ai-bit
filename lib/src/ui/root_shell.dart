@@ -33,6 +33,17 @@ class _RootShellState extends State<RootShell> {
 
   void _onTabSelected(int index) {
     final previous = _index;
+
+    // Tapping the tab you are already on means "refresh", as it does in the
+    // real app. Without this the tap did nothing at all, which reads as the
+    // button being broken.
+    if (previous == index) {
+      if (index == 0) _homeKey.currentState?.reloadFeed();
+      if (index == 2) _subsKey.currentState?.reload();
+      if (index == 3) _libraryKey.currentState?.reload();
+      return;
+    }
+
     setState(() => _index = index);
 
     // Shorts autoplays, so leaving the tab has to stop it — otherwise a Short

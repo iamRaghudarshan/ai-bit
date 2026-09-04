@@ -30,8 +30,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.backgroundPlayback,
             title: const Text('Background playback'),
             subtitle: const Text(
-              'Keep audio going when the app is minimised or the screen is off. '
-              'Takes effect on the next video.',
+              'Keep playing when you leave the app.',
             ),
             onChanged: (value) => settings.backgroundPlayback = value,
           ),
@@ -39,8 +38,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.audioOnly,
             title: const Text('Audio only'),
             subtitle: const Text(
-              'Stream just the audio track. Uses far less data when you are '
-              'mostly listening.',
+              'Sound only, no picture. Uses much less data.',
             ),
             onChanged: (value) {
               settings.audioOnly = value;
@@ -51,16 +49,16 @@ class SettingsPage extends StatelessWidget {
             value: settings.audioOnlyWhenLocked,
             title: const Text('Drop video when the screen is off'),
             subtitle: const Text(
-              'Drops to the smallest size while the screen is off and restores '
-              'it on unlock, without interrupting playback. Videos offered in '
-              'only one size are unaffected.',
+              'Saves data while the screen is off. Picture returns on unlock.',
             ),
             onChanged: (value) => settings.audioOnlyWhenLocked = value,
           ),
           SwitchListTile(
             value: settings.autoplayNext,
             title: const Text('Autoplay next video'),
-            subtitle: const Text('Continue with the up-next queue when a video ends.'),
+            subtitle: const Text(
+              'Play the next video in the queue automatically.',
+            ),
             onChanged: (value) => settings.autoplayNext = value,
           ),
           // Both platforms now: iOS arms an inline AVPlayerLayer, Android sets
@@ -73,12 +71,8 @@ class SettingsPage extends StatelessWidget {
               value: settings.autoPip,
               title: const Text('Automatic Picture in Picture'),
               subtitle: const Text(
-                'Float the video automatically when you leave the app '
-                'mid-video, instead of waiting for a tap. Off by default — it '
-                'has not been tried on a device yet. Applies from the next '
-                'video.',
-              ),
-              isThreeLine: true,
+              'Float the video when you leave the app. New — try it and see.',
+            ),
               onChanged: (value) => settings.autoPip = value,
             ),
           ListTile(
@@ -98,12 +92,8 @@ class SettingsPage extends StatelessWidget {
             value: settings.dataSaver,
             title: const Text('Data saver'),
             subtitle: const Text(
-              'Always stream the lowest quality a video offers, to use as '
-              'little data as possible. Many videos only offer 360p as a '
-              'playable stream, so that is the floor; pair with Audio only for '
-              'the least data.',
+              'Always use the lowest quality. Most videos stop at 360p.',
             ),
-            isThreeLine: true,
             onChanged: (value) {
               settings.dataSaver = value;
               if (playback.hasVideo) playback.reloadCurrent();
@@ -113,8 +103,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.rememberSpeedPerChannel,
             title: const Text('Remember speed per channel'),
             subtitle: const Text(
-              'Reapply the playback speed you last used for a channel when '
-              'another of its videos plays.',
+              'Reuse the speed you last set for each channel.',
             ),
             onChanged: (value) => settings.rememberSpeedPerChannel = value,
           ),
@@ -122,10 +111,8 @@ class SettingsPage extends StatelessWidget {
             value: settings.sponsorBlock,
             title: const Text('Skip sponsors (SponsorBlock)'),
             subtitle: const Text(
-              'Automatically skip sponsor and self-promo segments, using the '
-              'community SponsorBlock database. No account needed.',
+              'Skip sponsor segments automatically. No account needed.',
             ),
-            isThreeLine: true,
             onChanged: (value) => settings.sponsorBlock = value,
           ),
           const Divider(),
@@ -134,30 +121,23 @@ class SettingsPage extends StatelessWidget {
             value: settings.mobileDataSaver,
             title: const Text('Data saver on mobile data'),
             subtitle: const Text(
-              'Drop to the lowest quality only while off Wi-Fi, so a metered '
-              'connection costs less and Wi-Fi still plays at full quality. '
-              'Data saver above applies everywhere, all the time.',
+              'Lowest quality only when off Wi-Fi.',
             ),
-            isThreeLine: true,
             onChanged: (value) => settings.mobileDataSaver = value,
           ),
           SwitchListTile(
             value: settings.mobileAudioOnly,
             title: const Text('Audio only on mobile data'),
             subtitle: const Text(
-              'Leave the picture behind whenever you are off Wi-Fi — the '
-              'least data any setting here can use. Applies from the next '
-              'video.',
+              'Drop the picture when off Wi-Fi. Uses the least data.',
             ),
-            isThreeLine: true,
             onChanged: (value) => settings.mobileAudioOnly = value,
           ),
           SwitchListTile(
             value: settings.batterySaver,
             title: const Text('Battery saver'),
             subtitle: const Text(
-              'Step the quality down, and drop the video track, once the '
-              'battery is running low.',
+              'Lower the quality when the battery gets low.',
             ),
             onChanged: (value) => settings.batterySaver = value,
           ),
@@ -165,17 +145,15 @@ class SettingsPage extends StatelessWidget {
             value: settings.trackDataUsage,
             title: const Text('Track data usage'),
             subtitle: const Text(
-              'Record what each channel costs in data. Turning it off freezes '
-              'the totals — it does not delete what was already counted.',
+              'Count what each channel costs you.',
             ),
-            isThreeLine: true,
             onChanged: (value) => settings.trackDataUsage = value,
           ),
           ListTile(
             leading: const Icon(Icons.data_usage_outlined),
             title: const Text('Data usage'),
             subtitle: const Text(
-              'What you have spent, broken down by channel.',
+              'See what you have used, by channel.',
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
@@ -211,8 +189,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.appLockBiometric,
             title: const Text('Unlock with biometrics'),
             subtitle: const Text(
-              'Offer fingerprint or face unlock first, with the PIN always '
-              'available as the fallback.',
+              'Use your fingerprint or face instead of the PIN.',
             ),
             // Off limits until there is a PIN behind it: biometrics can be
             // declined or unavailable on the device, and the PIN is the only
@@ -226,10 +203,8 @@ class SettingsPage extends StatelessWidget {
             value: settings.incognito,
             title: const Text('Incognito mode'),
             subtitle: const Text(
-              'Stop recording watch and search history. Stays on until you '
-              'turn it off, including across restarts.',
+              'Stop saving what you watch and search.',
             ),
-            isThreeLine: true,
             onChanged: (value) => settings.incognito = value,
           ),
           ListTile(
@@ -269,8 +244,7 @@ class SettingsPage extends StatelessWidget {
             leading: const Icon(Icons.sd_storage_outlined),
             title: const Text('Storage'),
             subtitle: const Text(
-              'See what downloads, cache and history are using, and clear any '
-              'of them.',
+              'Downloads, cache and history. Free up space.',
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
@@ -305,8 +279,7 @@ class SettingsPage extends StatelessWidget {
             value: settings.amoledBlack,
             title: const Text('AMOLED black'),
             subtitle: const Text(
-              'Pure-black backgrounds in dark mode, which switch OLED pixels '
-              'fully off to save battery.',
+              'True black background. Saves battery on OLED screens.',
             ),
             onChanged: (value) => settings.amoledBlack = value,
           ),
@@ -326,11 +299,8 @@ class SettingsPage extends StatelessWidget {
               leading: const Icon(Icons.drive_folder_upload_outlined),
               title: const Text('Import from Google Takeout'),
               subtitle: const Text(
-                'Bring in playlists, subscriptions and watch history exported '
-                'from your Google account. No sign-in — private playlists '
-                'come through too.',
-              ),
-              isThreeLine: true,
+              'Bring in playlists, subscriptions and history from your Google export. No sign-in.',
+            ),
               onTap: () => importFromTakeout(context),
             ),
           ),
@@ -339,10 +309,8 @@ class SettingsPage extends StatelessWidget {
               leading: const Icon(Icons.upload_file_outlined),
               title: const Text('Export library'),
               subtitle: const Text(
-                'Save playlists, subscriptions and history to a file. '
-                'Downloads are not included.',
-              ),
-              isThreeLine: true,
+              'Save your playlists, subscriptions and history to a file.',
+            ),
               onTap: () => exportLibrary(context),
             ),
           ),
@@ -351,10 +319,8 @@ class SettingsPage extends StatelessWidget {
               leading: const Icon(Icons.download_outlined),
               title: const Text('Import library'),
               subtitle: const Text(
-                'Merge a previously exported file back in. Existing items are '
-                'kept and the file is added on top.',
-              ),
-              isThreeLine: true,
+              'Load a file you saved earlier. Adds to what you have.',
+            ),
               onTap: () => restoreLibrary(context),
             ),
           ),
@@ -382,7 +348,9 @@ class SettingsPage extends StatelessWidget {
             builder: (context) => ListTile(
               leading: const Icon(Icons.system_update_outlined),
               title: const Text('Check for updates'),
-              subtitle: const Text('See whether a newer build is available.'),
+              subtitle: const Text(
+              'See if a newer build is available.',
+            ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => _checkForUpdates(context),
             ),
@@ -395,7 +363,6 @@ class SettingsPage extends StatelessWidget {
               'ever requested. Everything you save stays on this device. '
               'Intended for personal use only — do not redistribute.',
             ),
-            isThreeLine: true,
           ),
         ],
       ),

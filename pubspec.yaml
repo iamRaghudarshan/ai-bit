@@ -59,6 +59,9 @@ dependencies:
   share_plus: ^13.3.0
   ffmpeg_kit_flutter_new: ^4.6.2
   file_picker: ^12.0.0
+  # Reading a Google Takeout .zip without asking the user to unzip it first,
+  # which is awkward on a phone and impossible on some of them.
+  archive: ^4.0.7
   package_info_plus: ^10.2.1
   url_launcher: ^6.3.1
   # Metered-connection and battery awareness: the mobile-data saver has to know
