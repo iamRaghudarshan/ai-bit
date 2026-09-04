@@ -42,10 +42,12 @@ Future<void> restoreLibrary(BuildContext context) async {
   final messenger = ScaffoldMessenger.of(context);
   final database = context.read<AppDatabase>();
 
-  final picked = await FilePicker.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['json'],
-  );
+  // FileType.any, not a json extension filter: some Android document
+  // providers hide files the filter should show, and a picker that appears
+  // empty reads as a broken feature. Nothing is lost by being permissive -
+  // BackupService.restore rejects anything that is not an AI BIT backup, and
+  // that check is on the content rather than the name.
+  final picked = await FilePicker.pickFiles(type: FileType.any);
   if (picked.isEmpty) return;
   final path = picked.first.path;
   if (path == null) return;
