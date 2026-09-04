@@ -11,6 +11,7 @@ import '../player/playback_controller.dart';
 import 'app_lock_page.dart';
 import 'data_usage_page.dart';
 import 'storage_page.dart';
+import 'widgets/library_transfer.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -317,6 +318,45 @@ class SettingsPage extends StatelessWidget {
               backgroundColor: Color(settings.accentColor),
             ),
             onTap: () => _pickAccent(context, settings),
+          ),
+          const Divider(),
+          const _SectionLabel('Import & export'),
+          Builder(
+            builder: (context) => ListTile(
+              leading: const Icon(Icons.drive_folder_upload_outlined),
+              title: const Text('Import from Google Takeout'),
+              subtitle: const Text(
+                'Bring in playlists, subscriptions and watch history exported '
+                'from your Google account. No sign-in — private playlists '
+                'come through too.',
+              ),
+              isThreeLine: true,
+              onTap: () => importFromTakeout(context),
+            ),
+          ),
+          Builder(
+            builder: (context) => ListTile(
+              leading: const Icon(Icons.upload_file_outlined),
+              title: const Text('Export library'),
+              subtitle: const Text(
+                'Save playlists, subscriptions and history to a file. '
+                'Downloads are not included.',
+              ),
+              isThreeLine: true,
+              onTap: () => exportLibrary(context),
+            ),
+          ),
+          Builder(
+            builder: (context) => ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: const Text('Import library'),
+              subtitle: const Text(
+                'Merge a previously exported file back in. Existing items are '
+                'kept and the file is added on top.',
+              ),
+              isThreeLine: true,
+              onTap: () => restoreLibrary(context),
+            ),
           ),
           const Divider(),
           const _SectionLabel('About'),

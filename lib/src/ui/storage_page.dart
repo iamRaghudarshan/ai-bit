@@ -1,11 +1,8 @@
-import 'package:file_picker/file_picker.dart';
-import 'package:share_plus/share_plus.dart';
-import '../data/backup_service.dart';
-import '../data/db.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../data/storage_service.dart';
+import 'widgets/library_transfer.dart';
 
 /// What the app has written to the device, and how to get it back.
 ///
@@ -249,44 +246,16 @@ class _StoragePageState extends State<StoragePage> {
 
   Future<void> _backup() async {
     setState(() => _busy = true);
-    try {
-      final path = await BackupService(context.read<AppDatabase>()).export();
-      if (!mounted) return;
-      await SharePlus.instance.share(
-        ShareParams(
-          files: [XFile(path)],
-          text: 'AI BIT library backup',
-        ),
-      );
-    } catch (e) {
-      if (mounted) _snack('Backup failed: $e');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await exportLibrary(context);
+    if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _restore() async {
-    final picked = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['json'],
-    );
-    if (picked.isEmpty) return;
-    final path = picked.first.path;
-    if (path == null || !mounted) return;
     setState(() => _busy = true);
-    try {
-      final summary =
-          await BackupService(context.read<AppDatabase>()).restore(path);
-      if (mounted) _snack(summary);
-    } catch (e) {
-      if (mounted) _snack('Restore failed — is it an AI BIT backup? ($e)');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
+    await restoreLibrary(context);
+    if (mounted) setState(() => _busy = false);
   }
 
-  void _snack(String message) => ScaffoldMessenger.of(context)
-      .showSnackBar(SnackBar(content: Text(message)));
 }
 
 /// Small caps section label, matching the settings screen.
