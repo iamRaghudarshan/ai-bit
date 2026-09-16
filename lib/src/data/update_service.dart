@@ -48,10 +48,16 @@ class UpdateService {
 
   final http.Client _http;
 
-  /// Lives in the same no-restart static folder as the APK, so publishing a new
-  /// build is: drop the APK in and bump this file.
+  /// Lives beside the APK on the download host, so publishing a new build is:
+  /// drop the APK in and bump this file. No restart, no deploy.
+  ///
+  /// CHANGING THIS STRANDS EVERY INSTALL THAT HAS NOT YET UPDATED. A copy on a
+  /// phone only ever asks the address compiled into it, so the previous host has
+  /// to keep answering until every install has taken a build carrying the new
+  /// one. Retiring safenest.raghudarshan.online before that is what stranded a
+  /// customer in August; it is the same trap, one layer down.
   static const manifestUrl =
-      'https://safenest.raghudarshan.online/ai-bit-latest.json';
+      'https://safenesthub.in/ai-bit-latest.json';
 
   Future<UpdateResult> check() async {
     final info = await PackageInfo.fromPlatform();
