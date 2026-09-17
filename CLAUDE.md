@@ -91,10 +91,41 @@ playback crash, lock-screen media session) were found exactly this way.
 
 ### Download website and in-app updates
 
-The APK is distributed (no store) from **`safenest.raghudarshan.online`**, which
-is a *separate* project at **`D:\AI PRO`** — a SafeNest/FinMate FastAPI storefront
-(uvicorn on 127.0.0.1:8080, no `--reload`) behind a Cloudflare tunnel. **Do not
-disturb SafeNest** — never restart that server or edit its mobile app.
+> **STATUS, 17 September 2026 — the download host has moved and this is
+> half-done. Read this before touching updates.**
+>
+> The host is now **`safenesthub.in`** (a new machine, `DESKTOP-6KK3ELO`). It
+> already serves `/ai-bit-latest.json`, `/aibit-gate.js` and the 2.23.0 APK,
+> verified through the public domain.
+>
+> `lib/src/data/update_service.dart` has been pointed at the new host — **but
+> only in source. No build carries it yet.** Every installed copy still asks
+> `safenest.raghudarshan.online`, because a phone only ever asks the address
+> compiled into it and can learn a new one solely from a build that already has
+> it. So the order is fixed and cannot be shortened:
+>
+> 1. Tag an AI BIT release (this builds in CI and publishes to the site).
+> 2. Wait until installs have actually taken it.
+> 3. Only then may `safenest.raghudarshan.online` be retired.
+>
+> Dropping the old address first strands every existing install. That already
+> happened once to a SafeNest customer in August; this is the same trap one layer
+> down.
+>
+> **The old address is still live on the OLD machine and must stay that way.**
+>
+> Also: on the new machine those three files no longer live in
+> `finmate-react/frontend/dist/`. They are in `finmate-react/aibit/`, served at
+> the same root URLs by explicit routes. They were moved because `npm run build`
+> EMPTIES `dist/`, so every web rebuild silently deleted the download site — and
+> from a phone that looks like a network fault, not a missing file. Publishing is
+> still restart-free: drop the APK in that folder and edit the manifest.
+
+The APK is distributed (no store) from the SafeNest storefront, a *separate*
+project at **`D:\AI PRO`** (uvicorn on 127.0.0.1:8080, no `--reload`) behind a
+Cloudflare tunnel. **Do not disturb SafeNest** — never restart that server or edit
+its mobile app. Its own handover notes are in `D:\AI PRO\finmate-react\CLAUDE.md`
+section 14.
 
 Publishing is deliberately **restart-free**: the server mounts the built SPA
 directory `finmate-react/frontend/dist/` as StaticFiles at `/`, and that dir is
@@ -123,7 +154,10 @@ also needs the `?v=` bumped on its script tag at the bottom of
 `finmate-react/backend/storefront/index.html` (NOT `backend/storefront/`),
 because Cloudflare edge-caches `.js` for 4 hours but not HTML.)
 All live immediately, no restart. Verify **through the public domain**, not
-just localhost: `curl https://safenest.raghudarshan.online/ai-bit-latest.json`
+just localhost. During the move that means BOTH hosts:
+`curl https://safenesthub.in/ai-bit-latest.json` (the new one, which new builds
+use) and `curl https://safenest.raghudarshan.online/ai-bit-latest.json` (the old
+one, which every already-installed copy still polls)
 and the new `/ai-bit-<new>.apk`.
 
 In-app: **Settings → About → Check for updates** (`update_service.dart`) fetches
