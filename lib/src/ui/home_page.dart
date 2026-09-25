@@ -16,6 +16,7 @@ import 'watch_page.dart';
 import '../data/battery_service.dart';
 import '../data/network_service.dart';
 import '../player/playback_controller.dart';
+import 'widgets/feed_impressions.dart';
 import 'widgets/feed_preview.dart';
 import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
@@ -62,6 +63,11 @@ class HomePageState extends State<HomePage>
   /// is a decoder nobody can see and nobody can stop.
   FeedPreviewCoordinator? _previews;
 
+  /// Counts which feed cards were actually on screen, for the ranker's
+  /// impression feature. Built here and disposed with the screen so a pending
+  /// batch is flushed rather than dropped on the way out.
+  FeedImpressionRecorder? _impressions;
+
   @override
   bool get wantKeepAlive => true;
 
@@ -80,6 +86,10 @@ class HomePageState extends State<HomePage>
       playback: context.read<PlaybackController>(),
       network: _networkOrNull(),
       battery: _batteryOrNull(),
+    );
+    _impressions ??= FeedImpressionRecorder(
+      database: context.read<AppDatabase>(),
+      settings: context.read<SettingsService>(),
     );
   }
 
@@ -104,6 +114,7 @@ class HomePageState extends State<HomePage>
   @override
   void dispose() {
     _previews?.dispose();
+    _impressions?.dispose();
     super.dispose();
   }
 
@@ -228,7 +239,6 @@ class HomePageState extends State<HomePage>
         _loading = false;
         _error = feed.isEmpty ? 'Nothing came back from YouTube.' : null;
       });
-      _noteImpressions(feed);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -243,33 +253,15 @@ class HomePageState extends State<HomePage>
     await _load();
   }
 
-  /// Records that these videos were offered, which is what lets a later feed
-  /// stop offering the ones that were passed over.
+  /// One feed card came far enough onto the screen to count as offered.
   ///
-  /// Skipped in incognito for the same reason the search history is: the
-  /// impression table exists only to shape recommendations, and a mode that
-  /// promises not to record what you watched must not quietly record what you
-  /// were shown either.
-  ///
-  /// Fire-and-forget, and only for the personalised feed — a topic chip or a
-  /// Kids feed is not a recommendation and nothing should be demoted for
-  /// appearing in one.
-  void _noteImpressions(List<VideoBrief> feed) {
-    if (feed.isEmpty) return;
-    if (!mounted) return;
+  /// Only the personalised feed counts. A topic chip, Trending and the
+  /// Subscribed list are not recommendations, so nothing in them should be
+  /// demoted for having appeared — the recorder itself additionally refuses
+  /// while incognito or Kids mode is on.
+  void _onCardSeen(String videoId) {
     if (_category != _CategoryChips.all) return;
-    final settings = context.read<SettingsService>();
-    if (settings.incognito || settings.kidsMode) return;
-    unawaited(
-      context
-          .read<AppDatabase>()
-          .recordImpressions([for (final v in feed) v.id])
-          .catchError((Object e) {
-        // Logged, never silent: impressions that quietly stop being written
-        // would leave the feed repeating itself with nothing to say why.
-        debugPrint('AI BIT: feed impressions not recorded - $e');
-      }),
-    );
+    _impressions?.markSeen(videoId);
   }
 
   static String _signature(List<String> searches, List<String> channelIds) =>
@@ -488,10 +480,14 @@ class HomePageState extends State<HomePage>
                     ? null
                     : FeedPreviewSurface(video: video, coordinator: previews),
               );
-              if (previews == null) return tile;
+              // Always wrapped, even with no preview coordinator: the slot
+              // is also how an impression gets counted, and that has to work
+              // on every platform previews do not.
               return FeedPreviewSlot(
                 video: video,
                 coordinator: previews,
+                onSeen: _onCardSeen,
+                seenFraction: FeedImpressionRecorder.seenFraction,
                 child: tile,
               );
             }

@@ -683,11 +683,23 @@ happen; `watchSignals()` excludes `is_kids` rows for the same reason. And a
 personal term at zero the order would collapse onto source prior and
 popularity, which is not a mix.
 
-`feed_impressions` is written only when the personalised feed is actually
-*rendered* — not when it is fetched, and never in incognito or Kids mode. The
-table exists solely to shape recommendations, so a mode that promises not to
-record what you watched must not quietly record what you were shown.
-`clearHistory()` clears it alongside history for the same reason.
+**An impression means "was on screen", not "was fetched"** — and getting that
+wrong is easy. The first cut recorded every video in the loaded feed, about a
+hundred and twenty rows of which a scrolling user sees ten, which penalised
+good videos for never having been reached: the ranker would have learnt to bury
+whatever it ranked highly enough to fetch. `FeedImpressionRecorder`
+(`widgets/feed_impressions.dart`) counts from the feed's visibility detector
+instead, at half the card on screen, deduplicated so scrolling up and down is
+one impression, and batched so a fling does not wait on SQLite.
+`FeedPreviewSlot` deliberately serves both previews and impressions from **one**
+`VisibilityDetector` rather than nesting two per card.
+
+Never counted in incognito or Kids mode, and only on the personalised feed — a
+topic chip, Trending and Subscribed are not recommendations, so nothing in them
+should be demoted for appearing. The table exists solely to shape
+recommendations, so a mode that promises not to record what you watched must
+not quietly record what you were shown. `clearHistory()` clears it alongside
+history for the same reason.
 
 ### The screen is kept awake by the player, not by a widget
 

@@ -196,25 +196,50 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   }
 }
 
-/// Wraps a feed card so it can report visibility and show its preview.
+/// The feed's single visibility hook for a card.
+///
+/// Two unrelated features need to know when a card is on screen - muted
+/// previews, and the impression count the recommender ranks against - and this
+/// deliberately serves both from one [VisibilityDetector] rather than nesting
+/// two per card. A feed shows ten or so cards at a time and a detector reports
+/// on every scroll; doubling that to save a widget nobody would read twice is
+/// not a trade worth making.
+///
+/// Both collaborators are optional: [coordinator] is null on the web preview
+/// target, where there is no player to preview with, and [onSeen] is null
+/// wherever impressions are not being counted. The card itself still renders.
 class FeedPreviewSlot extends StatelessWidget {
   const FeedPreviewSlot({
     super.key,
     required this.video,
-    required this.coordinator,
     required this.child,
+    this.coordinator,
+    this.onSeen,
+    this.seenFraction = 0.5,
   });
 
   final VideoBrief video;
-  final FeedPreviewCoordinator coordinator;
+
+  /// Drives the muted preview, when previews exist on this platform.
+  final FeedPreviewCoordinator? coordinator;
+
+  /// Called once each time the card crosses [seenFraction] on screen. The
+  /// recorder behind it is responsible for not counting the same card twice.
+  final void Function(String videoId)? onSeen;
+
+  /// How much of the card must be visible to count as seen.
+  final double seenFraction;
+
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
     return VisibilityDetector(
-      key: Key('preview-${video.id}'),
-      onVisibilityChanged: (info) =>
-          coordinator.onCardVisibility(video, info.visibleFraction),
+      key: Key('feed-card-${video.id}'),
+      onVisibilityChanged: (info) {
+        coordinator?.onCardVisibility(video, info.visibleFraction);
+        if (info.visibleFraction >= seenFraction) onSeen?.call(video.id);
+      },
       child: child,
     );
   }
