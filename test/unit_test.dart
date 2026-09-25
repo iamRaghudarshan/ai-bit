@@ -5,6 +5,7 @@ import 'package:ai_bit/src/data/data_usage_service.dart';
 import 'package:ai_bit/src/data/dlna_client.dart';
 import 'package:ai_bit/src/data/kids_guard.dart';
 import 'package:ai_bit/src/data/models.dart';
+import 'package:ai_bit/src/data/recommender.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
@@ -1249,4 +1250,701 @@ Some blurb about the video.
     });
   });
 
+
+  // ---------------------------------------------------------- recommender
+  //
+  // Every rule below is a judgement about what somebody wants to watch, which
+  // is the kind of logic that rots silently: a feed that is quietly slightly
+  // worse produces no crash and no bug report. So each term is pinned on its
+  // own rather than only through the total, which two terms cancelling each
+  // other out would satisfy just as happily.
+
+  group('tokenise', () {
+    test('drops stop words and anything under three letters', () {
+      expect(tokenise('The best of my cat'), ['cat']);
+    });
+
+    test('splits on punctuation and folds case', () {
+      expect(
+        tokenise('Rust-lang: ASYNC/await, explained!'),
+        ['rust', 'lang', 'async', 'await', 'explained'],
+      );
+    });
+
+    test('keeps numbers that survive the length rule', () {
+      expect(
+        tokenise('iPhone 16 Pro review 2026'),
+        ['iphone', 'pro', 'review', '2026'],
+      );
+    });
+
+    test('returns nothing for text made entirely of noise', () {
+      expect(tokenise('The best of the new official video'), isEmpty);
+    });
+  });
+
+  group('WatchSignal.fromWatch', () {
+    WatchSignal build({required Duration position, Duration? duration}) =>
+        WatchSignal.fromWatch(
+          videoId: 'v',
+          channelId: 'c',
+          title: 't',
+          watchedAt: DateTime(2026, 1, 1),
+          position: position,
+          duration: duration,
+        );
+
+    test('completion is the watched fraction', () {
+      expect(
+        build(
+          position: const Duration(minutes: 3),
+          duration: const Duration(minutes: 4),
+        ).completion,
+        closeTo(0.75, 1e-9),
+      );
+    });
+
+    test('a position past the end clamps to one rather than exceeding it', () {
+      expect(
+        build(
+          position: const Duration(minutes: 9),
+          duration: const Duration(minutes: 4),
+        ).completion,
+        1.0,
+      );
+    });
+
+    test('an unknown duration is neither evidence for nor against', () {
+      // Not 0 and not 1: a missing duration is a parsing gap, and either
+      // extreme would claim more about the user than the data supports.
+      expect(
+        build(position: const Duration(minutes: 3)).completion,
+        WatchSignal.assumedCompletion,
+      );
+      expect(
+        build(position: const Duration(minutes: 3), duration: Duration.zero)
+            .completion,
+        WatchSignal.assumedCompletion,
+      );
+    });
+  });
+
+  group('TasteProfile', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    WatchSignal watch(
+      String channel, {
+      required double completion,
+      Duration ago = Duration.zero,
+      String title = 'something',
+      String? id,
+    }) =>
+        WatchSignal(
+          videoId: id ?? '$channel-$completion-${ago.inMinutes}',
+          channelId: channel,
+          title: title,
+          watchedAt: now.subtract(ago),
+          completion: completion,
+        );
+
+    test('a channel watched through outweighs one bounced off', () {
+      // The single most important property here, and the thing the old feed
+      // had no way to express: opening a video used to be the whole signal.
+      final profile = TasteProfile.from(
+        history: [
+          watch('finished', completion: 1.0),
+          watch('bounced', completion: 0.05),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        profile.channelAffinity['finished']!,
+        greaterThan(profile.channelAffinity['bounced']! * 10),
+      );
+    });
+
+    test('interest decays, so last night outranks last month', () {
+      final profile = TasteProfile.from(
+        history: [
+          watch('recent', completion: 1.0, ago: const Duration(hours: 12)),
+          watch('stale', completion: 1.0, ago: const Duration(days: 60)),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        profile.channelAffinity['recent']!,
+        greaterThan(profile.channelAffinity['stale']!),
+      );
+    });
+
+    test('one half-life is worth half as much', () {
+      final profile = TasteProfile.from(
+        history: [
+          watch('now', completion: 1.0),
+          watch('older', completion: 1.0, ago: TasteProfile.interestHalfLife),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        profile.channelAffinity['older']!,
+        closeTo(profile.channelAffinity['now']! * 0.5, 1e-6),
+      );
+    });
+
+    test('a future timestamp is treated as now, not as a prophecy', () {
+      // A device clock that has been moved back must not send the weight to
+      // infinity through a negative exponent.
+      final profile = TasteProfile.from(
+        history: [
+          watch('ahead', completion: 1.0, ago: const Duration(days: -5)),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(profile.channelAffinity['ahead'], closeTo(1.0, 1e-9));
+    });
+
+    test('titles of abandoned videos do not teach the topic model', () {
+      // Learning from what was rejected would pull the feed towards more of
+      // exactly the clickbait the user bounced off.
+      final profile = TasteProfile.from(
+        history: [
+          watch('c', completion: 0.02, title: 'shocking pyramid mystery'),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(profile.topicWeights['pyramid'], isNull);
+    });
+
+    test('titles of watched videos do', () {
+      final profile = TasteProfile.from(
+        history: [
+          watch('c', completion: 0.9, title: 'woodworking bench build'),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(profile.topicWeights['woodworking'], greaterThan(0));
+    });
+
+    test('repeating a search counts for more, with diminishing returns', () {
+      double weightFor(int hits) => TasteProfile.from(
+            history: const [],
+            searches: [
+              SearchSignal(query: 'kayaking', hits: hits, searchedAt: now),
+            ],
+            subscribed: const {},
+            now: now,
+          ).topicWeights['kayaking']!;
+
+      expect(weightFor(10), greaterThan(weightFor(1)));
+      // Ten times the searches is nowhere near ten times the interest.
+      expect(weightFor(10), lessThan(weightFor(1) * 10));
+    });
+
+    test('records when each channel was last watched', () {
+      final profile = TasteProfile.from(
+        history: [
+          watch('c', completion: 1, ago: const Duration(days: 3)),
+          watch('c', completion: 1, ago: const Duration(days: 1)),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        profile.lastWatchedOnChannel['c'],
+        now.subtract(const Duration(days: 1)),
+      );
+    });
+
+    test('an empty profile knows it is empty', () {
+      expect(TasteProfile.empty.isEmpty, isTrue);
+      expect(
+        TasteProfile.from(
+          history: const [],
+          searches: const [],
+          subscribed: const {'UC1'},
+          now: now,
+        ).isEmpty,
+        isFalse,
+      );
+    });
+  });
+
+  group('recommender scoring', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief video(
+      String id, {
+      String channel = 'UC-other',
+      String title = 'a woodworking bench build',
+      int? views,
+      Duration age = const Duration(days: 1),
+    }) =>
+        VideoBrief(
+          id: id,
+          title: title,
+          author: channel,
+          channelId: channel,
+          viewCount: views,
+          uploadDate: now.subtract(age),
+        );
+
+    final profile = TasteProfile.from(
+      history: [
+        WatchSignal(
+          videoId: 'seen',
+          channelId: 'UC-loved',
+          title: 'woodworking bench build',
+          watchedAt: now.subtract(const Duration(hours: 2)),
+          completion: 1,
+        ),
+      ],
+      searches: [SearchSignal(query: 'woodworking', hits: 3, searchedAt: now)],
+      subscribed: const {'UC-followed'},
+      now: now,
+    );
+
+    double scoreOf(
+      VideoBrief v, {
+      CandidateSource source = CandidateSource.search,
+      ImpressionCount? impression,
+      TasteProfile? against,
+    }) {
+      final p = against ?? profile;
+      final maxAffinity =
+          p.channelAffinity.values.fold<double>(0, (a, b) => a > b ? a : b);
+      return score(
+        candidate: Candidate(video: v, source: source),
+        profile: p,
+        now: now,
+        impression: impression,
+        maxAffinity: maxAffinity,
+      ).total;
+    }
+
+    test('a watched channel outranks a stranger', () {
+      expect(
+        scoreOf(video('a', channel: 'UC-loved')),
+        greaterThan(scoreOf(video('b', channel: 'UC-nobody'))),
+      );
+    });
+
+    test('subscribing counts even with no watch time behind it', () {
+      // A channel followed this morning has nothing in history yet, and a
+      // profile that only read watch time would rank it as a stranger.
+      expect(
+        scoreOf(video('a', channel: 'UC-followed')),
+        greaterThan(scoreOf(video('b', channel: 'UC-nobody'))),
+      );
+    });
+
+    test('a title matching what the user watches outranks one that does not',
+        () {
+      expect(
+        scoreOf(video('a', title: 'woodworking bench build')),
+        greaterThan(scoreOf(video('b', title: 'crypto trading signals'))),
+      );
+    });
+
+    test('a long title is not rewarded for having more chances to match', () {
+      // Divided by token count rather than summed, or the feed becomes a
+      // title-length contest.
+      final short = scoreOf(video('a', title: 'woodworking'));
+      final padded = scoreOf(
+        video('b', title: 'woodworking alongside unrelated filler nonsense'),
+      );
+      expect(short, greaterThan(padded));
+    });
+
+    test('a fresh upload outranks an old one, all else equal', () {
+      expect(
+        scoreOf(video('a', age: const Duration(hours: 6))),
+        greaterThan(scoreOf(video('b', age: const Duration(days: 400)))),
+      );
+    });
+
+    test('an unknown upload age scores as the midpoint, not as ancient', () {
+      final undated = VideoBrief(
+        id: 'u',
+        title: 'a woodworking bench build',
+        author: 'x',
+        channelId: 'x',
+      );
+      final ancient =
+          video('old', channel: 'x', age: const Duration(days: 3000));
+      expect(scoreOf(undated), greaterThan(scoreOf(ancient)));
+    });
+
+    test('popularity is a tiebreak, never a verdict', () {
+      // A viral video from a channel the user ignores must not beat a modest
+      // one from the channel they watch. Linear view counts would.
+      final viral = video('a', channel: 'UC-nobody', views: 50000000);
+      final modest = video('b', channel: 'UC-loved', views: 900);
+      expect(scoreOf(modest), greaterThan(scoreOf(viral)));
+    });
+
+    test('more views still wins between two otherwise identical videos', () {
+      expect(
+        scoreOf(video('a', views: 1000000)),
+        greaterThan(scoreOf(video('b', views: 100))),
+      );
+    });
+
+    test('a video already watched sinks below anything unwatched', () {
+      final seen = VideoBrief(
+        id: 'seen',
+        title: 'woodworking bench build',
+        author: 'UC-loved',
+        channelId: 'UC-loved',
+        uploadDate: now,
+      );
+      expect(
+        scoreOf(seen),
+        lessThan(scoreOf(video('fresh', channel: 'UC-nobody'))),
+      );
+    });
+
+    test('being shown and passed over costs something', () {
+      final shown = ImpressionCount(
+        videoId: 'a',
+        shown: 3,
+        lastShownAt: now.subtract(const Duration(hours: 1)),
+      );
+      expect(
+        scoreOf(video('a'), impression: shown),
+        lessThan(scoreOf(video('a'))),
+      );
+    });
+
+    test('the impression penalty is capped so nothing is buried forever', () {
+      double withShows(int n) => scoreOf(
+            video('a'),
+            impression: ImpressionCount(
+              videoId: 'a',
+              shown: n,
+              lastShownAt: now.subtract(const Duration(hours: 1)),
+            ),
+          );
+      // Past the cap, more showings change nothing.
+      expect(withShows(50), closeTo(withShows(500), 1e-9));
+      // And the cap never sinks a video as far as having watched it does.
+      final seen = VideoBrief(
+        id: 'seen',
+        title: 'woodworking bench build',
+        author: 'UC-loved',
+        channelId: 'UC-loved',
+        uploadDate: now,
+      );
+      expect(withShows(500), greaterThan(scoreOf(seen)));
+    });
+
+    test('an old impression is forgotten rather than held against it', () {
+      final stale = ImpressionCount(
+        videoId: 'a',
+        shown: 9,
+        lastShownAt: now.subtract(impressionMemory + const Duration(days: 1)),
+      );
+      expect(
+        scoreOf(video('a'), impression: stale),
+        closeTo(scoreOf(video('a')), 1e-9),
+      );
+    });
+
+    test('the source prior orders sources when nothing else separates them',
+        () {
+      const blank = TasteProfile.empty;
+      double bySource(CandidateSource s) =>
+          scoreOf(video('a', channel: 'UC-x'), source: s, against: blank);
+      expect(
+        bySource(CandidateSource.subscription),
+        greaterThan(bySource(CandidateSource.coWatch)),
+      );
+      expect(
+        bySource(CandidateSource.coWatch),
+        greaterThan(bySource(CandidateSource.watchedChannel)),
+      );
+      expect(
+        bySource(CandidateSource.watchedChannel),
+        greaterThan(bySource(CandidateSource.search)),
+      );
+      expect(
+        bySource(CandidateSource.search),
+        greaterThan(bySource(CandidateSource.topic)),
+      );
+    });
+
+    test('uploadAgeSeconds agrees with the repository copy it mirrors', () {
+      // Two implementations of one rule; if they drift, the feed and the
+      // subscriptions tab start disagreeing about how old a video is.
+      const shapes = [
+        '3 days ago',
+        'Streamed 2 hours ago',
+        '1 year ago',
+        'nonsense',
+      ];
+      for (final raw in shapes) {
+        final v = VideoBrief(
+          id: 'x',
+          title: 't',
+          author: 'a',
+          channelId: 'c',
+          uploadRaw: raw,
+        );
+        expect(uploadAgeSeconds(v, now), YtRepository.uploadAgeSeconds(v));
+      }
+    });
+  });
+
+  group('rankFeed', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    Candidate candidate(
+      String id, {
+      String channel = 'UC-x',
+      CandidateSource source = CandidateSource.search,
+      String title = 'a bench build',
+    }) =>
+        Candidate(
+          video: VideoBrief(
+            id: id,
+            title: title,
+            author: channel,
+            channelId: channel,
+            uploadDate: now.subtract(const Duration(days: 1)),
+          ),
+          source: source,
+        );
+
+    final profile = TasteProfile.from(
+      history: [
+        WatchSignal(
+          videoId: 'old',
+          channelId: 'UC-loved',
+          title: 'bench build',
+          watchedAt: now.subtract(const Duration(hours: 1)),
+          completion: 1,
+        ),
+      ],
+      searches: const [],
+      subscribed: const {},
+      now: now,
+    );
+
+    test('returns nothing for no candidates', () {
+      expect(
+        rankFeed(candidates: const [], profile: profile, now: now),
+        isEmpty,
+      );
+    });
+
+    test('keeps one copy of a video that arrived from several sources', () {
+      final out = rankFeed(
+        candidates: [
+          candidate('dup', source: CandidateSource.topic),
+          candidate('dup', source: CandidateSource.subscription),
+          candidate('other', channel: 'UC-y'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      expect(out, hasLength(2));
+      expect(out.where((v) => v.id == 'dup'), hasLength(1));
+    });
+
+    test('one prolific channel cannot take the whole top of the feed', () {
+      // Six videos from the channel the user loves against three from
+      // strangers. Without the diversity pass the loved channel sweeps the
+      // top six, which is not what anyone means by a recommendation feed.
+      final out = rankFeed(
+        candidates: [
+          for (var i = 0; i < 6; i++) candidate('loved$i', channel: 'UC-loved'),
+          for (var i = 0; i < 3; i++) candidate('other$i', channel: 'UC-$i'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      final topFive = out.take(5).where((v) => v.channelId == 'UC-loved');
+      expect(topFive.length, lessThan(5));
+    });
+
+    test('the loved channel still leads, it just does not monopolise', () {
+      final out = rankFeed(
+        candidates: [
+          for (var i = 0; i < 3; i++) candidate('loved$i', channel: 'UC-loved'),
+          for (var i = 0; i < 3; i++) candidate('other$i', channel: 'UC-$i'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      expect(out.first.channelId, 'UC-loved');
+    });
+
+    test('honours the limit without repeating anything', () {
+      final out = rankFeed(
+        candidates: [
+          for (var i = 0; i < 40; i++) candidate('v$i', channel: 'UC-$i'),
+        ],
+        profile: profile,
+        now: now,
+        limit: 7,
+      );
+      expect(out, hasLength(7));
+      expect(out.map((v) => v.id).toSet(), hasLength(7));
+    });
+
+    test('a limit past the candidate count returns everything once', () {
+      final out = rankFeed(
+        candidates: [
+          for (var i = 0; i < 5; i++) candidate('v$i', channel: 'UC-$i'),
+        ],
+        profile: profile,
+        now: now,
+        limit: 500,
+      );
+      expect(out, hasLength(5));
+    });
+
+    test('is deterministic - the same input gives the same order', () {
+      final candidates = [
+        for (var i = 0; i < 12; i++) candidate('v$i', channel: 'UC-${i % 4}'),
+      ];
+      final a = rankFeed(candidates: candidates, profile: profile, now: now);
+      final b = rankFeed(candidates: candidates, profile: profile, now: now);
+      expect(a.map((v) => v.id), b.map((v) => v.id));
+    });
+  });
+
+  group('rankUpNext', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief v(
+      String id, {
+      String channel = 'UC-other',
+      String title = 'clip',
+    }) =>
+        VideoBrief(
+          id: id,
+          title: title,
+          author: channel,
+          channelId: channel,
+          uploadDate: now.subtract(const Duration(days: 2)),
+        );
+
+    final current = v('playing', channel: 'UC-current');
+
+    test('never suggests the video that is playing', () {
+      final out = rankUpNext(
+        current: current,
+        related: [v('playing', channel: 'UC-current'), v('a'), v('b')],
+        profile: TasteProfile.empty,
+        now: now,
+      );
+      expect(out.map((x) => x.id), isNot(contains('playing')));
+      expect(out, hasLength(2));
+    });
+
+    test('returns nothing for an empty related list', () {
+      expect(
+        rankUpNext(
+          current: current,
+          related: const [],
+          profile: TasteProfile.empty,
+          now: now,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('keeps the co-watch order when nothing is known about the viewer', () {
+      // YouTube's related list is a real recommendation and must not be
+      // scrambled for the sake of scrambling it.
+      final related = [for (var i = 0; i < 5; i++) v('r$i', channel: 'UC-$i')];
+      final out = rankUpNext(
+        current: current,
+        related: related,
+        profile: TasteProfile.empty,
+        now: now,
+      );
+      expect(out.map((x) => x.id).toList(), ['r0', 'r1', 'r2', 'r3', 'r4']);
+    });
+
+    test('a channel the viewer watches climbs over YouTube ordering', () {
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'seen',
+            channelId: 'UC-loved',
+            title: 'clip',
+            watchedAt: now.subtract(const Duration(hours: 1)),
+            completion: 1,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      final out = rankUpNext(
+        current: current,
+        related: [
+          v('a', channel: 'UC-nobody'),
+          v('b', channel: 'UC-nobody2'),
+          v('loved', channel: 'UC-loved'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      expect(out.first.id, 'loved');
+    });
+
+    test('autoplay does not walk down the current channel back catalogue', () {
+      // Same position in YouTube's list, same everything else - the one from
+      // the channel already on screen should lose.
+      final out = rankUpNext(
+        current: current,
+        related: [
+          v('same', channel: 'UC-current'),
+          v('different', channel: 'UC-elsewhere'),
+        ],
+        profile: TasteProfile.empty,
+        now: now,
+      );
+      expect(out.first.id, 'different');
+    });
+
+    test('something already watched sinks to the bottom', () {
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'seen',
+            channelId: 'UC-other',
+            title: 'clip',
+            watchedAt: now.subtract(const Duration(days: 1)),
+            completion: 1,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      final out = rankUpNext(
+        current: current,
+        related: [v('seen'), v('unseen1'), v('unseen2')],
+        profile: profile,
+        now: now,
+      );
+      expect(out.last.id, 'seen');
+    });
+  });
 }

@@ -3,6 +3,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi_web/sqflite_ffi_web.dart';
 
 import 'models.dart';
+import 'recommender.dart';
 
 /// Local store for watch history and user playlists.
 ///
@@ -24,7 +25,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 8,
+      version: 9,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -33,6 +34,7 @@ class AppDatabase {
         await _createSubscriptions(db);
         await _createDataUsage(db);
         await _createKidsUsage(db);
+        await _createFeedImpressions(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -68,6 +70,7 @@ class AppDatabase {
           await _createDataUsage(db);
           await _createKidsUsage(db);
         }
+        if (from < 9) await _createFeedImpressions(db);
       },
     );
     return AppDatabase._(db);
@@ -203,6 +206,26 @@ class AppDatabase {
       CREATE TABLE kids_usage (
         day     INTEGER PRIMARY KEY,
         seconds INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+  }
+
+  /// How many times a video has been shown in the feed without being opened.
+  ///
+  /// This is a ranking feature, not analytics: the YouTube recommender paper
+  /// lists the number of previous impressions among its most important
+  /// features, because a video offered repeatedly and never clicked should
+  /// stop being offered. See `recommender.dart`.
+  ///
+  /// One row per video, counting up, rather than a row per showing — the
+  /// ranker only ever asks "how many times, and how long ago", and a log would
+  /// grow without bound for an answer it never needs.
+  static Future<void> _createFeedImpressions(Database db) async {
+    await db.execute('''
+      CREATE TABLE feed_impressions (
+        video_id      TEXT PRIMARY KEY,
+        shown         INTEGER NOT NULL DEFAULT 0,
+        last_shown_at INTEGER NOT NULL
       )
     ''');
   }
@@ -545,6 +568,152 @@ class AppDatabase {
     watchedAt: DateTime.fromMillisecondsSinceEpoch(row['watched_at']! as int),
   );
 
+  // ------------------------------------------------------ recommendations
+
+  /// Watch history reduced to what the ranker needs, newest first.
+  ///
+  /// Carries the position and duration so `WatchSignal` can work out how much
+  /// of each video was actually watched. That ratio is the whole point — it is
+  /// what lets a channel watched to the end outweigh one bounced off after ten
+  /// seconds, which is the difference between ranking on watch time and
+  /// ranking on clicks.
+  ///
+  /// Kids-mode rows are excluded: that mode curates from a fixed topic list
+  /// and consults no personal signal, so letting it feed the ordinary profile
+  /// would push nursery rhymes into an adult's recommendations.
+  Future<List<WatchSignal>> watchSignals({int limit = 300}) async {
+    final rows = await _db.query(
+      'history',
+      columns: [
+        'video_id',
+        'channel_id',
+        'title',
+        'position_ms',
+        'duration_ms',
+        'watched_at',
+      ],
+      where: 'is_kids = 0',
+      orderBy: 'watched_at DESC',
+      limit: limit,
+    );
+    return [
+      for (final r in rows)
+        WatchSignal.fromWatch(
+          videoId: r['video_id']! as String,
+          channelId: (r['channel_id'] as String?) ?? '',
+          title: (r['title'] as String?) ?? '',
+          watchedAt: DateTime.fromMillisecondsSinceEpoch(
+            r['watched_at']! as int,
+          ),
+          position: Duration(milliseconds: r['position_ms'] as int? ?? 0),
+          duration: r['duration_ms'] == null
+              ? null
+              : Duration(milliseconds: r['duration_ms']! as int),
+        ),
+    ];
+  }
+
+  /// Remembered searches with their repeat count and timestamp.
+  ///
+  /// Distinct from [recentSearches], which returns bare strings for the feed's
+  /// candidate queries. The ranker needs the weights too.
+  Future<List<SearchSignal>> searchSignals({int limit = 30}) async {
+    final rows = await _db.query(
+      'searches',
+      orderBy: 'searched_at DESC',
+      limit: limit,
+    );
+    return [
+      for (final r in rows)
+        SearchSignal(
+          query: r['query']! as String,
+          hits: r['hits'] as int? ?? 1,
+          searchedAt: DateTime.fromMillisecondsSinceEpoch(
+            r['searched_at']! as int,
+          ),
+        ),
+    ];
+  }
+
+  /// Builds the ranking profile from everything this device knows.
+  ///
+  /// Lives here rather than in each screen so Home and the watch page rank
+  /// against exactly the same view of the user — two screens deriving "what
+  /// this person likes" from different queries is how a feed and its own
+  /// Up-next list come to disagree about the same channel.
+  ///
+  /// Cheap: three indexed reads and a few hundred multiplications. It is
+  /// rebuilt per load rather than cached because a profile that does not
+  /// include what was watched five minutes ago is the stale-recommendations
+  /// bug the Home screen already had once.
+  Future<TasteProfile> tasteProfile({DateTime? now}) async {
+    final history = await watchSignals();
+    final searches = await searchSignals();
+    final subs = await subscriptions();
+    return TasteProfile.from(
+      history: history,
+      searches: searches,
+      subscribed: {for (final c in subs) c.id},
+      now: now ?? DateTime.now(),
+    );
+  }
+
+  /// Counts one showing for each of [videoIds].
+  ///
+  /// Called when a feed is actually rendered, never when it is merely fetched:
+  /// a video the user never laid eyes on has not been offered to them, and
+  /// counting it would demote it for nothing.
+  ///
+  /// Batched into a single transaction because a feed is a hundred rows and a
+  /// hundred separate writes on the UI isolate is visible as a stutter.
+  Future<void> recordImpressions(Iterable<String> videoIds) async {
+    final ids = videoIds.where((id) => id.isNotEmpty).toSet();
+    if (ids.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final batch = _db.batch();
+    for (final id in ids) {
+      batch.rawInsert('''
+        INSERT INTO feed_impressions (video_id, shown, last_shown_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+          shown = shown + 1,
+          last_shown_at = excluded.last_shown_at
+      ''', [id, now]);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Impression counts for the ranker, keyed by video id.
+  ///
+  /// Rows older than [ImpressionCount] cares about are deleted here rather
+  /// than on a schedule: this runs once per feed load, the table is small, and
+  /// a video passed over a fortnight ago deserves another chance anyway. Doing
+  /// it as part of the read means there is no separate cleanup that can be
+  /// forgotten.
+  Future<Map<String, ImpressionCount>> feedImpressions() async {
+    final cutoff = DateTime.now()
+        .subtract(impressionMemory)
+        .millisecondsSinceEpoch;
+    await _db.delete(
+      'feed_impressions',
+      where: 'last_shown_at < ?',
+      whereArgs: [cutoff],
+    );
+    final rows = await _db.query('feed_impressions');
+    return {
+      for (final r in rows)
+        r['video_id']! as String: ImpressionCount(
+          videoId: r['video_id']! as String,
+          shown: r['shown'] as int? ?? 0,
+          lastShownAt: DateTime.fromMillisecondsSinceEpoch(
+            r['last_shown_at']! as int,
+          ),
+        ),
+    };
+  }
+
+  Future<void> clearFeedImpressions() => _db.delete('feed_impressions');
+
   /// Every video id that appears in history, for marking watched rows in a
   /// feed. Ids only — a feed can hold hundreds of rows to check, and building
   /// a VideoBrief for all of history to answer that would be wasteful.
@@ -566,7 +735,14 @@ class AppDatabase {
   Future<void> deleteHistoryEntry(String videoId) =>
       _db.delete('history', where: 'video_id = ?', whereArgs: [videoId]);
 
-  Future<void> clearHistory() => _db.delete('history');
+  /// Clearing watch history also clears the feed impressions it is ranked
+  /// against. They are the same kind of record - "what this device has seen" -
+  /// and leaving them behind would keep demoting videos on the strength of a
+  /// history the user has just asked to be rid of.
+  Future<void> clearHistory() async {
+    await _db.delete('history');
+    await _db.delete('feed_impressions');
+  }
 
   /// Where the database file lives, so its size can be reported in settings.
   Future<String> get path async =>

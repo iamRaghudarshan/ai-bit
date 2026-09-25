@@ -209,7 +209,8 @@ Quality is the HLS ladder where one exists and muxed renditions where not; the
 picker reads live tracks off the manifest, and Settings offers the full ladder
 as a saved default.
 
-Browsing: home feed (personalised from search history, or curated in Kids
+Browsing: home feed (ranked against local watch history, searches and
+subscriptions — see "Recommendations are two-stage" below — or curated in Kids
 mode), Shorts, channel pages (Videos, Shorts, Live, Playlists), comments with
 replies, local playlists, subscriptions, queue. **Search is not a tab** — it is
 the top-bar magnifying glass on Home, opening a focused screen with recent
@@ -621,19 +622,123 @@ genuine quality loss and exists only for players that refuse `.m4a`. Both are
 off by default; both are no-ops where the native library is unavailable, and
 downloads fall back to the 360p combined file.
 
+### Recommendations are two-stage, like the real thing
+
+`lib/src/data/recommender.dart` is a local reimplementation of the shape
+described in Covington, Adams & Sargin, *Deep Neural Networks for YouTube
+Recommendations* (RecSys '16): **candidate generation** pulls a few hundred
+plausible videos from every source the app can reach, then **ranking** scores
+that much smaller set. `YtRepository.homeFeed` does the first stage;
+`recommender.dart` is the second and is **pure** — no I/O, no network, `now` is
+always passed in — so every rule in it is pinned by a test.
+
+Before this, the feed had no ranking at all. Sources were round-robined by
+`_interleave` and shown in the order they were assembled, so a video's position
+was decided by *which source fetched it*, nothing more. Four specific
+consequences, each of which the ranker addresses:
+
+- **Opening a video was the entire signal.** A video abandoned after ten
+  seconds counted exactly as much as one watched to the end. `TasteProfile`
+  weights every watch by its **completion ratio**, which is this app's version
+  of the paper's central finding — rank on expected watch time, not on clicks,
+  because optimising for clicks promotes clickbait. `position_ms / duration_ms`
+  was already in the `history` table and was simply never read.
+- **Nothing decayed.** A profile built over months behaved as though every
+  month were now. Interest now halves every 14 days, searches every 7.
+- **Already-watched videos came back to the top.** They now sink.
+- **Refreshing shifted a window modulo the list length**, which cycles back to
+  the same rows. The paper lists *number of previous impressions* among its
+  most important features, for exactly this reason: a video shown repeatedly
+  and never opened should stop being shown. The `feed_impressions` table (v9)
+  is that feature, decayed and forgotten after a fortnight.
+
+The strongest candidate source is **`_browse.related()` on recently watched
+videos** — YouTube's own co-watch list, built from what everyone else watched
+next. It existed already but was fetched only on the watch page and never used
+to build the feed. `feedSeeds().videoIds` was likewise already returned and
+never consumed; it feeds this now.
+
+Sources carry a **prior, not a quota** (`CandidateSource.prior`), so a strong
+search result can outrank a weak subscription upload — which the old fixed-slot
+interleave could not express. Diversity is a greedy pass in `rankFeed`: each
+additional video from a channel already emitted costs `_channelRepeatCost`, so
+the channel the profile likes most leads the feed without owning it. Greedy
+rather than a sort because the penalty is not knowable until the earlier picks
+are made.
+
+**"Up next" is ranked too** (`rankUpNext`, via
+`YtRepository.personalisedUpNext`). YouTube's related order is kept as a strong
+positional prior — it is the co-watch signal and throwing it away to re-derive
+something from local history alone would discard the only view of what everyone
+else does — and the viewer is layered on top: watched videos sink, followed and
+well-watched channels rise, and **the channel already on screen is damped**, so
+autoplay stops walking down one uploader's back catalogue. The same ordering
+feeds the visible list and the queue, so autoplay plays what the list promised.
+
+Two things deliberately do **not** go through it. **Kids mode** ranks nothing —
+it curates from a fixed topic list and consults no personal signal, and ranking
+it against a profile built from the adult's viewing is precisely what must not
+happen; `watchSignals()` excludes `is_kids` rows for the same reason. And a
+**cold-start profile** falls back to the round-robin, because with every
+personal term at zero the order would collapse onto source prior and
+popularity, which is not a mix.
+
+`feed_impressions` is written only when the personalised feed is actually
+*rendered* — not when it is fetched, and never in incognito or Kids mode. The
+table exists solely to shape recommendations, so a mode that promises not to
+record what you watched must not quietly record what you were shown.
+`clearHistory()` clears it alongside history for the same reason.
+
+### The screen is kept awake by the player, not by a widget
+
+`PlaybackController._syncWakelock` owns the screen wakelock. `better_player`
+used to, and got it wrong in a way that took a while to see: it armed the lock
+in exactly **one** place — the transition *into* its fullscreen route — and
+released it **unconditionally** on the way out and from widget teardown. Three
+things followed, all reported as the same sentence, "the screen turns off while
+I am watching":
+
+- Inline playback and the Shorts tab never held it at all. Only fullscreen was
+  ever protected.
+- Picture-in-Picture enters and leaves fullscreen *programmatically* — the
+  plugin calls `enterFullScreen()` when PiP starts and `exitFullScreen()` when
+  it stops — so leaving PiP ran the unconditional release while the video
+  carried on playing inline. This app arms PiP automatically (PATCHES #17,
+  #19), so it happened with the user touching nothing.
+- Nothing ever re-armed it. Being a one-shot on a route change, once anything
+  dropped it, it stayed dropped for the rest of the video.
+
+A widget is the wrong owner for a process-wide lock in an app whose whole
+architecture is one player outliving every widget that renders it. All four
+call sites are removed from the vendored copy (PATCHES.md #23) and the
+controller derives the lock from playback state instead: **playing, with a
+picture, in the foreground**. Audio-only and a dropped video track are excluded
+on purpose rather than by oversight — that mode exists to listen with the
+screen off, and holding the screen on there burns the battery it was meant to
+save.
+
+It is re-asserted from the position listener rather than only on transitions,
+which is what makes it **self-healing**: it costs a bool comparison when
+nothing has moved, and anything that drops the lock behind its back is
+corrected within a tick instead of lasting the rest of the video.
+`allowedScreenSleep` is now inert and is left in the config only to say so.
+
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 8**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 9**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
 `history.is_kids` (v6) added columns via `ALTER TABLE` so existing history
 survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7);
-`data_usage` and `kids_usage` arrived as whole tables in v8. Both of those are
-keyed by a *day index*, not a timestamp — one row per day, so the tables stay
-tiny and yesterday's total can never leak into today's allowance — and that
-index comes from `KidsGuard.daysSinceEpoch`, for the local-calendar reason
-given above.
+`data_usage` and `kids_usage` arrived as whole tables in v8, and
+`feed_impressions` in v9. `data_usage` and `kids_usage` are keyed by a *day
+index*, not a timestamp — one row per day, so the tables stay tiny and
+yesterday's total can never leak into today's allowance — and that index comes
+from `KidsGuard.daysSinceEpoch`, for the local-calendar reason given above.
+`feed_impressions` keeps a real timestamp instead, because the ranker asks
+"how long ago" rather than "which day" and forgets a row entirely once it is
+a fortnight old.
 
 **A row is persisted through `VideoBrief.toMap()`, which is shared across the
 `history`, `downloads` and `playlist_items` tables** — so a column added to

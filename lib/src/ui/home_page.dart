@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -202,10 +204,21 @@ class HomePageState extends State<HomePage>
       _continue = resumeable;
       final subscribed = await db.subscriptions();
       if (!mounted) return;
+      // What the ranker orders against. Built here and passed down rather than
+      // read inside the repository, so the repository stays a thing that
+      // fetches videos and knows nothing about the database.
+      final profile = await db.tasteProfile();
+      final impressions = await db.feedImpressions();
+      if (!mounted) return;
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
         searches: searches,
         subscribedIds: [for (final c in subscribed) c.id],
+        // Recently watched videos, used to ask YouTube what people watch after
+        // them. The strongest candidate source available without an account.
+        coWatchSeeds: seeds.videoIds,
+        profile: profile,
+        impressions: impressions,
         refreshToken: _refreshToken,
         kids: context.read<SettingsService>().kidsMode,
       );
@@ -215,6 +228,7 @@ class HomePageState extends State<HomePage>
         _loading = false;
         _error = feed.isEmpty ? 'Nothing came back from YouTube.' : null;
       });
+      _noteImpressions(feed);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -227,6 +241,35 @@ class HomePageState extends State<HomePage>
   Future<void> _refresh() async {
     _refreshToken++;
     await _load();
+  }
+
+  /// Records that these videos were offered, which is what lets a later feed
+  /// stop offering the ones that were passed over.
+  ///
+  /// Skipped in incognito for the same reason the search history is: the
+  /// impression table exists only to shape recommendations, and a mode that
+  /// promises not to record what you watched must not quietly record what you
+  /// were shown either.
+  ///
+  /// Fire-and-forget, and only for the personalised feed — a topic chip or a
+  /// Kids feed is not a recommendation and nothing should be demoted for
+  /// appearing in one.
+  void _noteImpressions(List<VideoBrief> feed) {
+    if (feed.isEmpty) return;
+    if (!mounted) return;
+    if (_category != _CategoryChips.all) return;
+    final settings = context.read<SettingsService>();
+    if (settings.incognito || settings.kidsMode) return;
+    unawaited(
+      context
+          .read<AppDatabase>()
+          .recordImpressions([for (final v in feed) v.id])
+          .catchError((Object e) {
+        // Logged, never silent: impressions that quietly stop being written
+        // would leave the feed repeating itself with nothing to say why.
+        debugPrint('AI BIT: feed impressions not recorded - $e');
+      }),
+    );
   }
 
   static String _signature(List<String> searches, List<String> channelIds) =>

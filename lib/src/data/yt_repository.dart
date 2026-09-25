@@ -10,6 +10,7 @@ import 'comments_client.dart';
 import 'models.dart';
 import 'player_client.dart';
 import 'preview_data.dart';
+import 'recommender.dart';
 import 'search_client.dart';
 
 /// Wraps `youtube_explode_dart` and hides its client-selection quirks behind a
@@ -106,22 +107,43 @@ class YtRepository {
 
   // ------------------------------------------------------------------ feed
 
-  /// Home feed. Personalised from watch history when there is any, otherwise
-  /// a rotating slice of popular topics.
+  /// Home feed: candidate generation, then ranking.
   ///
-  /// [refreshToken] shifts the topic window so pull-to-refresh returns
-  /// something new rather than the same rows.
+  /// This is stage one of the two-stage shape described in `recommender.dart`.
+  /// Its job is to produce a few hundred *plausible* videos from every source
+  /// the app can reach, cheaply and in parallel, and then hand the whole pile
+  /// to [rankFeed] to be ordered. It deliberately does not try to be clever
+  /// about which source deserves which slot — that used to be this function's
+  /// entire ordering strategy, and it is exactly what the ranker replaces.
+  ///
+  /// [refreshToken] still rotates which channels and queries are *consulted*,
+  /// because a refresh should reach for material the last one did not fetch at
+  /// all. What it no longer does is shift a window into an unranked list and
+  /// call that a new feed: the ranker's impression penalty is what makes a
+  /// refresh surface things the user has not already been shown.
+  ///
+  /// [coWatchSeeds] are recently watched video ids. Asking YouTube what it
+  /// lists as related to each of them is the nearest thing this app has to the
+  /// co-watch graph the real recommender is trained on, and it is by some way
+  /// the best candidate source here — it was previously fetched only on the
+  /// watch page and never used to build the feed at all.
   Future<List<VideoBrief>> homeFeed({
     List<String> channelIds = const [],
     List<String> searches = const [],
     List<String> subscribedIds = const [],
+    List<String> coWatchSeeds = const [],
+    TasteProfile profile = TasteProfile.empty,
+    Map<String, ImpressionCount> impressions = const {},
     int refreshToken = 0,
     bool kids = false,
+    DateTime? now,
   }) async {
     if (isPreview) return _previewRows(refreshToken);
 
-    // Kids mode ignores the personal signals entirely and draws only from the
-    // curated kid topics, so nothing from normal watch history leaks in.
+    // Kids mode ignores every personal signal and draws only from the curated
+    // kid topics, so nothing from normal watch history can leak in — which is
+    // also why it does not go through the ranker: ranking against a profile
+    // built from the adult's viewing is precisely what must not happen here.
     if (kids) {
       final topics = _rotate(_kidsTopics, refreshToken).take(6);
       final results = await Future.wait(
@@ -130,50 +152,98 @@ class YtRepository {
       return _interleave(results, skip: refreshToken);
     }
 
-    // Pull-to-refresh has to change what the interest signals return, not just
-    // the filler topic. Rotating both lists means a different search and a
-    // different channel lead the feed each time, so refreshing on an
-    // established history actually moves the page instead of rebuilding it.
     final rotatedSearches = _rotate(searches, refreshToken);
     final rotatedChannels = _rotate(channelIds, refreshToken);
-
-    // Subscriptions were not consulted here at all, which is why the feed felt
-    // generic to someone who had subscribed to a lot: the only personal
-    // signals were recent searches and the channels behind recent watches.
     final rotatedSubs = _rotate(subscribedIds, refreshToken);
+    final rotatedSeeds = _rotate(coWatchSeeds, refreshToken);
 
-    final tasks = <Future<List<VideoBrief>>>[
-      // Channels the user actually follows are the strongest statement of
-      // intent available without an account, so they lead and get the most
-      // slots.
+    // Every source is fetched concurrently and tagged with where it came from.
+    // The tag is all the ordering information the ranker needs from this
+    // stage; everything else it works out from the videos themselves.
+    final tasks = <Future<(CandidateSource, List<VideoBrief>)>>[
       for (final id in rotatedSubs.take(6))
-        _safe(() => channelUploads(id, limit: 6)),
-      // Channels behind recent watches: followed or not, they are what is
-      // being watched right now.
+        _tagged(CandidateSource.subscription, () => channelUploads(id, limit: 6)),
+      // The co-watch graph. Three seeds rather than one because a single
+      // recent video biases the whole feed towards one evening's mood.
+      for (final videoId in rotatedSeeds.take(3))
+        _tagged(CandidateSource.coWatch, () => _browse.related(videoId)),
       for (final id in rotatedChannels.take(4))
-        _safe(() => channelUploads(id, limit: 6)),
-      // What was searched for recently.
-      for (final q in rotatedSearches.take(3)) _safe(() => search(q)),
+        _tagged(CandidateSource.watchedChannel, () => channelUploads(id, limit: 6)),
+      for (final q in rotatedSearches.take(3))
+        _tagged(CandidateSource.search, () => search(q)),
     ];
 
-    // Filler, kept deliberately small. A fresh install has no signals at all
-    // and would otherwise show an empty screen; once there is any history or
-    // any subscription, popular topics are one source among thirteen rather
-    // than a third of the feed.
-    final hasSignals =
-        searches.isNotEmpty || channelIds.isNotEmpty || subscribedIds.isNotEmpty;
+    // Filler, kept deliberately small, and smaller still once there is
+    // anything personal to go on. A fresh install has no signals at all and
+    // would otherwise show an empty screen.
+    final hasSignals = searches.isNotEmpty ||
+        channelIds.isNotEmpty ||
+        subscribedIds.isNotEmpty ||
+        coWatchSeeds.isNotEmpty;
     final topics = _rotate(_coldStartTopics, refreshToken);
-    final topicCount = hasSignals ? 1 : 4;
     tasks.addAll(
-      topics.take(topicCount).map((t) => _safe(() => search(t, sortByViews: true))),
+      topics.take(hasSignals ? 1 : 4).map(
+            (t) => _tagged(
+              CandidateSource.topic,
+              () => search(t, sortByViews: true),
+            ),
+          ),
     );
 
-    final results = await Future.wait(tasks);
-    // Each source returns the same ordering every time, so take a different
-    // window into it per refresh. Without this the same top result from each
-    // search sat at the top of the feed no matter how often you pulled.
-    return _interleave(results, skip: refreshToken);
+    final sections = await Future.wait(tasks);
+
+    // A profile with nothing in it cannot rank anything meaningfully — every
+    // personal term is zero and the order collapses onto source prior and
+    // popularity, which is a reasonable cold start but is not what the
+    // round-robin was for. A fresh install keeps the interleave so its feed is
+    // a mix rather than one topic's most-viewed videos in a row. Checked
+    // before ranking rather than after, so the cold-start path does not pay
+    // for a scoring pass whose result it throws away.
+    if (profile.isEmpty) {
+      return _interleave(
+        [for (final (_, videos) in sections) videos],
+        skip: refreshToken,
+      );
+    }
+
+    return rankFeed(
+      candidates: [
+        for (final (source, videos) in sections)
+          for (final video in videos) Candidate(video: video, source: source),
+      ],
+      profile: profile,
+      now: now ?? DateTime.now(),
+      impressions: impressions,
+    );
   }
+
+  /// Runs a candidate source and labels what came back, swallowing failures
+  /// the way [_safe] does — one dead source must not empty the whole feed.
+  Future<(CandidateSource, List<VideoBrief>)> _tagged(
+    CandidateSource source,
+    Future<List<VideoBrief>> Function() task,
+  ) async => (source, await _safe(task));
+
+  /// Orders a video's "Up next" list for this viewer.
+  ///
+  /// [related] is YouTube's own list and is kept as a strong prior — it is the
+  /// co-watch signal, and discarding it to re-derive something from local
+  /// history alone would throw away the only view of what everybody else does.
+  /// What this adds is the person holding the phone. See [rankUpNext].
+  List<VideoBrief> personalisedUpNext({
+    required VideoBrief current,
+    required List<VideoBrief> related,
+    required TasteProfile profile,
+    Map<String, ImpressionCount> impressions = const {},
+    DateTime? now,
+  }) =>
+      rankUpNext(
+        current: current,
+        related: related,
+        profile: profile,
+        now: now ?? DateTime.now(),
+        impressions: impressions,
+      );
 
   /// Newest uploads from the channels followed on this device, for the
   /// "Subscribed" chip on Home.

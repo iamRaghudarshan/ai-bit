@@ -10,7 +10,6 @@ import 'package:better_player_plus/src/core/better_player_with_controls.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:visibility_detector/visibility_detector.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 ///Widget which uses provided controller to render video player.
 class BetterPlayer extends StatefulWidget {
@@ -91,7 +90,10 @@ class _BetterPlayerState extends State<BetterPlayer> with WidgetsBindingObserver
     ///full screen is on, then full screen route must be pop and return to normal
     ///state.
     if (_isFullScreen) {
-      WakelockPlus.disable();
+      // PATCH: no WakelockPlus.disable() here. See the note in
+      // _pushFullScreenWidget and PATCHES.md #23 - the host app owns the
+      // screen wakelock, and releasing it from a widget teardown released it
+      // for playback that was still running.
       _navigatorState.maybePop();
       SystemChrome.setEnabledSystemUIMode(
         SystemUiMode.manual,
@@ -201,19 +203,18 @@ class _BetterPlayerState extends State<BetterPlayer> with WidgetsBindingObserver
       );
     }
 
-    if (!_betterPlayerConfiguration.allowedScreenSleep) {
-      await WakelockPlus.enable();
-    }
+    // PATCH: the wakelock is NOT armed here any more. It used to be armed on
+    // this one transition and released unconditionally below, which meant
+    // inline playback never held it at all, and anything that left fullscreen
+    // - including Picture in Picture, which enters and exits it
+    // programmatically - released it while the video was still playing. The
+    // host app derives it from playback state instead. PATCHES.md #23.
 
     if (context.mounted) {
       await Navigator.of(context, rootNavigator: true).push(route);
       _isFullScreen = false;
       widget.controller.backFromFullScreen();
     }
-
-    // The wakelock plugins checks whether it needs to perform an action internally,
-    // so we do not need to check Wakelock.isEnabled.
-    await WakelockPlus.disable();
 
     await SystemChrome.setEnabledSystemUIMode(
       SystemUiMode.manual,

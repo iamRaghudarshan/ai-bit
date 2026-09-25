@@ -188,7 +188,21 @@ class _WatchPageState extends State<WatchPage>
 
     try {
       final details = await repo.videoDetails(_video.id);
-      final related = await repo.related(details);
+      final rawRelated = await repo.related(details);
+      if (!mounted) return;
+      // YouTube's related list is a recommendation for everybody; this makes
+      // it one for this viewer. Already-watched videos sink, followed and
+      // well-watched channels rise, and the channel already on screen is
+      // damped so autoplay stops walking down one uploader's back catalogue.
+      // The same ordering feeds both the visible Up-next list and the queue,
+      // so what autoplay plays is what the list said it would.
+      final db = context.read<AppDatabase>();
+      final related = repo.personalisedUpNext(
+        current: _video,
+        related: rawRelated,
+        profile: await db.tasteProfile(),
+        impressions: await db.feedImpressions(),
+      );
       if (!mounted) return;
       setState(() {
         _details = details;

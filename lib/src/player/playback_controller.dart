@@ -6,6 +6,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/foundation.dart'
     show kIsWeb, debugPrint, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../core/chapters.dart';
 import '../core/format.dart';
@@ -722,6 +723,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // popping the watch page would tear down the native player.
         autoDispose: false,
         handleLifecycle: false,
+        // Inert in the vendored copy, and left here only to say so: the
+        // plugin no longer touches the wakelock at all (PATCHES.md #23).
+        // _syncWakelock owns it, because a flag read once on a fullscreen
+        // route change cannot describe a player that outlives every widget.
         allowedScreenSleep: false,
         autoDetectFullscreenDeviceOrientation: true,
         // A no-op keeps better_player from pausing when the surface scrolls
@@ -1373,6 +1378,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> stop() async {
     _cancelSleepTimer();
+    // Before the fields the decision reads are cleared below.
+    _releaseWakelock();
     // Bank the last partial batch while _current still says what it belongs to.
     _flushWatchTime();
     _watchMillis = 0;
@@ -1390,6 +1397,91 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+
+  // ------------------------------------------------------ screen wakelock
+
+  /// Whether this controller currently asks the system to keep the screen on.
+  ///
+  /// The app owns this rather than the player widget, and that is the whole
+  /// point. `better_player` armed the wakelock in exactly one place — the
+  /// transition *into* its fullscreen route — and released it unconditionally
+  /// on the way out. Three things followed, and all three were reported as
+  /// "the screen goes off while I am watching":
+  ///
+  ///   * Inline playback and the Shorts tab never held it at all, because
+  ///     neither ever enters that route.
+  ///   * Picture in Picture enters and leaves fullscreen *programmatically*
+  ///     (the plugin calls `enterFullScreen()` when PiP starts and
+  ///     `exitFullScreen()` when it stops), so leaving PiP released the
+  ///     wakelock while the video carried on playing inline. This app arms PiP
+  ///     automatically, so that happened without the user touching anything.
+  ///   * Nothing ever re-armed it. It was a one-shot on a route change, so
+  ///     once any of the above dropped it, it stayed dropped for the rest of
+  ///     the video — "plays fine, then the screen goes off after a while".
+  ///
+  /// So the plugin no longer touches it at all (PATCHES.md #23) and this is
+  /// the single owner. It is derived from playback state and re-evaluated on
+  /// every player event, which means it is self-healing: any path that stops
+  /// playback or backgrounds the app releases it, and resuming takes it back.
+  bool _wakelockHeld = false;
+
+  /// True when the screen should be kept awake: something is playing, it has
+  /// a picture worth looking at, and the app is actually in front.
+  ///
+  /// Audio-only is deliberately excluded rather than overlooked — it is the
+  /// mode whose entire purpose is listening with the screen off, and holding
+  /// the screen on there would burn the battery it exists to save. The same
+  /// goes for a dropped video track, which only happens once the app is
+  /// already in the background.
+  bool get _shouldKeepScreenOn =>
+      _player != null &&
+      _playing &&
+      !isAudioOnly &&
+      !_droppedVideo &&
+      _foreground;
+
+  /// Tracks the foreground/background state the wakelock decision needs.
+  /// `didChangeAppLifecycleState` already runs here for the screen-off track
+  /// swap, so this costs nothing extra.
+  bool _foreground = true;
+
+  /// Applies [_shouldKeepScreenOn], cheaply enough to call from every event.
+  ///
+  /// Never awaited by its callers: the answer is advisory and a failed toggle
+  /// must not be able to interrupt playback. It is logged rather than
+  /// swallowed, because a wakelock that silently stops working is exactly the
+  /// dead feature this codebase keeps relearning about bare catches.
+  void _syncWakelock() {
+    final wanted = _shouldKeepScreenOn;
+    if (wanted == _wakelockHeld) return;
+    _wakelockHeld = wanted;
+    unawaited(
+      (wanted ? WakelockPlus.enable() : WakelockPlus.disable()).catchError((
+        Object e,
+      ) {
+        // Put the flag back so the next event retries rather than believing a
+        // toggle that never happened.
+        _wakelockHeld = !wanted;
+        debugPrint('AI BIT: could not ${wanted ? 'hold' : 'release'} the '
+            'screen wakelock — $e');
+      }),
+    );
+  }
+
+  /// Releases the wakelock without consulting the playback state.
+  ///
+  /// Used on teardown, where the fields this decision reads have already been
+  /// cleared and [_syncWakelock] would be reasoning about a half-dismantled
+  /// controller.
+  void _releaseWakelock() {
+    if (!_wakelockHeld) return;
+    _wakelockHeld = false;
+    unawaited(
+      WakelockPlus.disable().catchError((Object e) {
+        debugPrint('AI BIT: could not release the screen wakelock — $e');
+      }),
+    );
+  }
   // ------------------------------------------------- screen-off audio mode
 
   /// True while the video track has been dropped because the screen is off.
@@ -1410,8 +1502,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // now, and those are fine once backgrounded.
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
+        // Release the screen wakelock on the way out, not on the way back in.
+        // Audio may well carry on playing in the background, and asking the
+        // system to keep a screen awake that the user has just left is how a
+        // background-audio app becomes a battery complaint.
+        _foreground = false;
+        _syncWakelock();
         unawaited(_dropVideoTrack());
       case AppLifecycleState.resumed:
+        _foreground = true;
+        _syncWakelock();
         unawaited(_restoreVideoTrack());
       default:
         break;
@@ -1541,6 +1641,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       case BetterPlayerEventType.play:
       case BetterPlayerEventType.pause:
         _playing = _player?.isPlaying() ?? false;
+        // Pausing can be the last value change for a while, so the wakelock
+        // decision cannot wait for the position listener to notice.
+        _syncWakelock();
         notifyListeners();
       default:
         break;
@@ -1572,6 +1675,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _applySponsorSkip();
+
+    // Re-asserted from the position listener rather than only on transitions,
+    // which is what makes the wakelock self-healing: it fires several times a
+    // second while playing and costs a bool comparison when nothing has moved,
+    // so anything that drops the lock behind our back is corrected within a
+    // tick instead of lasting the rest of the video.
+    _syncWakelock();
 
     final second = Duration(seconds: _position.inSeconds);
     if (_lastNotified != second) {
@@ -1699,6 +1809,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // The wakelock is process-wide, so a controller that goes away holding it
+    // would leave the screen awake with nothing playing.
+    _releaseWakelock();
     _cancelSleepTimer();
     _cancelCountdown();
     _player?.videoPlayerController?.removeListener(_onValueChanged);

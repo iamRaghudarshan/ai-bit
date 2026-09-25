@@ -215,6 +215,32 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    to a message rather than a hang.
 
 
+23. The screen wakelock was armed in exactly ONE place - the transition into
+   the plugin's fullscreen route, and only when `allowedScreenSleep` was false
+   - and released **unconditionally** on the way out, plus again from
+   `_BetterPlayerState.dispose()`. Three consequences, all of which reached the
+   user as the same sentence, "the screen turns off while I am watching":
+
+   * Inline playback and the Shorts tab never held it at all, because neither
+     ever enters that route. Only fullscreen was ever protected.
+   * Picture in Picture enters and leaves fullscreen *programmatically* -
+     `enablePictureInPicture` calls `enterFullScreen()`, and the pipStop branch
+     of `_handleVideoEvent` calls `exitFullScreen()` - so leaving PiP ran the
+     unconditional release while the video carried on playing inline. AI BIT
+     arms PiP automatically (#17, #19), so this happened with the user touching
+     nothing.
+   * Nothing ever re-armed it. Being a one-shot on a route change, once any of
+     the above dropped it, it stayed dropped for the rest of the video. That is
+     the "plays fine, then the screen goes off after a while" report exactly.
+
+   A widget is the wrong owner for a process-wide lock in an app whose whole
+   architecture is one player that outlives every widget rendering it. All four
+   call sites are removed here and `wakelock_plus` is no longer imported by
+   this file; `PlaybackController._syncWakelock` derives the lock from playback
+   state instead - playing, with a picture, in the foreground - and re-asserts
+   it from the position listener, so it is self-healing rather than one-shot.
+   `allowedScreenSleep` is consequently inert in this copy.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a
