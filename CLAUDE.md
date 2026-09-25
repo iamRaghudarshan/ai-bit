@@ -25,14 +25,29 @@ Single test by name:
 D:/flutter/bin/flutter.bat test test/unit_test.dart --plain-name "compactCount"
 ```
 
-Tests are pure unit tests (`test/unit_test.dart`) covering formatters, the
+Tests are in two files. `test/unit_test.dart` is pure — no I/O, no device —
+covering formatters, the
 `VideoBrief` ⇄ SQLite round trip, the "did the video really end" rule, download
 target sizing and the media-processor fallback contract, plus the pure helpers
 the later waves added — `KidsGuard.daysSinceEpoch`, PIN hashing and its
 constant-time compare, `DataUsageService.estimateStreamBytes` and the queue
-shuffle's ordering. They do no I/O and need no device. Anything whose answer is
-only wrong once a day, or only wrong on a 60fps stream, belongs here: both of
-those bugs shipped, and both are now pinned by a test.
+shuffle's ordering, and the whole recommender. Anything whose answer is only
+wrong once a day, or only wrong on a 60fps stream, belongs here: both of those
+bugs shipped, and both are now pinned by a test.
+
+`test/db_test.dart` runs the **real SQLite engine** through
+`sqflite_common_ffi`, because the one part of this app that had never been
+executed anywhere was its SQL — neither platform builds here, so a broken query
+would first run on a user's phone. It found three real defects on its first
+run, one of which was **an app that would not start**: upgrading from schema v1
+created the `downloads` table from the current definition and then ALTERed it
+with v7's columns, which threw "duplicate column name" inside `onUpgrade` and
+failed the open. `_addColumnIfMissing` guards that shape now, and it should be
+used for any future column added to a table an earlier migration may have
+created whole. The suite covers every table, the VideoBrief round trip through
+all three tables that store one, and a v1-to-current migration. It skips itself
+with a reason if sqlite3 cannot be loaded, so a missing system package cannot
+block a release.
 
 **Neither platform can be built here.** iOS needs Xcode on macOS; the Android
 SDK is not installed. Native code — `ios/Runner/*.swift`, the vendored plugin's

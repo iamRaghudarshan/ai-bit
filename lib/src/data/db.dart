@@ -15,16 +15,29 @@ class AppDatabase {
 
   static const _historyLimit = 500;
 
-  static Future<AppDatabase> open() async {
+  /// Opens the app database.
+  ///
+  /// [path] and [factory] exist so a test can point this at a temporary file
+  /// with the FFI factory, and are never passed by the app itself. Without
+  /// them the whole persistence layer — eleven migrations, and the SQL behind
+  /// every feature here — could only ever be exercised on a device, which is
+  /// to say never, because neither platform builds on this machine. Two real
+  /// SQL defects were found the day this hook was added.
+  static Future<AppDatabase> open({String? path, DatabaseFactory? factory}) async {
     // Web is a UI-preview target only — the app ships to iOS/Android, where
     // sqflite uses the platform's native SQLite. On web there is no such
     // engine, so swap in the IndexedDB-backed factory to keep the app bootable
     // in a browser.
-    if (kIsWeb) databaseFactory = databaseFactoryFfiWeb;
+    if (factory != null) {
+      databaseFactory = factory;
+    } else if (kIsWeb) {
+      databaseFactory = databaseFactoryFfiWeb;
+    }
 
-    final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
+    final resolved = path ??
+        (kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db');
     final db = await openDatabase(
-      path,
+      resolved,
       version: 11,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
@@ -60,13 +73,18 @@ class AppDatabase {
           // every saveDownload / addToPlaylist threw "no column named is_short"
           // and the download or save failed outright. Add the columns here so
           // the shared insert matches the schema again.
+          //
+          // Added only if absent, and that is not defensiveness. An install old
+          // enough to predate the `downloads` table gets it from
+          // _createDownloads a few lines above — which is the CURRENT
+          // definition and already carries both columns — and the plain ALTER
+          // then failed with "duplicate column name", throwing inside
+          // onUpgrade, which fails the open. The app would not start at all.
+          // Any migration that both creates a table and later alters it has
+          // this shape; the guard belongs on all of them.
           for (final table in ['downloads', 'playlist_items']) {
-            await db.execute(
-              'ALTER TABLE $table ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0',
-            );
-            await db.execute(
-              'ALTER TABLE $table ADD COLUMN is_kids INTEGER NOT NULL DEFAULT 0',
-            );
+            await _addColumnIfMissing(db, table, 'is_short');
+            await _addColumnIfMissing(db, table, 'is_kids');
           }
         }
         if (from < 8) {
@@ -80,9 +98,11 @@ class AppDatabase {
           // attention a showing actually had. Existing rows are back-filled at
           // full weight, which is the old behaviour and errs towards keeping
           // the penalty they already carried rather than silently forgiving it.
-          await db.execute(
-            'ALTER TABLE feed_impressions ADD COLUMN attention REAL NOT NULL '
-            'DEFAULT 0',
+          await _addColumnIfMissing(
+            db,
+            'feed_impressions',
+            'attention',
+            type: 'REAL',
           );
           await db.execute(
             'UPDATE feed_impressions SET attention = shown WHERE attention = 0',
@@ -95,6 +115,34 @@ class AppDatabase {
       },
     );
     return AppDatabase._(db);
+  }
+
+  /// Closes the underlying database. Only a test needs this — the app's one
+  /// instance lives as long as the process.
+  Future<void> close() => _db.close();
+
+  /// Adds [column] to [table] unless it is already there.
+  ///
+  /// Guards the one shape of migration bug this schema keeps producing: a
+  /// table that is CREATEd by a later-version helper during an upgrade from an
+  /// early version, and then ALTERed by a step that assumes the old layout.
+  /// The ALTER throws "duplicate column name" inside onUpgrade, which fails
+  /// the open — so the symptom is not a missing feature, it is an app that
+  /// will not start, for exactly the users with the oldest data.
+  static Future<void> _addColumnIfMissing(
+    Database db,
+    String table,
+    String column, {
+    String type = 'INTEGER',
+    String defaultValue = '0',
+  }) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    final present = columns.any((c) => c['name'] == column);
+    if (present) return;
+    await db.execute(
+      'ALTER TABLE $table ADD COLUMN $column $type NOT NULL '
+      'DEFAULT $defaultValue',
+    );
   }
 
   static Future<void> _createSchema(Database db, int version) async {
@@ -861,7 +909,17 @@ class AppDatabase {
   ///
   /// Read-then-delete rather than a trained flag: the alternative is a table
   /// that grows for ever holding rows nothing will ever look at again.
-  Future<List<RankingExample>> takeRankingExamples({int limit = 500}) async {
+  /// [settle] is how long an example is left alone before it is trained on.
+  ///
+  /// An offer is only evidence once the user has had the chance to act on it,
+  /// so rows from the feed still on screen are left for next time. Twenty
+  /// minutes is generous — a session is usually shorter — and it is a
+  /// parameter rather than a constant so a test can ask for the rows without
+  /// waiting for the clock.
+  Future<List<RankingExample>> takeRankingExamples({
+    int limit = 500,
+    Duration settle = const Duration(minutes: 20),
+  }) async {
     final cutoff =
         DateTime.now().subtract(_exampleMemory).millisecondsSinceEpoch;
     await _db.delete(
@@ -870,11 +928,7 @@ class AppDatabase {
       whereArgs: [cutoff],
     );
 
-    // An example is only meaningful once the user has had the chance to act on
-    // it. Rows from the feed still on screen are left for next time.
-    final settled = DateTime.now()
-        .subtract(const Duration(minutes: 20))
-        .millisecondsSinceEpoch;
+    final settled = DateTime.now().subtract(settle).millisecondsSinceEpoch;
     final rows = await _db.query(
       'ranking_examples',
       where: 'shown_at < ?',
@@ -883,6 +937,11 @@ class AppDatabase {
       limit: limit,
     );
     if (rows.isEmpty) return const [];
+    // Exactly the rows read, so a backlog larger than [limit] is trained on
+    // over several passes instead of having its tail deleted unseen. Deleting
+    // by the same `shown_at` predicate the query used looks equivalent and is
+    // not: the query is capped and the delete was not.
+    final consumed = [for (final r in rows) r['video_id']! as String];
 
     final out = <RankingExample>[];
     for (final r in rows) {
@@ -910,8 +969,8 @@ class AppDatabase {
 
     await _db.delete(
       'ranking_examples',
-      where: 'shown_at < ?',
-      whereArgs: [settled],
+      where: 'video_id IN (${List.filled(consumed.length, '?').join(',')})',
+      whereArgs: consumed,
     );
     return out;
   }
@@ -964,11 +1023,15 @@ class AppDatabase {
   /// stronger one: saving something for later or spending storage on it is not
   /// the reflex a tap on a thumb is.
   Future<Set<String>> endorsedChannels() async {
+    // Single quotes. In SQL a double-quoted token is an IDENTIFIER, and this
+    // only behaved because SQLite falls back to treating one as a string when
+    // no such column exists — a documented misfeature, not a guarantee, and
+    // one that silently changes meaning the day a column is named oddly.
     final rows = await _db.rawQuery(
-      'SELECT DISTINCT channel_id FROM playlist_items '
-      'WHERE channel_id != "" '
-      'UNION '
-      'SELECT DISTINCT channel_id FROM downloads WHERE channel_id != ""',
+      "SELECT DISTINCT channel_id FROM playlist_items "
+      "WHERE channel_id != '' "
+      "UNION "
+      "SELECT DISTINCT channel_id FROM downloads WHERE channel_id != ''",
     );
     return {for (final r in rows) r['channel_id']! as String};
   }

@@ -69,7 +69,8 @@ class HomePageState extends State<HomePage>
   /// Held until a card is actually seen — an offer the user never scrolled to
   /// is not an observation about the ranker's judgement, and training on it
   /// would teach the model that its own unseen suggestions were rejected.
-  Map<String, List<double>> _pendingFeatures = const {};
+  /// Mutable on purpose: entries are removed as they are used.
+  Map<String, List<double>> _pendingFeatures = <String, List<double>>{};
 
   /// Counts which feed cards were actually on screen, for the ranker's
   /// impression feature. Built here and disposed with the screen so a pending
@@ -298,7 +299,11 @@ class HomePageState extends State<HomePage>
 
     // The same moment is when this card becomes a training example: it was
     // offered, it was seen, and whether it gets opened is the label.
-    final features = _pendingFeatures[videoId];
+    //
+    // Taken out of the pending map as it is used, so scrolling a card off and
+    // back on issues one write rather than one per sighting. The insert
+    // ignores duplicates anyway, but a fling should not queue a dozen of them.
+    final features = _pendingFeatures.remove(videoId);
     if (features == null || !mounted) return;
     final settings = context.read<SettingsService>();
     if (settings.incognito || settings.kidsMode) return;
