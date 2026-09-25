@@ -4,6 +4,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../../core/format.dart';
 import '../../data/db.dart';
+import '../../data/recommender.dart';
 import '../../data/download_manager.dart';
 import '../../data/models.dart';
 import '../../data/settings.dart';
@@ -537,6 +538,7 @@ Future<void> showVideoMenu(
   VideoBrief video, {
   VoidCallback? onRemove,
   String removeLabel = 'Remove',
+  VoidCallback? onDismissed,
 }) {
   final playback = context.read<PlaybackController>();
   final db = context.read<AppDatabase>();
@@ -654,7 +656,94 @@ Future<void> showVideoMenu(
                 onRemove();
               },
             ),
+          const Divider(height: 1),
+          // The only place in the app where the user states a preference
+          // outright. Everything the recommender otherwise knows is inferred
+          // from what they watched, and inference cannot be argued with; this
+          // can, which is why YouTube treats the same two controls as
+          // first-class signals and why the ranker drops a match entirely
+          // rather than merely demoting it.
+          ListTile(
+            leading: const Icon(Icons.not_interested),
+            title: const Text('Not interested'),
+            subtitle: const Text('Stop recommending this video'),
+            onTap: () async {
+              // Taken before the await: the sheet is closing, and looking a
+              // messenger up from a context afterwards is the async-gap bug
+              // the analyzer is right to object to.
+              final messenger = ScaffoldMessenger.of(context);
+              Navigator.pop(sheetContext);
+              await db.addNotInterested(
+                id: video.id,
+                kind: DislikeKind.video,
+                // Kept so the dismissal can generalise weakly through the
+                // title's words rather than applying to this one id alone.
+                title: video.title,
+              );
+              onDismissed?.call();
+              _confirmDismissal(
+                messenger,
+                db,
+                message: 'We will stop recommending this video.',
+                id: video.id,
+                kind: DislikeKind.video,
+              );
+            },
+          ),
+          if (video.channelId.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.block),
+              title: const Text('Don\'t recommend this channel'),
+              subtitle: Text('Hide ${video.author} from recommendations'),
+              onTap: () async {
+                final messenger = ScaffoldMessenger.of(context);
+                Navigator.pop(sheetContext);
+                await db.addNotInterested(
+                  id: video.channelId,
+                  kind: DislikeKind.channel,
+                );
+                onDismissed?.call();
+                _confirmDismissal(
+                  messenger,
+                  db,
+                  message: 'We will stop recommending ${video.author}.',
+                  id: video.channelId,
+                  kind: DislikeKind.channel,
+                );
+              },
+            ),
         ],
+      ),
+    ),
+  );
+}
+
+/// Confirms a dismissal and offers to take it back.
+///
+/// [onDismissed] on the menu is deliberately distinct from `onRemove`: the
+/// latter means "take this out of the playlist you are looking at" and firing
+/// it here would delete the video, which is emphatically not what "not
+/// interested" asks for.
+///
+/// Undo is not politeness here. A dismissal is near-absolute in the ranker —
+/// a channel one is a hard exclusion — so a mis-tap would otherwise remove a
+/// channel from the feed permanently, with no indication that it had happened
+/// and nothing in the UI to reverse it.
+void _confirmDismissal(
+  ScaffoldMessengerState messenger,
+  AppDatabase db, {
+  required String message,
+  required String id,
+  required DislikeKind kind,
+}) {
+  messenger.showSnackBar(
+    SnackBar(
+      content: Text(message),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 6),
+      action: SnackBarAction(
+        label: 'Undo',
+        onPressed: () => db.removeNotInterested(id: id, kind: kind),
       ),
     ),
   );

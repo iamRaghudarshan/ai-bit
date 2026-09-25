@@ -25,7 +25,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 9,
+      version: 10,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -35,6 +35,7 @@ class AppDatabase {
         await _createDataUsage(db);
         await _createKidsUsage(db);
         await _createFeedImpressions(db);
+        await _createNotInterested(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -71,6 +72,20 @@ class AppDatabase {
           await _createKidsUsage(db);
         }
         if (from < 9) await _createFeedImpressions(db);
+        if (from < 10) {
+          await _createNotInterested(db);
+          // Impressions gained a positional weight: how much of the user's
+          // attention a showing actually had. Existing rows are back-filled at
+          // full weight, which is the old behaviour and errs towards keeping
+          // the penalty they already carried rather than silently forgiving it.
+          await db.execute(
+            'ALTER TABLE feed_impressions ADD COLUMN attention REAL NOT NULL '
+            'DEFAULT 0',
+          );
+          await db.execute(
+            'UPDATE feed_impressions SET attention = shown WHERE attention = 0',
+          );
+        }
       },
     );
     return AppDatabase._(db);
@@ -225,7 +240,31 @@ class AppDatabase {
       CREATE TABLE feed_impressions (
         video_id      TEXT PRIMARY KEY,
         shown         INTEGER NOT NULL DEFAULT 0,
+        attention     REAL NOT NULL DEFAULT 0,
         last_shown_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  /// Videos and channels the user has explicitly said no to.
+  ///
+  /// YouTube names *Not interested* and *Don't recommend channel* as first-class
+  /// recommendation signals, and for an app with no likes, no surveys and no
+  /// account this is the only one the user states outright rather than having
+  /// inferred from their behaviour. It is therefore treated as near-absolute:
+  /// see `recommender.dart`, where a match is dropped from the candidate pool
+  /// rather than merely demoted.
+  ///
+  /// The title is kept for a dismissed video so the dismissal can generalise
+  /// weakly through its words. A channel row needs none.
+  static Future<void> _createNotInterested(Database db) async {
+    await db.execute('''
+      CREATE TABLE not_interested (
+        id         TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        title      TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (id, kind)
       )
     ''');
   }
@@ -650,35 +689,41 @@ class AppDatabase {
     final history = await watchSignals();
     final searches = await searchSignals();
     final subs = await subscriptions();
+    final dismissed = await notInterested();
     return TasteProfile.from(
       history: history,
       searches: searches,
       subscribed: {for (final c in subs) c.id},
       now: now ?? DateTime.now(),
+      dislikedChannels: dismissed.channels,
+      dislikedVideos: dismissed.videos,
     );
   }
 
-  /// Counts one showing for each of [videoIds].
+  /// Counts one showing for each entry of [seen], mapping video id to how much
+  /// of the user's attention that showing had — see
+  /// [attentionAtRank] and the shallow-tower note on [ImpressionCount].
   ///
-  /// Called when a feed is actually rendered, never when it is merely fetched:
-  /// a video the user never laid eyes on has not been offered to them, and
-  /// counting it would demote it for nothing.
+  /// Called when a card is actually on screen, never when a feed is merely
+  /// fetched: a video the user never laid eyes on has not been offered to
+  /// them, and counting it would demote it for nothing.
   ///
   /// Batched into a single transaction because a feed is a hundred rows and a
   /// hundred separate writes on the UI isolate is visible as a stutter.
-  Future<void> recordImpressions(Iterable<String> videoIds) async {
-    final ids = videoIds.where((id) => id.isNotEmpty).toSet();
-    if (ids.isEmpty) return;
+  Future<void> recordImpressions(Map<String, double> seen) async {
+    if (seen.isEmpty) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     final batch = _db.batch();
-    for (final id in ids) {
+    for (final entry in seen.entries) {
+      if (entry.key.isEmpty) continue;
       batch.rawInsert('''
-        INSERT INTO feed_impressions (video_id, shown, last_shown_at)
-        VALUES (?, 1, ?)
+        INSERT INTO feed_impressions (video_id, shown, attention, last_shown_at)
+        VALUES (?, 1, ?, ?)
         ON CONFLICT(video_id) DO UPDATE SET
           shown = shown + 1,
+          attention = attention + excluded.attention,
           last_shown_at = excluded.last_shown_at
-      ''', [id, now]);
+      ''', [entry.key, entry.value, now]);
     }
     await batch.commit(noResult: true);
   }
@@ -705,11 +750,95 @@ class AppDatabase {
         r['video_id']! as String: ImpressionCount(
           videoId: r['video_id']! as String,
           shown: r['shown'] as int? ?? 0,
+          attention: (r['attention'] as num?)?.toDouble(),
           lastShownAt: DateTime.fromMillisecondsSinceEpoch(
             r['last_shown_at']! as int,
           ),
         ),
     };
+  }
+
+  /// Records an explicit dismissal.
+  ///
+  /// [title] is only meaningful for a video, where its words let the dismissal
+  /// generalise a little; a channel dismissal needs nothing but the id.
+  Future<void> addNotInterested({
+    required String id,
+    required DislikeKind kind,
+    String title = '',
+  }) async {
+    if (id.isEmpty) return;
+    await _db.insert(
+      'not_interested',
+      {
+        'id': id,
+        'kind': kind.name,
+        'title': title,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Undoes one dismissal, for the snackbar's Undo.
+  ///
+  /// Worth having rather than making the user live with a mis-tap: a dismissal
+  /// is deliberately near-absolute in the ranker, so an accidental one would
+  /// otherwise silently remove a channel from the feed for good with no way
+  /// back short of the settings screen.
+  Future<void> removeNotInterested({
+    required String id,
+    required DislikeKind kind,
+  }) =>
+      _db.delete(
+        'not_interested',
+        where: 'id = ? AND kind = ?',
+        whereArgs: [id, kind.name],
+      );
+
+  Future<bool> isNotInterested({
+    required String id,
+    required DislikeKind kind,
+  }) async {
+    final rows = await _db.query(
+      'not_interested',
+      columns: ['id'],
+      where: 'id = ? AND kind = ?',
+      whereArgs: [id, kind.name],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<void> clearNotInterested() => _db.delete('not_interested');
+
+  /// Everything dismissed, split by kind, for [tasteProfile].
+  Future<({Set<String> channels, List<WatchSignal> videos})>
+      notInterested() async {
+    final rows = await _db.query('not_interested');
+    final channels = <String>{};
+    final videos = <WatchSignal>[];
+    for (final r in rows) {
+      final id = r['id']! as String;
+      if (r['kind'] == DislikeKind.channel.name) {
+        channels.add(id);
+      } else {
+        // Reused as the carrier for "an id and a title" rather than inventing
+        // a second shape for the same two fields; the ranker only reads those.
+        videos.add(
+          WatchSignal(
+            videoId: id,
+            channelId: '',
+            title: (r['title'] as String?) ?? '',
+            watchedAt: DateTime.fromMillisecondsSinceEpoch(
+              r['created_at']! as int,
+            ),
+            completion: 0,
+          ),
+        );
+      }
+    }
+    return (channels: channels, videos: videos);
   }
 
   Future<void> clearFeedImpressions() => _db.delete('feed_impressions');

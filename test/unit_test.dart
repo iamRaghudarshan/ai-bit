@@ -1947,4 +1947,601 @@ Some blurb about the video.
       expect(out.last.id, 'seen');
     });
   });
+
+  // ------------------------------------------- recommender, second pass
+  //
+  // Engagement/satisfaction splitting, position-bias discounting, explicit
+  // dismissals, topic diversity and exploration. Each is a separate judgement
+  // about what somebody wants, so each is pinned separately.
+
+  group('satisfaction', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    // The clickbait case, constructed so ENGAGEMENT IS EQUAL and only
+    // satisfaction differs. 'bait' is opened nine times and abandoned after a
+    // tenth of each; 'good' is opened once and nearly finished. Affinity is
+    // completion x recency summed, so both come to 0.9 - which is exactly the
+    // trap: under engagement alone these two channels are indistinguishable.
+    final profile = TasteProfile.from(
+      history: [
+        WatchSignal(
+          videoId: 'g1',
+          channelId: 'good',
+          title: 'alpha beta gamma',
+          watchedAt: now,
+          completion: 0.9,
+        ),
+        for (var i = 0; i < 9; i++)
+          WatchSignal(
+            videoId: 'b$i',
+            channelId: 'bait',
+            title: 'alpha beta gamma',
+            watchedAt: now,
+            completion: 0.1,
+          ),
+      ],
+      searches: const [],
+      subscribed: const {},
+      now: now,
+    );
+
+    test('the two channels really are equal on engagement', () {
+      // If this ever stops holding, the test below stops testing satisfaction
+      // and starts testing affinity without saying so.
+      expect(
+        profile.channelAffinity['good']!,
+        closeTo(profile.channelAffinity['bait']!, 1e-9),
+      );
+    });
+
+    test('a channel that is opened and abandoned scores worse than one that '
+        'is watched through', () {
+      expect(
+        profile.satisfactionFor('bait'),
+        lessThan(profile.satisfactionFor('good')),
+      );
+    });
+
+    VideoBrief candidateFrom(String channel) => VideoBrief(
+          id: 'c-$channel',
+          title: 'delta epsilon zeta',
+          author: channel,
+          channelId: channel,
+          uploadDate: now.subtract(const Duration(days: 1)),
+        );
+
+    double scoreOf(String channel) {
+      final maxAffinity = profile.channelAffinity.values
+          .fold<double>(0, (a, b) => a > b ? a : b);
+      return score(
+        candidate: Candidate(
+          video: candidateFrom(channel),
+          source: CandidateSource.search,
+        ),
+        profile: profile,
+        now: now,
+        maxAffinity: maxAffinity,
+      ).total;
+    }
+
+    test('so the clickbait channel is ranked below the satisfying one', () {
+      // The whole point of splitting the objectives. Engagement alone cannot
+      // tell these apart; the feed can.
+      expect(scoreOf('bait'), lessThan(scoreOf('good')));
+    });
+
+    test('the gap between them is material, not a rounding error', () {
+      // The two are indistinguishable to an engagement-only ranker, so this
+      // whole gap is the satisfaction gate doing its job.
+      expect(scoreOf('good') - scoreOf('bait'), greaterThan(0.3));
+    });
+
+    test('an unknown channel is neither rewarded nor punished for being new',
+        () {
+      // It sits at the neutral prior. Punished, nothing new could ever
+      // surface; rewarded, the profile would be pointless.
+      final unknown = TasteProfile.empty.satisfactionFor('stranger');
+      expect(unknown, greaterThan(profile.satisfactionFor('bait')));
+      expect(unknown, lessThan(profile.satisfactionFor('good')));
+    });
+
+    test('but a much-watched channel still out-ranks a stranger, gate or not',
+        () {
+      // Worth pinning because it is a deliberate limit, not an oversight.
+      // Repeated abandonment demotes a channel; it does not banish it, because
+      // opening something nine times is still engagement and the app cannot
+      // know the user was not simply sampling. Banishing is what the explicit
+      // "not interested" control is for, and that one IS absolute.
+      expect(scoreOf('bait'), greaterThan(scoreOf('stranger')));
+    });
+
+    test('one abandoned video does not condemn a channel', () {
+      // Shrinkage towards neutral. Without it, noise beats evidence: a channel
+      // with a single bad sample would rank below one abandoned fifty times.
+      final thin = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'x',
+            channelId: 'newish',
+            title: 't',
+            watchedAt: now,
+            completion: 0.05,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        thin.satisfactionFor('newish'),
+        greaterThan(profile.satisfactionFor('bait')),
+      );
+    });
+
+    test('satisfaction gates engagement rather than being added to it', () {
+      // Multiplicative, and bounded either side, so a big engagement score
+      // cannot simply drown it and a bad channel is held down without being
+      // erased.
+      const bad = ScoredCandidate(
+        video: VideoBrief(id: 'a', title: 't', author: 'a', channelId: 'a'),
+        source: CandidateSource.search,
+        affinity: 1,
+        topic: 1,
+        freshness: 1,
+        popularity: 1,
+        context: 0,
+        satisfaction: 0,
+        impressionPenalty: 0,
+        watchedPenalty: 0,
+        dislikePenalty: 0,
+      );
+      const good = ScoredCandidate(
+        video: VideoBrief(id: 'b', title: 't', author: 'b', channelId: 'b'),
+        source: CandidateSource.search,
+        affinity: 1,
+        topic: 1,
+        freshness: 1,
+        popularity: 1,
+        context: 0,
+        satisfaction: 1,
+        impressionPenalty: 0,
+        watchedPenalty: 0,
+        dislikePenalty: 0,
+      );
+      expect(bad.engagement, closeTo(good.engagement, 1e-9));
+      expect(bad.total, lessThan(good.total));
+      // Held down, not erased.
+      expect(bad.total, greaterThan(0));
+      expect(bad.satisfactionGate, greaterThan(0.0));
+      expect(good.satisfactionGate, lessThan(2.0));
+    });
+  });
+
+  group('attentionAtRank', () {
+    test('the top card has the full attention of the viewer', () {
+      expect(attentionAtRank(0), 1.0);
+    });
+
+    test('attention falls off down the feed', () {
+      expect(attentionAtRank(5), lessThan(attentionAtRank(0)));
+      expect(attentionAtRank(30), lessThan(attentionAtRank(5)));
+    });
+
+    test('it never reaches zero', () {
+      // A card the recorder captured genuinely appeared. This discounts the
+      // evidence; it must never erase it.
+      expect(attentionAtRank(5000), greaterThan(0));
+    });
+
+    test('a skip at the top costs more than a skip near the bottom', () {
+      final now = DateTime(2026, 6, 1);
+      const video = VideoBrief(
+        id: 'v',
+        title: 'some ordinary title here',
+        author: 'a',
+        channelId: 'c',
+      );
+      double penaltyAt(int rank) => score(
+            candidate:
+                const Candidate(video: video, source: CandidateSource.search),
+            profile: TasteProfile.empty,
+            now: now,
+            impression: ImpressionCount(
+              videoId: 'v',
+              shown: 1,
+              attention: attentionAtRank(rank),
+              lastShownAt: now,
+            ),
+          ).impressionPenalty;
+
+      expect(penaltyAt(0), lessThan(penaltyAt(40)));
+      expect(penaltyAt(40), lessThan(0));
+    });
+  });
+
+  group('explicit dismissals', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief v(String id, {String channel = 'UC-x', String title = 'a clip'}) =>
+        VideoBrief(
+          id: id,
+          title: title,
+          author: channel,
+          channelId: channel,
+          uploadDate: now.subtract(const Duration(days: 1)),
+        );
+
+    TasteProfile profileWith({
+      Set<String> channels = const {},
+      List<WatchSignal> videos = const [],
+    }) =>
+        TasteProfile.from(
+          history: const [],
+          searches: const [],
+          subscribed: const {},
+          now: now,
+          dislikedChannels: channels,
+          dislikedVideos: videos,
+        );
+
+    test('a dismissed video is dropped from the feed, not merely demoted', () {
+      final out = rankFeed(
+        candidates: [
+          Candidate(video: v('gone'), source: CandidateSource.search),
+          Candidate(
+            video: v('kept', channel: 'UC-y'),
+            source: CandidateSource.search,
+          ),
+        ],
+        profile: profileWith(
+          videos: [
+            WatchSignal(
+              videoId: 'gone',
+              channelId: '',
+              title: 'a clip',
+              watchedAt: now,
+              completion: 0,
+            ),
+          ],
+        ),
+        now: now,
+      );
+      expect(out.map((x) => x.id), ['kept']);
+    });
+
+    test('a dismissed channel is dropped entirely', () {
+      final out = rankFeed(
+        candidates: [
+          Candidate(video: v('a', channel: 'UC-bad'), source: CandidateSource.search),
+          Candidate(video: v('b', channel: 'UC-bad'), source: CandidateSource.search),
+          Candidate(video: v('c', channel: 'UC-ok'), source: CandidateSource.search),
+        ],
+        profile: profileWith(channels: const {'UC-bad'}),
+        now: now,
+      );
+      expect(out.map((x) => x.id), ['c']);
+    });
+
+    test('an empty feed is an honest outcome when everything was dismissed', () {
+      final out = rankFeed(
+        candidates: [
+          Candidate(video: v('a', channel: 'UC-bad'), source: CandidateSource.search),
+        ],
+        profile: profileWith(channels: const {'UC-bad'}),
+        now: now,
+      );
+      expect(out, isEmpty);
+    });
+
+    test('a dismissal generalises weakly through the title', () {
+      final profile = profileWith(
+        videos: [
+          WatchSignal(
+            videoId: 'dismissed',
+            channelId: '',
+            title: 'shocking pyramid mystery',
+            watchedAt: now,
+            completion: 0,
+          ),
+        ],
+      );
+      double scoreOf(VideoBrief video) => score(
+            candidate: Candidate(video: video, source: CandidateSource.search),
+            profile: profile,
+            now: now,
+          ).total;
+
+      expect(
+        scoreOf(v('similar', channel: 'UC-z', title: 'pyramid mystery tour')),
+        lessThan(scoreOf(v('unrelated', channel: 'UC-z', title: 'bench build'))),
+      );
+    });
+
+    test('the generalisation is capped so one dismissal cannot kill a topic', () {
+      final profile = profileWith(
+        videos: [
+          for (var i = 0; i < 40; i++)
+            WatchSignal(
+              videoId: 'd$i',
+              channelId: '',
+              title: 'pyramid',
+              watchedAt: now,
+              completion: 0,
+            ),
+        ],
+      );
+      final penalty = score(
+        candidate: Candidate(
+          video: v('x', title: 'pyramid'),
+          source: CandidateSource.search,
+        ),
+        profile: profile,
+        now: now,
+      ).dislikePenalty;
+      expect(penalty, greaterThan(-2.0));
+      expect(penalty, lessThan(0));
+    });
+
+    test('a dismissed video never turns up as the next video either', () {
+      final out = rankUpNext(
+        current: v('playing', channel: 'UC-now'),
+        related: [v('gone'), v('kept', channel: 'UC-y')],
+        profile: profileWith(
+          videos: [
+            WatchSignal(
+              videoId: 'gone',
+              channelId: '',
+              title: 'a clip',
+              watchedAt: now,
+              completion: 0,
+            ),
+          ],
+        ),
+        now: now,
+      );
+      expect(out.map((x) => x.id), ['kept']);
+    });
+  });
+
+  group('topic diversity', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    Candidate c(String id, String channel, String title) => Candidate(
+          video: VideoBrief(
+            id: id,
+            title: title,
+            author: channel,
+            channelId: channel,
+            uploadDate: now.subtract(const Duration(days: 1)),
+          ),
+          source: CandidateSource.search,
+        );
+
+    test('four channels saying the same thing do not take the whole top', () {
+      // Channel diversity alone would allow this: four DIFFERENT channels all
+      // covering one phone launch. The user experiences that as the feed
+      // repeating itself.
+      final out = rankFeed(
+        candidates: [
+          c('p1', 'UC-1', 'iphone launch hands on impressions'),
+          c('p2', 'UC-2', 'iphone launch hands on impressions'),
+          c('p3', 'UC-3', 'iphone launch hands on impressions'),
+          c('p4', 'UC-4', 'iphone launch hands on impressions'),
+          c('w1', 'UC-5', 'woodworking bench dovetail joinery'),
+        ],
+        profile: TasteProfile.empty,
+        now: now,
+        explore: false,
+      );
+      // The odd one out must not be last: MMR should lift it once the first
+      // phone video has been picked.
+      expect(out.last.id, isNot('w1'));
+      expect(out.indexWhere((v) => v.id == 'w1'), lessThan(4));
+    });
+
+    test('identical topics are still all returned, just spread out', () {
+      final out = rankFeed(
+        candidates: [
+          c('p1', 'UC-1', 'iphone launch'),
+          c('p2', 'UC-2', 'iphone launch'),
+          c('w1', 'UC-3', 'bench joinery'),
+        ],
+        profile: TasteProfile.empty,
+        now: now,
+        explore: false,
+      );
+      expect(out, hasLength(3));
+    });
+  });
+
+  group('exploration', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    Candidate c(String id, String channel) => Candidate(
+          video: VideoBrief(
+            id: id,
+            title: 'clip $id about things',
+            author: channel,
+            channelId: channel,
+            uploadDate: now.subtract(const Duration(days: 1)),
+          ),
+          source: CandidateSource.search,
+        );
+
+    final profile = TasteProfile.from(
+      history: [
+        WatchSignal(
+          videoId: 'seen',
+          channelId: 'UC-known',
+          title: 'clip about things',
+          watchedAt: now.subtract(const Duration(hours: 1)),
+          completion: 1,
+        ),
+      ],
+      searches: const [],
+      subscribed: const {},
+      now: now,
+    );
+
+    final candidates = [
+      for (var i = 0; i < 12; i++) c('known$i', 'UC-known'),
+      for (var i = 0; i < 12; i++) c('new$i', 'UC-new-$i'),
+    ];
+
+    test('a channel the profile has never seen still reaches the feed', () {
+      // Without reserved novelty slots a confident ranker never discovers a
+      // new interest, and with no training loop to correct it the feed narrows
+      // until it is the same channels for ever.
+      final out = rankFeed(
+        candidates: candidates,
+        profile: profile,
+        now: now,
+        limit: 12,
+      );
+      expect(out.where((v) => v.channelId.startsWith('UC-new')), isNotEmpty);
+    });
+
+    test('the same seed gives the same feed', () {
+      List<String> run(int seed) => rankFeed(
+            candidates: candidates,
+            profile: profile,
+            now: now,
+            seed: seed,
+          ).map((v) => v.id).toList();
+      expect(run(7), run(7));
+    });
+
+    test('a different seed moves the feed around', () {
+      // This is what makes pull-to-refresh worth doing. It is a resample of
+      // near-ties, not a shuffle - the assertion is only that something moved.
+      List<String> run(int seed) => rankFeed(
+            candidates: candidates,
+            profile: profile,
+            now: now,
+            seed: seed,
+          ).map((v) => v.id).toList();
+      final orders = {for (var seed = 0; seed < 8; seed++) run(seed).join(',')};
+      expect(orders.length, greaterThan(1));
+    });
+
+    test('turning exploration off is deterministic without a seed', () {
+      List<String> run() => rankFeed(
+            candidates: candidates,
+            profile: profile,
+            now: now,
+            explore: false,
+          ).map((v) => v.id).toList();
+      expect(run(), run());
+    });
+
+    test('exploration never promotes something the user dismissed', () {
+      final out = rankFeed(
+        candidates: candidates,
+        profile: TasteProfile.from(
+          history: const [],
+          searches: const [],
+          subscribed: const {},
+          now: now,
+          dislikedChannels: {for (var i = 0; i < 12; i++) 'UC-new-$i'},
+        ),
+        now: now,
+      );
+      expect(out.where((v) => v.channelId.startsWith('UC-new')), isEmpty);
+    });
+  });
+
+  group('session context in up next', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief v(String id, {String channel = 'UC-other', String title = 'clip'}) =>
+        VideoBrief(
+          id: id,
+          title: title,
+          author: channel,
+          channelId: channel,
+          uploadDate: now.subtract(const Duration(days: 2)),
+        );
+
+    test('what is playing now beats what the profile says overall', () {
+      // YouTube is explicit that the current video is the main signal for this
+      // surface. Someone who usually watches cooking but has spent the last
+      // hour on guitar wants another guitar video.
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'old',
+            channelId: 'UC-cooking',
+            title: 'risotto carbonara pasta recipe',
+            watchedAt: now.subtract(const Duration(days: 1)),
+            completion: 1,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      final out = rankUpNext(
+        current: v(
+          'playing',
+          channel: 'UC-guitar',
+          title: 'guitar fingerpicking lesson',
+        ),
+        related: [
+          v('cooking', channel: 'UC-cooking', title: 'risotto carbonara pasta'),
+          v('guitar', channel: 'UC-lessons', title: 'guitar fingerpicking drill'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      expect(out.first.id, 'guitar');
+    });
+
+    test('a video already played this sitting is not offered again', () {
+      final out = rankUpNext(
+        current: v('playing', channel: 'UC-now'),
+        related: [v('seen-today'), v('fresh', channel: 'UC-y')],
+        profile: TasteProfile.empty,
+        now: now,
+        recentlyPlayed: [v('seen-today')],
+      );
+      expect(out.map((x) => x.id), ['fresh']);
+    });
+
+    test('a channel played repeatedly this sitting is damped', () {
+      final out = rankUpNext(
+        current: v('playing', channel: 'UC-now'),
+        related: [
+          v('again', channel: 'UC-binged'),
+          v('different', channel: 'UC-else'),
+        ],
+        profile: TasteProfile.empty,
+        now: now,
+        recentlyPlayed: [
+          v('p1', channel: 'UC-binged'),
+          v('p2', channel: 'UC-binged'),
+          v('p3', channel: 'UC-binged'),
+        ],
+      );
+      expect(out.first.id, 'different');
+    });
+
+    test('an empty session changes nothing', () {
+      final related = [for (var i = 0; i < 4; i++) v('r$i', channel: 'UC-$i')];
+      expect(
+        rankUpNext(
+          current: v('playing', channel: 'UC-now'),
+          related: related,
+          profile: TasteProfile.empty,
+          now: now,
+        ).map((x) => x.id),
+        rankUpNext(
+          current: v('playing', channel: 'UC-now'),
+          related: related,
+          profile: TasteProfile.empty,
+          now: now,
+          recentlyPlayed: const [],
+        ).map((x) => x.id),
+      );
+    });
+  });
 }

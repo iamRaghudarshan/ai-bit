@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../../data/db.dart';
+import '../../data/recommender.dart';
 import '../../data/settings.dart';
 
 /// Counts the feed cards the user has actually looked at.
@@ -47,7 +48,9 @@ class FeedImpressionRecorder {
   /// How long to let newly seen ids collect before writing them.
   static const _flushAfter = Duration(seconds: 3);
 
-  final _pending = <String>{};
+  /// Video id to the attention its showing earned, summed if a card somehow
+  /// reports twice before a flush.
+  final _pending = <String, double>{};
 
   /// Ids already written in this session, so a card scrolled past, back to and
   /// past again is one impression rather than three. Scrolling up and down a
@@ -67,11 +70,22 @@ class FeedImpressionRecorder {
   /// appeared.
   bool get _allowed => !_config.incognito && !_config.kidsMode;
 
-  /// Notes that [videoId] was on screen. Cheap enough for a scroll callback.
-  void markSeen(String videoId) {
+  /// Notes that the card at [rank] in the feed was on screen.
+  ///
+  /// [rank] matters as much as the fact itself. A card seen at the top of the
+  /// feed and skipped is real evidence of disinterest; one glimpsed at the
+  /// bottom of a fling is very nearly none, and treating them alike teaches
+  /// the ranker to bury videos for having been listed rather than for having
+  /// been rejected. [attentionAtRank] turns the position into a weight, which
+  /// is this app's small, closed-form stand-in for the shallow tower YouTube's
+  /// multitask ranking paper trains for exactly this purpose.
+  ///
+  /// Cheap enough for a scroll callback.
+  void markSeen(String videoId, int rank) {
     if (_disposed || videoId.isEmpty || !_allowed) return;
     if (_written.contains(videoId)) return;
-    if (!_pending.add(videoId)) return;
+    if (_pending.containsKey(videoId)) return;
+    _pending[videoId] = attentionAtRank(rank);
     _timer ??= Timer(_flushAfter, flush);
   }
 
@@ -80,9 +94,9 @@ class FeedImpressionRecorder {
     _timer?.cancel();
     _timer = null;
     if (_pending.isEmpty) return;
-    final batch = _pending.toList();
+    final batch = Map<String, double>.of(_pending);
     _pending.clear();
-    _written.addAll(batch);
+    _written.addAll(batch.keys);
     unawaited(
       _db.recordImpressions(batch).catchError((Object e) {
         // Logged rather than swallowed: impressions that silently stop being

@@ -701,6 +701,88 @@ recommendations, so a mode that promises not to record what you watched must
 not quietly record what you were shown. `clearHistory()` clears it alongside
 history for the same reason.
 
+### The second pass: satisfaction, bias, dismissals, diversity, exploration
+
+The ranker above reproduces the 2016 candidate-generation/ranking paper. The
+2019 successor — Zhao et al., *Recommending What Video to Watch Next: A
+Multitask Ranking System* — is where the rest of it comes from, plus YouTube's
+own published list of signals. Five additions, each fixing something the first
+pass got wrong:
+
+**1. Engagement and satisfaction are predicted separately.** The 2019 paper's
+central point is that a system trained on engagement alone learns to promote
+whatever gets clicked, which is the definition of clickbait; it therefore
+predicts two families of objective and combines them. Here `channelAffinity`
+is the engagement half and `channelSatisfaction` — recency-weighted mean
+completion per channel — is the satisfaction half. The case this exists for:
+a channel opened nine times and abandoned after a tenth of each video
+accumulates *exactly the same affinity* as one opened once and watched through,
+because affinity is completion × recency summed. A test pins that equality
+first, so the test below it is genuinely testing satisfaction and not affinity
+wearing its clothes.
+
+Satisfaction is applied as a **multiplier** (`satisfactionGate`, 0.45–1.25),
+not a summand. Added, a large enough engagement score simply drowns it and the
+clickbait channel still wins — which is the failure being designed against.
+Channels with thin evidence are shrunk towards a neutral prior, so one
+abandoned video does not condemn a channel and one finished video does not
+crown it. Note the deliberate limit, which has its own test: a much-watched
+unsatisfying channel is **demoted, not banished** — opening something nine
+times is still engagement, and the app cannot tell sampling from regret.
+Banishing is what the explicit control is for.
+
+**2. Impressions are discounted by position.** The 2019 paper trains a
+*shallow tower* on the position a video was shown at, so the main model can
+have that bias subtracted — a video shown at the top and skipped is real
+evidence of disinterest, one glimpsed at the bottom of a fling is almost none.
+`attentionAtRank` is the local stand-in: a fixed attention curve rather than a
+learned scalar, accumulated into `feed_impressions.attention` at record time.
+Same intent, much simpler mechanism, and no training loop to feed it — worth
+being plain about rather than calling it the same thing.
+
+**3. Explicit dismissals.** *Not interested* and *Don't recommend channel* are
+on the video menu and in the `not_interested` table. YouTube names both as
+first-class signals, and they are the only ones here the user states outright
+rather than having inferred — so they are **absolute**: a match is dropped from
+the candidate pool, not demoted. A dismissed video's title words generalise
+weakly (capped) so the dismissal means slightly more than one id. The snackbar
+offers Undo, and that is not politeness: a channel dismissal is a permanent
+hard exclusion, so a mis-tap would otherwise remove a channel from the feed for
+good with nothing in the UI to reverse it. `onDismissed` is deliberately
+separate from the menu's `onRemove`, which means "take it out of this
+playlist" — firing that would delete the video.
+
+**4. Topic diversity, not just channel diversity.** Four *different* channels
+covering the same phone launch crowd the feed exactly as effectively as one
+channel posting four times, and the user experiences both as "it keeps showing
+me the same thing". `rankFeed` now does Maximal Marginal Relevance over title
+tokens alongside the channel-repeat cost — relevance minus similarity to what
+is already picked.
+
+**5. Exploration.** A purely greedy ranker is a trap: with no training loop to
+correct it, it can never discover that the user has taken up something new, and
+the feed narrows until it is the same channels for ever. Two defences — a
+reserved share of slots for channels the profile has never seen, and softmax
+(Plackett–Luce) sampling over a short head instead of a strict argmax, so
+near-ties resolve differently between refreshes. That is also why the feed no
+longer looks identical every time the app opens. `seed` comes from the refresh
+token; `explore: false` turns both off and makes ranking deterministic, which
+is what the tests assert against.
+
+**Up next is a different surface from the home feed, and now says so.**
+YouTube's wording is the design brief: the home feed "primarily relies on your
+watch history", while for suggested videos "our system uses the video you're
+currently watching as the main signal". So `score` takes `contextTokens`, the
+current video's words, as its **own term** — folded into the topic term it
+could never be worth more than the topic weight and would lose to a strong
+channel affinity every time, which is exactly the bug the test
+"what is playing now beats what the profile says overall" caught. While
+something is playing, the long-run topic preference is damped to 0.4 and
+`upNextContextWeight` puts the current video above any single other term.
+`PlaybackController.playedThisSession` is kept separate from `_playHistory`
+(which `playPrevious` *consumes*) so autoplay can avoid circling back through
+the same videos and channels.
+
 ### The screen is kept awake by the player, not by a widget
 
 `PlaybackController._syncWakelock` owns the screen wakelock. `better_player`
@@ -737,14 +819,16 @@ corrected within a tick instead of lasting the rest of the video.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 9**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 10**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
 `history.is_kids` (v6) added columns via `ALTER TABLE` so existing history
 survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7);
 `data_usage` and `kids_usage` arrived as whole tables in v8, and
-`feed_impressions` in v9. `data_usage` and `kids_usage` are keyed by a *day
+`feed_impressions` in v9; v10 added `not_interested` and gave
+`feed_impressions` its positional `attention` column.
+`data_usage` and `kids_usage` are keyed by a *day
 index*, not a timestamp — one row per day, so the tables stay tiny and
 yesterday's total can never leak into today's allowance — and that index comes
 from `KidsGuard.daysSinceEpoch`, for the local-calendar reason given above.

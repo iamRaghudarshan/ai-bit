@@ -202,6 +202,9 @@ class _WatchPageState extends State<WatchPage>
         related: rawRelated,
         profile: await db.tasteProfile(),
         impressions: await db.feedImpressions(),
+        // What this sitting has already played, so autoplay stops circling
+        // back to the same handful of videos.
+        recentlyPlayed: _playback?.playedThisSession ?? const [],
       );
       if (!mounted) return;
       setState(() {

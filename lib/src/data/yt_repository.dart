@@ -214,6 +214,10 @@ class YtRepository {
       profile: profile,
       now: now ?? DateTime.now(),
       impressions: impressions,
+      // The refresh is what varies the exploration. Pulling down therefore
+      // reshuffles the near-ties and offers a different set of novel channels,
+      // rather than returning the same order with two rows moved.
+      seed: refreshToken,
     );
   }
 
@@ -235,6 +239,7 @@ class YtRepository {
     required List<VideoBrief> related,
     required TasteProfile profile,
     Map<String, ImpressionCount> impressions = const {},
+    List<VideoBrief> recentlyPlayed = const [],
     DateTime? now,
   }) =>
       rankUpNext(
@@ -243,6 +248,7 @@ class YtRepository {
         profile: profile,
         now: now ?? DateTime.now(),
         impressions: impressions,
+        recentlyPlayed: recentlyPlayed,
       );
 
   /// Newest uploads from the channels followed on this device, for the

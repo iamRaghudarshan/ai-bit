@@ -192,6 +192,10 @@ class StorageService {
     await clearHistory();
     await _db.clearPlaylists();
     await _db.clearSubscriptions();
+    // Dismissals go with the reset, unlike the PINs above. They shape the feed
+    // rather than guard anything, so nobody is protected by keeping them and a
+    // "start over" that left a channel invisible would be baffling.
+    await _db.clearNotInterested();
   }
 
   Future<Directory> _downloadDirectory() async {

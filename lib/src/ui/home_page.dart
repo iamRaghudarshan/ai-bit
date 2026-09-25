@@ -259,9 +259,22 @@ class HomePageState extends State<HomePage>
   /// Subscribed list are not recommendations, so nothing in them should be
   /// demoted for having appeared — the recorder itself additionally refuses
   /// while incognito or Kids mode is on.
-  void _onCardSeen(String videoId) {
+  /// Removes a dismissed video, and anything else from the same channel if
+  /// the whole channel was dismissed, without refetching.
+  ///
+  /// Only the visible list is touched. The dismissal itself is already in the
+  /// database, so the next load excludes it at ranking time whether or not
+  /// this ran.
+  void _dismissFromFeed(VideoBrief video) {
+    if (!mounted) return;
+    setState(() {
+      _feed = [for (final v in _feed) if (v.id != video.id) v];
+    });
+  }
+
+  void _onCardSeen(String videoId, int rank) {
     if (_category != _CategoryChips.all) return;
-    _impressions?.markSeen(videoId);
+    _impressions?.markSeen(videoId, rank);
   }
 
   static String _signature(List<String> searches, List<String> channelIds) =>
@@ -464,6 +477,12 @@ class HomePageState extends State<HomePage>
                   },
                 );
             final previews = _previews;
+            // The rank a card is drawn at is what decides how much a skipped
+            // impression costs, so it has to come from the feed order rather
+            // than be guessed at from the video.
+            final rankOf = <String, int>{
+              for (var i = 0; i < _feed.length; i++) _feed[i].id: i,
+            };
             Widget card(VideoBrief video, {bool inGrid = false}) {
               final tile = VideoCard(
                 video: video,
@@ -475,7 +494,15 @@ class HomePageState extends State<HomePage>
                   previews?.stop();
                   WatchPage.open(context, video);
                 },
-                onMenu: () => showVideoMenu(context, video),
+                onMenu: () => showVideoMenu(
+                  context,
+                  video,
+                  // Taking the card away is the feedback. A dismissal that
+                  // left the row sitting there reads as the button having
+                  // done nothing, and the next feed load is the soonest it
+                  // would otherwise disappear.
+                  onDismissed: () => _dismissFromFeed(video),
+                ),
                 previewOverlay: previews == null
                     ? null
                     : FeedPreviewSurface(video: video, coordinator: previews),
@@ -487,6 +514,7 @@ class HomePageState extends State<HomePage>
                 video: video,
                 coordinator: previews,
                 onSeen: _onCardSeen,
+                rank: rankOf[video.id] ?? 0,
                 seenFraction: FeedImpressionRecorder.seenFraction,
                 child: tile,
               );

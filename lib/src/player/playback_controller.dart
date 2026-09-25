@@ -417,6 +417,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _captureSavingConditions();
 
     _current = video;
+    // Recorded for the session-aware "up next" ordering. Deduplicated so a
+    // replay does not weigh twice, and capped because only the recent tail of
+    // a sitting is informative.
+    _sessionPlayed
+      ..removeWhere((v) => v.id == video.id)
+      ..add(video);
+    if (_sessionPlayed.length > 30) _sessionPlayed.removeAt(0);
     _queue
       ..clear()
       ..addAll(upNext.where((v) => v.id != video.id));
@@ -1040,6 +1047,23 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// Videos already played, newest last. Gives "previous" something to mean —
   /// a queue alone only ever moves forward.
   final List<VideoBrief> _playHistory = [];
+
+  /// Everything played since the app started, newest last.
+  ///
+  /// Deliberately separate from [_playHistory], which is the back-stack and is
+  /// *consumed* by [playPrevious] — stepping back would erase exactly the
+  /// record this needs to keep. Nothing here is ever popped.
+  ///
+  /// It exists because "up next" is a session question, not a lifetime one.
+  /// YouTube's own description of that surface says the video being watched is
+  /// the main signal, and the rest of the sitting is the context around it: a
+  /// list that keeps offering what was played twenty minutes ago is the loop
+  /// people complain about in autoplay. Capped, and not persisted — a new
+  /// launch is a new sitting.
+  final List<VideoBrief> _sessionPlayed = [];
+
+  /// What has been played in this sitting, oldest first.
+  List<VideoBrief> get playedThisSession => List.unmodifiable(_sessionPlayed);
 
   bool get hasNext => _queue.isNotEmpty;
   bool get hasPrevious => _playHistory.isNotEmpty;

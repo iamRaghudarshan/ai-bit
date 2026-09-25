@@ -215,6 +215,7 @@ class FeedPreviewSlot extends StatelessWidget {
     required this.child,
     this.coordinator,
     this.onSeen,
+    this.rank = 0,
     this.seenFraction = 0.5,
   });
 
@@ -223,9 +224,13 @@ class FeedPreviewSlot extends StatelessWidget {
   /// Drives the muted preview, when previews exist on this platform.
   final FeedPreviewCoordinator? coordinator;
 
-  /// Called once each time the card crosses [seenFraction] on screen. The
-  /// recorder behind it is responsible for not counting the same card twice.
-  final void Function(String videoId)? onSeen;
+  /// Called once each time the card crosses [seenFraction] on screen, with
+  /// its position in the feed. The recorder behind it is responsible for not
+  /// counting the same card twice, and for what the rank is worth.
+  final void Function(String videoId, int rank)? onSeen;
+
+  /// This card's position in the feed, zero-based.
+  final int rank;
 
   /// How much of the card must be visible to count as seen.
   final double seenFraction;
@@ -238,7 +243,9 @@ class FeedPreviewSlot extends StatelessWidget {
       key: Key('feed-card-${video.id}'),
       onVisibilityChanged: (info) {
         coordinator?.onCardVisibility(video, info.visibleFraction);
-        if (info.visibleFraction >= seenFraction) onSeen?.call(video.id);
+        if (info.visibleFraction >= seenFraction) {
+          onSeen?.call(video.id, rank);
+        }
       },
       child: child,
     );
