@@ -9,6 +9,7 @@ import 'src/data/data_usage_service.dart';
 import 'src/data/db.dart';
 import 'src/data/download_manager.dart';
 import 'src/data/kids_guard.dart';
+import 'src/data/interests.dart';
 import 'src/data/network_service.dart';
 import 'src/data/ranker_trainer.dart';
 import 'src/data/settings.dart';
@@ -168,6 +169,19 @@ class AiBitApp extends StatelessWidget {
           create: (_) => YtRepository(),
           dispose: (_, repo) => repo.dispose(),
         ),
+        // Keeps every YouTube endpoint pointed at the language and region the
+        // user chose. A ProxyProvider so it re-runs when settings change,
+        // rather than only at startup: switching region has to take effect on
+        // the next pull-to-refresh, not the next launch.
+        ProxyProvider2<YtRepository, SettingsService, _LocaleBinding>(
+          update: (context, repo, settings, _) => _LocaleBinding(
+            repo,
+            language: settings.contentLanguage,
+            region: settings.contentRegion,
+            deviceLocale: View.of(context).platformDispatcher.locale,
+          ),
+          lazy: false,
+        ),
         // NetworkService and BatteryService are not lazy on purpose. Their
         // whole job is to *observe* the device, and a provider built on first
         // read only starts watching once some screen happens to ask — so the
@@ -271,6 +285,29 @@ class AiBitApp extends StatelessWidget {
           home: const RootShell(),
         ),
       ),
+    );
+  }
+}
+
+/// Applies the chosen content language and region to the repository.
+///
+/// A value rather than a widget so it can sit in the provider list and re-run
+/// whenever [SettingsService] notifies. Both settings store an empty string
+/// for "match my device", resolved here against the platform locale rather
+/// than at write time — so changing the phone's language changes the feed,
+/// instead of pinning whatever it happened to be on the day of install.
+class _LocaleBinding {
+  _LocaleBinding(
+    YtRepository repository, {
+    required String language,
+    required String region,
+    required Locale deviceLocale,
+  }) {
+    repository.setLocale(
+      // en and US as the last resort, which is what every endpoint was
+      // hardcoded to before any of this existed.
+      language: resolveCode(language, deviceLocale.languageCode, 'en'),
+      region: resolveCode(region, deviceLocale.countryCode ?? '', 'US'),
     );
   }
 }

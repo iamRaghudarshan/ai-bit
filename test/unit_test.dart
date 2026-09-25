@@ -4,6 +4,7 @@ import 'package:ai_bit/src/data/app_lock_service.dart';
 import 'package:ai_bit/src/data/data_usage_service.dart';
 import 'package:ai_bit/src/data/dlna_client.dart';
 import 'package:ai_bit/src/data/kids_guard.dart';
+import 'package:ai_bit/src/data/interests.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/recommender.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
@@ -2998,6 +2999,218 @@ Some blurb about the video.
         now: now,
       );
       expect(profile.channelAffinity['UC-ok'], greaterThan(0));
+    });
+  });
+
+  // ------------------------------------------------- declared interests
+  //
+  // The one case inference cannot help with: a fresh install has no behaviour
+  // to infer from. These pin that a declared interest behaves like a strong
+  // prior rather than an override - it has to lead a feed that knows nothing,
+  // and get out of the way once real behaviour disagrees with it.
+
+  group('interest catalogue', () {
+    test('every id is unique', () {
+      // A duplicate id silently makes one entry unselectable.
+      final ids = interestCatalogue.map((i) => i.id).toList();
+      expect(ids.toSet(), hasLength(ids.length));
+    });
+
+    test('every interest carries search terms', () {
+      for (final interest in interestCatalogue) {
+        expect(interest.queries, isNotEmpty, reason: interest.id);
+        expect(interest.label, isNotEmpty, reason: interest.id);
+      }
+    });
+
+    test('every query survives tokenising into something usable', () {
+      // The queries are seeded into the topic model, so one made entirely of
+      // stop words would contribute nothing and look like a dead interest.
+      for (final interest in interestCatalogue) {
+        for (final query in interest.queries) {
+          expect(tokenise(query), isNotEmpty, reason: '${interest.id}: $query');
+        }
+      }
+    });
+
+    test('a known id resolves and an unknown one is null, not a throw', () {
+      expect(interestById('tech')?.label, 'Technology');
+      // The normal outcome after a catalogue edit, not an error.
+      expect(interestById('no-such-interest'), isNull);
+    });
+  });
+
+  group('interestQueries', () {
+    test('expands the chosen ids', () {
+      final queries = interestQueries(['ai']);
+      expect(queries, isNotEmpty);
+      expect(queries.join(' '), contains('ai'));
+    });
+
+    test('nothing chosen means nothing, not everything', () {
+      expect(interestQueries(const []), isEmpty);
+    });
+
+    test('an unknown id is ignored rather than throwing', () {
+      expect(interestQueries(['tech', 'was-removed']),
+          interestQueries(['tech']));
+    });
+
+    test('order follows the catalogue, not the order they were tapped', () {
+      // Tap order is an artefact of which chip was nearest; a feed whose
+      // composition depended on it would change for no visible reason.
+      expect(interestQueries(['news', 'tech']), interestQueries(['tech', 'news']));
+    });
+
+    test('duplicates across interests appear once', () {
+      final queries = interestQueries(interestCatalogue.map((i) => i.id));
+      expect(queries.toSet(), hasLength(queries.length));
+    });
+  });
+
+  group('declared interests in the profile', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief video(String id, String title) => VideoBrief(
+          id: id,
+          title: title,
+          author: 'Someone',
+          channelId: 'UC-$id',
+          uploadDate: now.subtract(const Duration(days: 1)),
+        );
+
+    double scoreOf(TasteProfile profile, VideoBrief v) => score(
+          candidate: Candidate(video: v, source: CandidateSource.topic),
+          profile: profile,
+          now: now,
+        ).total;
+
+    test('a fresh install with interests is no longer an empty profile', () {
+      // Which matters beyond tidiness: an empty profile makes homeFeed fall
+      // back to the unranked round-robin.
+      final profile = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        interestQueries: interestQueries(['ai']),
+      );
+      expect(profile.isEmpty, isFalse);
+      expect(profile.topicWeights, isNotEmpty);
+    });
+
+    test('a matching video outranks an unrelated one from day one', () {
+      final profile = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        interestQueries: interestQueries(['ai']),
+      );
+      expect(
+        scoreOf(profile, video('a', 'machine learning tutorial for beginners')),
+        greaterThan(scoreOf(profile, video('b', 'street food market tour'))),
+      );
+    });
+
+    test('choosing nothing leaves the profile exactly as it was', () {
+      final withNone = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        interestQueries: const [],
+      );
+      expect(withNone.topicWeights, isEmpty);
+      expect(withNone.isEmpty, isTrue);
+    });
+
+    test('it seeds the same weights searching would, not a separate override',
+        () {
+      // The design: a declared interest behaves as though the user had already
+      // searched for it, so real behaviour is weighed alongside rather than
+      // behind it.
+      final declared = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        interestQueries: const ['machine learning tutorial'],
+      );
+      for (final token in tokenise('machine learning tutorial')) {
+        expect(declared.topicWeights[token], greaterThan(0));
+      }
+    });
+
+    test('watching something else for long enough outweighs the declaration',
+        () {
+      // An interest is a strong prior, not a permanent verdict. Somebody who
+      // ticked AI and then spent a month on cooking should get cooking.
+      final profile = TasteProfile.from(
+        history: [
+          for (var i = 0; i < 30; i++)
+            WatchSignal(
+              videoId: 'w$i',
+              channelId: 'UC-food',
+              title: 'street food market tour',
+              watchedAt: now.subtract(Duration(hours: i)),
+              completion: 1,
+            ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        interestQueries: interestQueries(['ai']),
+      );
+      expect(
+        scoreOf(profile, video('food', 'street food market tour')),
+        greaterThan(
+          scoreOf(profile, video('ai', 'machine learning tutorial')),
+        ),
+      );
+    });
+  });
+
+  group('language and region', () {
+    test('every catalogue offers a device-default option first', () {
+      // Both default to empty, so the app is useful before anyone opens the
+      // screen - which is the point of a default rather than a required
+      // choice.
+      expect(languageCatalogue.first.code, '');
+      expect(regionCatalogue.first.code, '');
+    });
+
+    test('codes are unique', () {
+      expect(
+        languageCatalogue.map((l) => l.code).toSet(),
+        hasLength(languageCatalogue.length),
+      );
+      expect(
+        regionCatalogue.map((r) => r.code).toSet(),
+        hasLength(regionCatalogue.length),
+      );
+    });
+
+    test('labels resolve, and an unlisted code shows itself', () {
+      expect(languageLabel('hi'), contains('Hindi'));
+      expect(regionLabel('IN'), 'India');
+      expect(languageLabel(''), languageCatalogue.first.label);
+      // A device locale this app does not list is entirely normal, and
+      // showing "pl" is more honest than showing "Match my device".
+      expect(languageLabel('pl'), 'pl');
+      expect(regionLabel('PL'), 'PL');
+    });
+
+    test('resolveCode prefers the choice, then the device, then the fallback',
+        () {
+      expect(resolveCode('hi', 'en', 'en'), 'hi');
+      expect(resolveCode('', 'ta', 'en'), 'ta');
+      expect(resolveCode('', '', 'en'), 'en');
+    });
+
+    test('whitespace does not pass for a choice', () {
+      expect(resolveCode('   ', 'ta', 'en'), 'ta');
+      expect(resolveCode('  ', '  ', 'US'), 'US');
     });
   });
 }

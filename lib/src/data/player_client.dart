@@ -66,6 +66,27 @@ class YoutubePlayerClient {
     ),
   ];
 
+  /// Language and region asked for. See the note on the browse client — these
+  /// were hardcoded to en/US, and `gl` in particular decides availability, not
+  /// just wording.
+  String _hl = 'en';
+  String _gl = 'US';
+
+  void setLocale({required String language, required String region}) {
+    if (language.isNotEmpty) _hl = language;
+    if (region.isNotEmpty) _gl = region;
+  }
+
+  /// The profile's context with this locale applied.
+  ///
+  /// Copied rather than mutated: the profiles are const and shared, and
+  /// writing into one would change it for every later request.
+  Map<String, dynamic> _contextFor(_ClientProfile profile) => {
+        ...profile.context,
+        'hl': _hl,
+        'gl': _gl,
+      };
+
   void close() => _http.close();
 
   /// Walks the client list and returns the first response that yields
@@ -116,7 +137,7 @@ class YoutubePlayerClient {
             'Origin': 'https://www.youtube.com',
           },
           body: jsonEncode({
-            'context': {'client': profile.context},
+            'context': {'client': _contextFor(profile)},
             'videoId': videoId,
             'contentCheckOk': true,
             'racyCheckOk': true,

@@ -98,6 +98,14 @@ enum CandidateSource {
   /// A result for something the user recently searched for.
   search(0.55),
 
+  /// A topic the user explicitly chose in settings.
+  ///
+  /// Ranked between the channels they follow and the searches they happen to
+  /// have run: weaker than subscribing, because ticking a box is a broad
+  /// statement rather than a commitment to anyone in particular, but stronger
+  /// than a one-off search, because it was deliberate and it persists.
+  interest(0.65),
+
   /// Cold-start filler from a broad evergreen topic. Deliberately last: it
   /// knows nothing about the user and exists so a fresh install is not empty.
   topic(0.2);
@@ -454,6 +462,7 @@ class TasteProfile {
     List<WatchSignal> dislikedVideos = const [],
     Map<String, double> coVisit = const {},
     Set<String> endorsedChannels = const {},
+    List<String> interestQueries = const [],
   }) {
     final affinity = <String, double>{};
     final topics = <String, double>{};
@@ -515,6 +524,26 @@ class TasteProfile {
       final weight = recency * (1 + math.log(search.hits.clamp(1, 1000)));
       for (final token in tokenise(search.query)) {
         topics[token] = (topics[token] ?? 0) + weight;
+      }
+    }
+
+    // Interests the user chose in settings, seeded into the same topic weights
+    // that searches and watched titles build up.
+    //
+    // Seeded rather than kept apart, and that is the design: a declared
+    // interest should behave exactly as though the user had already searched
+    // for it, so the feed is relevant on the first launch and then moves as
+    // real behaviour accumulates. Kept apart as a separate term it would
+    // either be overridden the moment any history existed, or would never stop
+    // shouting — and neither is what ticking a box means.
+    //
+    // Weighted as a strong but not overwhelming search: enough to lead a feed
+    // that has nothing else, light enough that a month of watching something
+    // else moves past it.
+    const declaredWeight = 2.5;
+    for (final query in interestQueries) {
+      for (final token in tokenise(query)) {
+        topics[token] = (topics[token] ?? 0) + declaredWeight;
       }
     }
 

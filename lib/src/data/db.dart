@@ -994,6 +994,7 @@ class AppDatabase {
   Future<TasteProfile> tasteProfile({
     DateTime? now,
     List<String> coVisitSeeds = const [],
+    List<String> interestQueries = const [],
   }) async {
     final history = await watchSignals();
     final searches = await searchSignals();
@@ -1014,6 +1015,7 @@ class AppDatabase {
       dislikedVideos: dismissed.videos,
       coVisit: coVisit,
       endorsedChannels: await endorsedChannels(),
+      interestQueries: interestQueries,
     );
   }
 

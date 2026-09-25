@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../data/interests.dart';
 import '../data/kids_guard.dart';
 import '../data/settings.dart';
 import '../data/db.dart';
@@ -227,7 +228,15 @@ class HomePageState extends State<HomePage>
       // What the ranker orders against. Built here and passed down rather than
       // read inside the repository, so the repository stays a thing that
       // fetches videos and knows nothing about the database.
-      final profile = await db.tasteProfile();
+      // Kids mode never consults the adult's declared interests, for the same
+      // reason it never consults their history.
+      final chosenInterests =
+          context.read<SettingsService>().kidsMode
+              ? const <String>[]
+              : context.read<SettingsService>().interestTopics;
+      final profile = await db.tasteProfile(
+        interestQueries: interestQueries(chosenInterests),
+      );
       final impressions = await db.feedImpressions();
       if (!mounted) return;
       final trainer = context.read<RankerTrainer>();
@@ -247,6 +256,7 @@ class HomePageState extends State<HomePage>
         impressions: impressions,
         weights: trainer.weights,
         featuresOut: features,
+        interests: chosenInterests,
         refreshToken: _refreshToken,
         kids: context.read<SettingsService>().kidsMode,
       );

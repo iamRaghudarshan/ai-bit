@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/format.dart';
 import '../data/db.dart';
+import '../data/interests.dart';
 import '../data/models.dart';
 import '../data/ranker_trainer.dart';
 import '../data/recommender.dart';
@@ -98,7 +99,13 @@ class ShortsPageState extends State<ShortsPage> {
       // the least use of what the app knew about them. Exploration and the
       // rotating seed keep it different on every visit, which was the only
       // thing shuffling was buying.
-      final profile = kids ? TasteProfile.empty : await db.tasteProfile();
+      final chosenInterests =
+          kids ? const <String>[] : context.read<SettingsService>().interestTopics;
+      final profile = kids
+          ? TasteProfile.empty
+          : await db.tasteProfile(
+              interestQueries: interestQueries(chosenInterests),
+            );
       if (!mounted) return;
       final impressions = kids
           ? const <String, ImpressionCount>{}
@@ -106,6 +113,7 @@ class ShortsPageState extends State<ShortsPage> {
       if (!mounted) return;
       final shorts = await context.read<YtRepository>().shortsFeed(
         searches: searches,
+        interests: chosenInterests,
         profile: profile,
         impressions: impressions,
         weights: context.read<RankerTrainer>().weights,

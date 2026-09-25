@@ -80,12 +80,31 @@ class YoutubeCommentsClient {
 
   final http.Client _http;
 
-  static const _context = {
+  /// Language and region asked for, as YouTube's `hl` and `gl`.
+  ///
+  /// These were hardcoded to en/US, which quietly decided a great deal: `gl`
+  /// governs what is popular and what is even available, and `hl` governs what
+  /// comes back as text. An app used in India was asking America what was
+  /// worth watching and then asking for it in English.
+  ///
+  /// Mutable rather than constructor-injected because one client instance
+  /// lives for the life of the app and the setting can change under it, and a
+  /// locale change must not mean rebuilding the HTTP client and losing its
+  /// connection pool.
+  String _hl = 'en';
+  String _gl = 'US';
+
+  void setLocale({required String language, required String region}) {
+    if (language.isNotEmpty) _hl = language;
+    if (region.isNotEmpty) _gl = region;
+  }
+
+  Map<String, dynamic> get _context => {
     'client': {
       'clientName': 'WEB',
       'clientVersion': '2.20250312.04.00',
-      'hl': 'en',
-      'gl': 'US',
+      'hl': _hl,
+      'gl': _gl,
       'timeZone': 'UTC',
       'utcOffsetMinutes': 0,
     },

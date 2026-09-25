@@ -7,6 +7,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../core/format.dart';
 import 'browse_client.dart';
 import 'comments_client.dart';
+import 'interests.dart';
 import 'models.dart';
 import 'player_client.dart';
 import 'preview_data.dart';
@@ -97,6 +98,19 @@ class YtRepository {
     'cartoon',
   ];
 
+  /// Points every endpoint at a language and region.
+  ///
+  /// One call rather than four because they must agree: a search answered in
+  /// Hindi and a browse answered in English produce a feed that looks like two
+  /// different apps stitched together. Called from the app whenever the
+  /// setting changes, and once at startup.
+  void setLocale({required String language, required String region}) {
+    _search.setLocale(language: language, region: region);
+    _player.setLocale(language: language, region: region);
+    _browse.setLocale(language: language, region: region);
+    _comments.setLocale(language: language, region: region);
+  }
+
   void dispose() {
     _yt.close();
     _search.close();
@@ -136,6 +150,7 @@ class YtRepository {
     Map<String, ImpressionCount> impressions = const {},
     RankerWeights weights = RankerWeights.prior,
     Map<String, List<double>>? featuresOut,
+    List<String> interests = const [],
     int refreshToken = 0,
     bool kids = false,
     DateTime? now,
@@ -178,13 +193,32 @@ class YtRepository {
         _tagged(CandidateSource.search, () => search(q)),
     ];
 
+    // What the user actually said they want, when they have said anything.
+    //
+    // This is the answer to cold start, which is the one case the ranker
+    // cannot help with: on a fresh install there is no behaviour to rank
+    // against, and the evergreen filler below describes nobody in particular.
+    // Declared interests get a real share of the feed rather than a single
+    // filler slot, and they keep it — somebody who ticked "AI" did not mean
+    // "until you have watched enough for me to stop asking".
+    final chosen = _rotate(interestQueries(interests), refreshToken);
+    tasks.addAll(
+      chosen.take(4).map(
+            (q) => _tagged(
+              CandidateSource.interest,
+              () => search(q, sortByViews: true),
+            ),
+          ),
+    );
+
     // Filler, kept deliberately small, and smaller still once there is
-    // anything personal to go on. A fresh install has no signals at all and
-    // would otherwise show an empty screen.
+    // anything personal to go on. A fresh install with no interests chosen has
+    // no signals at all and would otherwise show an empty screen.
     final hasSignals = searches.isNotEmpty ||
         channelIds.isNotEmpty ||
         subscribedIds.isNotEmpty ||
-        coWatchSeeds.isNotEmpty;
+        coWatchSeeds.isNotEmpty ||
+        chosen.isNotEmpty;
     final topics = _rotate(_coldStartTopics, refreshToken);
     tasks.addAll(
       topics.take(hasSignals ? 1 : 4).map(
@@ -381,6 +415,7 @@ class YtRepository {
   /// shuffled so the tab is not identical on every visit.
   Future<List<VideoBrief>> shortsFeed({
     List<String> searches = const [],
+    List<String> interests = const [],
     TasteProfile profile = TasteProfile.empty,
     Map<String, ImpressionCount> impressions = const {},
     RankerWeights weights = RankerWeights.prior,
@@ -395,7 +430,11 @@ class YtRepository {
         ? _rotate(_kidsShortsTopics, refreshToken).take(4).toList()
         : <String>[
             ...searches.take(2),
-            ..._rotate(_shortsTopics, refreshToken).take(3),
+            // Chosen interests steer Shorts as well. A tab that ignored them
+            // while the home feed honoured them would read as the setting only
+            // half working, which is worse than not having it.
+            ..._rotate(interestQueries(interests), refreshToken).take(2),
+            ..._rotate(_shortsTopics, refreshToken).take(2),
           ];
 
     final results = await Future.wait(

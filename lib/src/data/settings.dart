@@ -237,6 +237,43 @@ class SettingsService extends ChangeNotifier {
   bool get trackDataUsage => _prefs.getBool(_kTrackDataUsage) ?? true;
   set trackDataUsage(bool value) => _write(_kTrackDataUsage, value);
 
+  static const _kInterests = 'interest_topics';
+  static const _kContentLanguage = 'content_language';
+  static const _kContentRegion = 'content_region';
+
+  /// Interest ids from `interests.dart`, chosen by the user.
+  ///
+  /// Empty by default, and empty means "no opinion" rather than "nothing":
+  /// the feed falls back to the broad evergreen topics exactly as it did
+  /// before. Requiring a choice before the app is usable would be a worse
+  /// first launch than a generic feed.
+  List<String> get interestTopics =>
+      _prefs.getStringList(_kInterests) ?? const [];
+
+  set interestTopics(List<String> value) {
+    _prefs.setStringList(_kInterests, value);
+    notifyListeners();
+  }
+
+  bool get hasInterests => interestTopics.isNotEmpty;
+
+  /// `hl` — what language YouTube should answer in. Empty means the device's.
+  ///
+  /// Stored empty rather than resolved at write time so that changing the
+  /// phone's language changes the feed, instead of pinning whatever it
+  /// happened to be on the day the app was installed.
+  String get contentLanguage => _prefs.getString(_kContentLanguage) ?? '';
+  set contentLanguage(String value) => _write(_kContentLanguage, value);
+
+  /// `gl` — which country's YouTube to ask. Empty means the device's.
+  ///
+  /// Deliberately separate from [contentLanguage]. They are different
+  /// questions: `gl` decides what is popular and what is available, `hl`
+  /// decides what the labels say. Somebody in India reading English wants
+  /// IN and en, and one combined setting gets that person the wrong feed.
+  String get contentRegion => _prefs.getString(_kContentRegion) ?? '';
+  set contentRegion(String value) => _write(_kContentRegion, value);
+
   static const _kAdaptiveRanking = 'adaptive_ranking';
   static const _kRankerWeights = 'ranker_weights';
   static const _kRankerExamples = 'ranker_examples_seen';

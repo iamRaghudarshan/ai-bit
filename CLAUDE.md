@@ -875,6 +875,57 @@ No satisfaction surveys. The learning loop is one user's linear model, not a
 network retrained continuously and validated by live experiment. Say so plainly
 rather than implying parity.
 
+### The user gets to say, not only to be inferred from
+
+Everything above watches behaviour and draws conclusions. `interests.dart` is
+the other half, and it earns its place on the one occasion inference cannot
+help at all: **cold start**. A fresh install has no behaviour to infer from, so
+the feed fell back to a fixed list of evergreen topics — music, gaming,
+cooking, football — that describe nobody in particular, and stayed generic
+until enough history accumulated to displace it. Asking takes ten seconds.
+
+**Settings → Recommendations → Your interests** is a chip picker over a
+catalogue of about twenty topics (Technology, AI, News, Programming, Cricket,
+Devotional, …). Chosen interests do two things:
+
+- They become a **candidate source** with its own prior
+  (`CandidateSource.interest`, between subscriptions and searches: weaker than
+  subscribing, because ticking a box is broad rather than a commitment to
+  anyone in particular; stronger than a one-off search, because it was
+  deliberate and it persists). They keep a real share of the feed rather than a
+  single filler slot — somebody who ticked "AI" did not mean "until you have
+  watched enough for me to stop asking".
+- They **seed `topicWeights`** in the taste profile, at the weight of a strong
+  search. Seeded rather than kept as a separate override, and that is the whole
+  design: a declared interest then behaves exactly as though the user had
+  already searched for it, so the feed is relevant on the first launch and real
+  behaviour is weighed *alongside* it rather than behind it. A test pins both
+  ends — a matching video leads a profile that knows nothing, and a month of
+  watching something else moves past the declaration.
+
+Empty is the default and means "no opinion", not "nothing": the feed behaves
+exactly as it did before. Requiring a choice before the app is usable would be
+a worse first launch than a generic feed. Kids mode never consults it, for the
+same reason it never consults history.
+
+**Language and region were hardcoded to `hl=en, gl=US`** in all four
+youtubei clients, which quietly decided a great deal — `gl` governs what is
+popular and what is even *available*, `hl` governs what comes back as text. An
+app used in India was asking America what was worth watching and then asking
+for it in English. **Settings → Language & region** sets both, and they are two
+settings on purpose: somebody in India who reads English wants IN and en, and
+one combined "locale" gets that person the wrong feed.
+
+Both default to **empty, meaning "match my device"**, resolved against the
+platform locale at read time rather than at write time — so changing the
+phone's language changes the feed instead of pinning whatever it was on the day
+of install. `_LocaleBinding` in `main.dart` is a `ProxyProvider` rather than a
+one-shot call at startup, so switching region takes effect on the next
+pull-to-refresh rather than the next launch. `YtRepository.setLocale` fans out
+to all four clients in one call because they must agree: a search answered in
+Hindi beside a browse answered in English is a feed that looks like two
+different apps stitched together.
+
 ### The screen is kept awake by the player, not by a widget
 
 `PlaybackController._syncWakelock` owns the screen wakelock. `better_player`

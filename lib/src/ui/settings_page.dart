@@ -8,12 +8,14 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/settings_rules.dart';
 import '../data/battery_service.dart';
 import '../data/network_service.dart';
+import '../data/interests.dart';
 import '../data/ranker_trainer.dart';
 import '../data/recommender.dart';
 import '../data/settings.dart';
 import '../data/update_service.dart';
 import '../player/playback_controller.dart';
 import 'app_lock_page.dart';
+import 'interests_page.dart';
 import 'data_usage_page.dart';
 import 'storage_page.dart';
 
@@ -233,6 +235,29 @@ class SettingsPage extends StatelessWidget {
           ),
           const Divider(),
           const _SectionLabel('Recommendations'),
+          ListTile(
+            leading: const Icon(Icons.interests_outlined),
+            title: const Text('Your interests'),
+            subtitle: Text(
+              settings.interestTopics.isEmpty
+                  ? 'Pick topics like Technology, AI or News'
+                  : settings.interestTopics
+                      .map((id) => interestById(id)?.label ?? id)
+                      .join(', '),
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => InterestsPage.open(context),
+          ),
+          ListTile(
+            leading: const Icon(Icons.translate),
+            title: const Text('Language & region'),
+            subtitle: Text(
+              '${languageLabel(settings.contentLanguage)}'
+              ' · ${regionLabel(settings.contentRegion)}',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => ContentLocalePage.open(context),
+          ),
           Builder(
             builder: (context) {
               final trainer = context.read<RankerTrainer>();
