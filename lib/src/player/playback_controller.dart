@@ -416,6 +416,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _watchTickAt = null;
     _captureSavingConditions();
 
+    // Going from one video to another is the strongest edge the local
+    // co-visitation graph can hold: a related list is what YouTube believes
+    // about everybody, while this is what this person actually did. Recorded
+    // before _current moves on, and never in incognito, where the point of the
+    // mode is that nothing about this sequence is kept.
+    final previous = _current;
+    if (previous != null && previous.id != video.id && !_config.incognito) {
+      unawaited(
+        _db.recordWatchTransition(previous.id, video.id).catchError((Object e) {
+          debugPrint('AI BIT: watch transition not recorded - $e');
+        }),
+      );
+    }
+
     _current = video;
     // Recorded for the session-aware "up next" ordering. Deduplicated so a
     // replay does not weigh twice, and capped because only the recent tail of
@@ -1778,6 +1792,26 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           onError: (Object e) =>
               debugPrint('AI BIT: kids allowance not recorded — $e'),
         ),
+      );
+    }
+
+    final labelled = _current;
+    // The label the ranker learns from. It only ever updates a row that
+    // already exists, so a video reached from search or a channel page - which
+    // was never a recommendation - is silently ignored rather than being
+    // trained on as though the ranker had suggested it.
+    //
+    // Driven from here rather than from a timer because this already runs
+    // every fifteen seconds and on every stop, which is exactly the cadence
+    // the label wants: early enough that a bail-out is recorded, often enough
+    // that the final figure is close to what was really watched.
+    if (labelled != null && !_config.incognito && _duration > Duration.zero) {
+      final completion =
+          (_position.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+      unawaited(
+        _db.markExampleOpened(labelled.id, completion).catchError((Object e) {
+          debugPrint('AI BIT: ranking label not recorded - $e');
+        }),
       );
     }
 

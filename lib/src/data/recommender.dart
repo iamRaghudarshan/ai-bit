@@ -137,6 +137,17 @@ class WatchSignal {
   /// carry no duration at all.
   static const assumedCompletion = 0.5;
 
+  /// Below this, opening the video counts as a rejection rather than a watch.
+  ///
+  /// Opening something and leaving almost immediately is not a weak positive,
+  /// it is a negative: the thumbnail and title promised something the video
+  /// did not deliver. Treating it as merely "a little engagement" is what lets
+  /// clickbait accumulate. Scored as such in [TasteProfile.from].
+  static const bailedOutBelow = 0.08;
+
+  /// True when this watch was a bail-out rather than a viewing.
+  bool get bailedOut => completion < bailedOutBelow;
+
   /// Builds a signal from the columns history stores.
   static WatchSignal fromWatch({
     required String videoId,
@@ -261,6 +272,8 @@ class TasteProfile {
     this.dislikedChannels = const {},
     this.dislikedVideos = const {},
     this.dislikedTopics = const {},
+    this.coVisit = const {},
+    this.endorsedChannels = const {},
   });
 
   /// Channel id to interest, already recency-decayed and completion-weighted.
@@ -315,6 +328,34 @@ class TasteProfile {
   /// dismissal should not wipe out a topic the user otherwise watches.
   final Map<String, double> dislikedTopics;
 
+  /// Video id to how strongly it is co-visited with what the user has been
+  /// watching, already normalised to 0..1.
+  ///
+  /// **This is the one genuinely collaborative signal an app with no account
+  /// can build.** YouTube's candidate generator is trained on what millions of
+  /// other people watched next; that data is unreachable here — but every
+  /// related list the app fetches is a *sample* of it, since YouTube builds
+  /// those lists from exactly that behaviour. Accumulating those lists into a
+  /// local item-to-item graph turns a series of one-off lookups into something
+  /// that can be queried offline and, more usefully, transfers: a video that
+  /// arrived from a plain topic search still gets credit for being strongly
+  /// co-visited with three things the user watched last night.
+  ///
+  /// It is borrowed collaborative filtering rather than computed, and it only
+  /// ever covers videos the app has happened to see. Both are worth saying
+  /// out loud. It is still the closest thing available.
+  final Map<String, double> coVisit;
+
+  /// Channels the user did something deliberate about beyond watching —
+  /// saved a video to a playlist, or downloaded one.
+  ///
+  /// YouTube's satisfaction objectives are built on likes, shares and survey
+  /// responses. None of those exist here, but these two do and they say the
+  /// same thing more strongly than a like does: saving something for later, or
+  /// spending storage and bandwidth on keeping it, is not a reflex the way a
+  /// tap on a thumb is. Treated as strong evidence of satisfaction.
+  final Set<String> endorsedChannels;
+
   /// An empty profile — a fresh install, or Kids mode, which deliberately
   /// consults no personal signal at all.
   static const empty = TasteProfile(
@@ -325,6 +366,14 @@ class TasteProfile {
     watchedIds: {},
     lastWatchedOnChannel: {},
   );
+
+  /// Satisfaction for a channel, lifted when the user has done something
+  /// deliberate about it.
+  ///
+  /// A floor rather than a bonus: a channel both endorsed and watched through
+  /// should not be counted twice, and one endorsed but since abandoned should
+  /// not be propped up indefinitely — the floor is high, not absolute.
+  static const _endorsedFloor = 0.8;
 
   bool get isEmpty =>
       channelAffinity.isEmpty && topicWeights.isEmpty && subscribed.isEmpty;
@@ -349,9 +398,15 @@ class TasteProfile {
       (count + _satisfactionPrior);
 
   /// How much of this channel the user typically watches, 0..1, already
-  /// shrunk towards neutral for thin evidence.
-  double satisfactionFor(String channelId) =>
-      channelSatisfaction[channelId] ?? _neutralSatisfaction;
+  /// shrunk towards neutral for thin evidence and floored for channels the
+  /// user has saved or downloaded from.
+  double satisfactionFor(String channelId) {
+    final measured = channelSatisfaction[channelId] ?? _neutralSatisfaction;
+    if (endorsedChannels.contains(channelId) && measured < _endorsedFloor) {
+      return _endorsedFloor;
+    }
+    return measured;
+  }
 
   /// Interest decays with a half-life of two weeks.
   ///
@@ -365,6 +420,18 @@ class TasteProfile {
   /// Half-life for a search query's weight. Shorter than [interestHalfLife]:
   /// a search is usually a task, and last month's task is finished.
   static const searchHalfLife = Duration(days: 7);
+
+  /// Scales raw co-visitation counts into 0..1 against the strongest edge, so
+  /// the term means the same thing to a heavy user and a light one.
+  static Map<String, double> _normaliseScores(Map<String, double> raw) {
+    if (raw.isEmpty) return const {};
+    final max = raw.values.fold<double>(0, math.max);
+    if (max <= 0) return const {};
+    return {
+      for (final entry in raw.entries)
+        entry.key: (entry.value / max).clamp(0.0, 1.0),
+    };
+  }
 
   static double _decay(DateTime at, DateTime now, Duration halfLife) {
     final elapsed = now.difference(at).inSeconds;
@@ -385,6 +452,8 @@ class TasteProfile {
     required DateTime now,
     Set<String> dislikedChannels = const {},
     List<WatchSignal> dislikedVideos = const [],
+    Map<String, double> coVisit = const {},
+    Set<String> endorsedChannels = const {},
   }) {
     final affinity = <String, double>{};
     final topics = <String, double>{};
@@ -405,7 +474,12 @@ class TasteProfile {
       final weight = watch.completion * recency;
 
       if (watch.channelId.isNotEmpty) {
-        affinity[watch.channelId] = (affinity[watch.channelId] ?? 0) + weight;
+        // A bail-out contributes nothing to affinity and a hard zero to
+        // satisfaction, rather than the small positive its completion would
+        // otherwise imply. Opening something and leaving four seconds later is
+        // the user telling us the title lied.
+        affinity[watch.channelId] =
+            (affinity[watch.channelId] ?? 0) + (watch.bailedOut ? 0 : weight);
         // Recency-weighted so a channel that used to be watched through and
         // is now abandoned reflects the recent truth, not the old one.
         completionSum[watch.channelId] =
@@ -466,6 +540,8 @@ class TasteProfile {
       dislikedChannels: dislikedChannels,
       dislikedVideos: {for (final d in dislikedVideos) d.videoId},
       dislikedTopics: dislikedTopics,
+      coVisit: _normaliseScores(coVisit),
+      endorsedChannels: endorsedChannels,
     );
   }
 }
@@ -531,6 +607,7 @@ class ScoredCandidate {
     required this.freshness,
     required this.popularity,
     required this.context,
+    required this.coVisit,
     required this.satisfaction,
     required this.impressionPenalty,
     required this.watchedPenalty,
@@ -556,6 +633,10 @@ class ScoredCandidate {
   /// feed, which has no "right now".
   final double context;
 
+  /// How strongly this video is co-visited with what the user has been
+  /// watching, 0..1 — see [TasteProfile.coVisit].
+  final double coVisit;
+
   /// Predicted satisfaction, 0..1: how much of this channel usually gets
   /// watched. Applied as a **multiplier** on engagement rather than added to
   /// it — see [total].
@@ -570,23 +651,6 @@ class ScoredCandidate {
 
   /// Negative, from words shared with videos the user dismissed.
   final double dislikePenalty;
-
-  /// The weight of each engagement term.
-  ///
-  /// Read them as a statement of priorities rather than tuned constants,
-  /// because that is what they are — there is no training loop here to fit
-  /// them. Who you watch matters most, what it is about is close behind,
-  /// whether it is recent matters, and **how popular it is matters least of
-  /// all**: popularity is what a feed falls back on when it knows nothing
-  /// about you, and this one usually knows something.
-  static const weights = (
-    source: 1.0,
-    affinity: 1.4,
-    topic: 1.1,
-    freshness: 0.6,
-    popularity: 0.25,
-    context: 0.9,
-  );
 
   /// How far the long-run topic preference is turned down once there is a
   /// video actually playing.
@@ -610,14 +674,27 @@ class ScoredCandidate {
   /// this term is zero.
   static const upNextContextWeight = 3.0;
 
+  /// The feature vector, in the order [RankerWeights] expects.
+  ///
+  /// Also what a training example stores. Captured at ranking time rather than
+  /// recomputed later, because by the next feed load the profile has moved and
+  /// these numbers would describe a different world.
+  List<double> get features =>
+      [source.prior, affinity, topic, freshness, popularity, context, coVisit];
+
   /// The engagement prediction: how likely this is to be opened and watched.
-  double get engagement =>
-      source.prior * weights.source +
-      affinity * weights.affinity +
-      topic * weights.topic +
-      freshness * weights.freshness +
-      popularity * weights.popularity +
-      context * weights.context;
+  double engagementWith(RankerWeights w) =>
+      source.prior * w.source +
+      affinity * w.affinity +
+      topic * w.topic +
+      freshness * w.freshness +
+      popularity * w.popularity +
+      context * w.context +
+      coVisit * w.coVisit;
+
+  /// Engagement under the hand-tuned priors, for tests and for anything that
+  /// wants a weighting that cannot have drifted.
+  double get engagement => engagementWith(RankerWeights.prior);
 
   /// Satisfaction as a bounded multiplier on engagement.
   ///
@@ -637,11 +714,13 @@ class ScoredCandidate {
     return floor + (ceiling - floor) * satisfaction.clamp(0.0, 1.0);
   }
 
-  double get total =>
-      engagement * satisfactionGate +
+  double totalWith(RankerWeights w) =>
+      engagementWith(w) * satisfactionGate +
       impressionPenalty +
       watchedPenalty +
       dislikePenalty;
+
+  double get total => totalWith(RankerWeights.prior);
 }
 
 /// Cost of a video having had the user's full attention once without being
@@ -835,6 +914,7 @@ ScoredCandidate score({
     freshness: _freshnessScore(video, now),
     popularity: _popularityScore(video),
     context: contextMatch,
+    coVisit: profile.coVisit[video.id] ?? 0,
     satisfaction: profile.satisfactionFor(video.channelId),
     impressionPenalty: impressionPenalty,
     watchedPenalty:
@@ -897,6 +977,11 @@ const _selectionTemperature = 0.35;
 /// sampling, leaving pure exploitation — which is what a test asserting on
 /// ranking wants, since it can then state the expected order exactly rather
 /// than around a sample.
+///
+/// [featuresOut], when given, is filled with the feature vector each returned
+/// video was scored on. The training loop needs those captured here: by the
+/// time the user acts on a card the profile has moved, and recomputing them
+/// would describe a different world from the one they reacted to.
 List<VideoBrief> rankFeed({
   required List<Candidate> candidates,
   required TasteProfile profile,
@@ -905,6 +990,8 @@ List<VideoBrief> rankFeed({
   int limit = 120,
   int seed = 0,
   bool explore = true,
+  RankerWeights weights = RankerWeights.prior,
+  Map<String, List<double>>? featuresOut,
 }) {
   if (candidates.isEmpty) return const [];
 
@@ -929,7 +1016,8 @@ List<VideoBrief> rankFeed({
       maxAffinity: maxAffinity,
     );
     final existing = best[video.id];
-    if (existing == null || scored.total > existing.total) {
+    if (existing == null ||
+        scored.totalWith(weights) > existing.totalWith(weights)) {
       best[video.id] = scored;
     }
   }
@@ -938,7 +1026,7 @@ List<VideoBrief> rankFeed({
   final pool = best.values.toList()
     // Sorted first so the greedy pass starts from a stable order and ties
     // break deterministically rather than on Map iteration order.
-    ..sort((a, b) => b.total.compareTo(a.total));
+    ..sort((a, b) => b.totalWith(weights).compareTo(a.totalWith(weights)));
 
   final tokensOf = <String, Set<String>>{
     for (final scored in pool)
@@ -960,7 +1048,7 @@ List<VideoBrief> rankFeed({
     final scored = pool[i];
     final channel = scored.video.channelId;
     final seen = channel.isEmpty ? 0 : (perChannel[channel] ?? 0);
-    var value = scored.total - seen * _channelRepeatCost;
+    var value = scored.totalWith(weights) - seen * _channelRepeatCost;
 
     // MMR: how much of this title has already been said by something picked.
     final tokens = tokensOf[scored.video.id] ?? const <String>{};
@@ -1012,6 +1100,7 @@ List<VideoBrief> rankFeed({
     taken[chosenIndex] = true;
     final chosen = pool[chosenIndex].video;
     out.add(chosen);
+    featuresOut?[chosen.id] = pool[chosenIndex].features;
     if (chosen.channelId.isNotEmpty) {
       perChannel[chosen.channelId] = (perChannel[chosen.channelId] ?? 0) + 1;
     }
@@ -1104,6 +1193,7 @@ List<VideoBrief> rankUpNext({
   required DateTime now,
   Map<String, ImpressionCount> impressions = const {},
   List<VideoBrief> recentlyPlayed = const [],
+  RankerWeights weights = RankerWeights.prior,
 }) {
   if (related.isEmpty) return const [];
 
@@ -1156,7 +1246,7 @@ List<VideoBrief> rankUpNext({
     final sessionRepeats = sessionChannels[video.channelId] ?? 0;
 
     ranked.add((
-      score: scored.total +
+      score: scored.totalWith(weights) +
           scored.context * ScoredCandidate.upNextContextWeight +
           positionPrior -
           (sameChannel ? 0.4 : 0.0) -
@@ -1175,4 +1265,235 @@ List<VideoBrief> rankUpNext({
         : a.index.compareTo(b.index),
   );
   return [for (final r in ranked) r.video];
+}
+
+/// The weight the ranker puts on each feature, and the loop that learns them.
+///
+/// ## Why this exists
+///
+/// Every constant in this file was chosen by hand. That was the honest state
+/// of things and also the largest remaining difference from a real
+/// recommender: YouTube's ranking network *learns* its weights from what
+/// people actually did, and retrains continuously. A fixed set of constants
+/// cannot notice that it is wrong about somebody.
+///
+/// So this is a training loop. It is single-user, tiny and linear rather than
+/// a network over billions of examples — but it is a real one: it observes
+/// what was offered, what was opened, how much of it was watched, and moves
+/// the weights towards predicting that.
+///
+/// ## What it optimises
+///
+/// **Weighted logistic regression with watch time as the positive weight.**
+/// That is not a coincidence — it is exactly the objective from Covington et
+/// al., and for the same reason: training on clicks alone promotes whatever
+/// gets clicked. A card that was offered and ignored is a negative example of
+/// weight 1; a card that was opened is a positive example weighted by how much
+/// of it was watched, so finishing a video teaches far more than bouncing off
+/// one.
+///
+/// ## Why it cannot run away
+///
+/// A single-user model sees a handful of examples a day, and a linear model
+/// fed a handful of examples will happily conclude something absurd. Three
+/// guards, all of which matter:
+///
+///  * **It is blended with the hand-tuned priors, never replacing them**
+///    ([blend]). The learned share grows with the number of examples seen and
+///    is capped at [maxLearnedShare], so the priors are always at least half
+///    the answer.
+///  * **Every weight is clamped** to a sane band, so one strange session
+///    cannot drive a feature to dominate or invert.
+///  * **Learning is off until [minExamplesToApply] examples exist.** Before
+///    that the priors are used unchanged, because a model fitted to four data
+///    points is worse than an honest guess.
+class RankerWeights {
+  const RankerWeights({
+    required this.source,
+    required this.affinity,
+    required this.topic,
+    required this.freshness,
+    required this.popularity,
+    required this.context,
+    required this.coVisit,
+    required this.bias,
+  });
+
+  final double source;
+  final double affinity;
+  final double topic;
+  final double freshness;
+  final double popularity;
+  final double context;
+  final double coVisit;
+
+  /// The intercept. Not used for ranking — it shifts every candidate equally
+  /// and so cannot change an order — but the model needs it to fit the base
+  /// rate of "offered and ignored", which is most of the data. Without it the
+  /// feature weights absorb that base rate and all drift negative.
+  final double bias;
+
+  /// The hand-tuned starting point, and the thing learning is blended with
+  /// rather than against.
+  ///
+  /// Read it as a statement of priorities: who you watch matters most, what it
+  /// is about is close behind, what other people watched next is real evidence,
+  /// whether it is recent matters, and **how popular it is matters least of
+  /// all** — popularity is what a feed falls back on when it knows nothing
+  /// about you, and this one usually knows something.
+  static const prior = RankerWeights(
+    source: 1.0,
+    affinity: 1.4,
+    topic: 1.1,
+    freshness: 0.6,
+    popularity: 0.25,
+    context: 0.9,
+    coVisit: 1.0,
+    bias: -1.5,
+  );
+
+  /// Examples needed before anything learned is applied at all.
+  static const minExamplesToApply = 40;
+
+  /// Examples at which the learned share reaches its cap.
+  static const examplesForFullTrust = 400;
+
+  /// The most of the final weight that learning may ever own.
+  ///
+  /// Half. The priors encode things the data cannot easily show in a single
+  /// user's worth of examples — that popularity is a tiebreak, that a
+  /// subscription is intent — and a model free to discard them would, given a
+  /// week where the user only watched one channel.
+  static const maxLearnedShare = 0.5;
+
+  /// Bounds each weight is clamped into after every update.
+  static const _bounds = (low: -0.5, high: 3.0);
+
+  /// How far one example may move a weight.
+  static const learningRate = 0.05;
+
+  List<double> get _vector =>
+      [source, affinity, topic, freshness, popularity, context, coVisit];
+
+  static RankerWeights _fromVector(List<double> v, double bias) => RankerWeights(
+        source: v[0],
+        affinity: v[1],
+        topic: v[2],
+        freshness: v[3],
+        popularity: v[4],
+        context: v[5],
+        coVisit: v[6],
+        bias: bias,
+      );
+
+  /// Predicted probability that this feature vector gets opened and watched.
+  double predict(List<double> features) {
+    var z = bias;
+    final w = _vector;
+    for (var i = 0; i < w.length && i < features.length; i++) {
+      z += w[i] * features[i];
+    }
+    return 1 / (1 + math.exp(-z.clamp(-30.0, 30.0)));
+  }
+
+  /// One weighted logistic-regression step over [examples].
+  ///
+  /// Pure: returns new weights rather than mutating, so a test can state the
+  /// expected direction of a single update exactly.
+  RankerWeights trainedOn(List<RankingExample> examples) {
+    if (examples.isEmpty) return this;
+    var w = List<double>.of(_vector);
+    var b = bias;
+
+    for (final example in examples) {
+      final p = _fromVector(w, b).predict(example.features);
+      // Watch time is the positive weight, exactly as in the 2016 paper: a
+      // video finished teaches much more than one bounced off, and an ignored
+      // card teaches a plain unit of "no".
+      final weight = example.opened ? 1 + 4 * example.completion : 1.0;
+      final error = (example.opened ? 1.0 : 0.0) - p;
+      final step = learningRate * weight * error;
+      for (var i = 0; i < w.length && i < example.features.length; i++) {
+        w[i] = (w[i] + step * example.features[i])
+            .clamp(_bounds.low, _bounds.high);
+      }
+      b = (b + step).clamp(-6.0, 6.0);
+    }
+    return _fromVector(w, b);
+  }
+
+  /// Mixes learned weights into the priors according to how much evidence
+  /// there is, returning the weights ranking should actually use.
+  ///
+  /// [examplesSeen] is the lifetime count, not the size of the last batch —
+  /// trust should reflect everything the model has ever learnt from.
+  static RankerWeights blend(RankerWeights learned, int examplesSeen) {
+    if (examplesSeen < minExamplesToApply) return prior;
+    final progress = ((examplesSeen - minExamplesToApply) /
+            (examplesForFullTrust - minExamplesToApply))
+        .clamp(0.0, 1.0);
+    final share = maxLearnedShare * progress;
+    final p = prior._vector;
+    final l = learned._vector;
+    return _fromVector(
+      [for (var i = 0; i < p.length; i++) p[i] * (1 - share) + l[i] * share],
+      // The intercept is the model's own and is not blended: it describes the
+      // base rate of this user's feed, which the prior has no opinion about.
+      learned.bias,
+    );
+  }
+
+  Map<String, double> toMap() => {
+        'source': source,
+        'affinity': affinity,
+        'topic': topic,
+        'freshness': freshness,
+        'popularity': popularity,
+        'context': context,
+        'coVisit': coVisit,
+        'bias': bias,
+      };
+
+  /// Reads weights back, falling through to the prior for anything missing or
+  /// unreadable — a corrupted or half-written preference must degrade to the
+  /// hand-tuned defaults, never to zeros, which would rank everything equally.
+  static RankerWeights fromMap(Map<String, Object?> map) {
+    double read(String key, double fallback) {
+      final value = map[key];
+      if (value is num && value.isFinite) return value.toDouble();
+      return fallback;
+    }
+
+    return RankerWeights(
+      source: read('source', prior.source),
+      affinity: read('affinity', prior.affinity),
+      topic: read('topic', prior.topic),
+      freshness: read('freshness', prior.freshness),
+      popularity: read('popularity', prior.popularity),
+      context: read('context', prior.context),
+      coVisit: read('coVisit', prior.coVisit),
+      bias: read('bias', prior.bias),
+    );
+  }
+}
+
+/// One observation the ranker learns from: what a card looked like, and what
+/// the user did about it.
+class RankingExample {
+  const RankingExample({
+    required this.features,
+    required this.opened,
+    required this.completion,
+  });
+
+  /// The feature values at the moment the card was shown, in the order
+  /// [RankerWeights._vector] uses. Captured then rather than recomputed later
+  /// because the profile moves: by the next feed load the video has been
+  /// watched, and its features would describe a different world.
+  final List<double> features;
+
+  final bool opened;
+
+  /// How much of it was watched, 0..1. Zero when it was never opened.
+  final double completion;
 }

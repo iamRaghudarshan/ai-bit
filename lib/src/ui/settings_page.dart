@@ -8,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/settings_rules.dart';
 import '../data/battery_service.dart';
 import '../data/network_service.dart';
+import '../data/ranker_trainer.dart';
+import '../data/recommender.dart';
 import '../data/settings.dart';
 import '../data/update_service.dart';
 import '../player/playback_controller.dart';
@@ -228,6 +230,79 @@ class SettingsPage extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => const DataUsagePage()),
             ),
+          ),
+          const Divider(),
+          const _SectionLabel('Recommendations'),
+          Builder(
+            builder: (context) {
+              final trainer = context.read<RankerTrainer>();
+              final share = (trainer.learnedShare * 100).round();
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    value: settings.adaptiveRanking,
+                    title: const Text('Learn from what you watch'),
+                    subtitle: Text(
+                      settings.adaptiveRanking
+                          // Says what it is actually doing rather than being an
+                          // unexplained switch. A feature that silently might
+                          // or might not be working is the kind this codebase
+                          // keeps rediscovering was broken for months.
+                          ? share == 0
+                              ? 'Learning. Recommendations start adapting '
+                                  'after about ${RankerWeights.minExamplesToApply} '
+                                  'videos.'
+                              : '$share% of the ranking is now learned from '
+                                  'you (${trainer.examplesSeen} videos).'
+                          : 'Using the built-in ranking only.',
+                    ),
+                    onChanged: (value) => settings.adaptiveRanking = value,
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.restart_alt),
+                    title: const Text('Reset what it has learned'),
+                    subtitle: const Text(
+                      'Back to the built-in ranking. Keeps your history, '
+                      'playlists and subscriptions.',
+                    ),
+                    onTap: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (dialogContext) => AlertDialog(
+                          title: const Text('Reset learned ranking?'),
+                          content: const Text(
+                            'Recommendations go back to the built-in ranking '
+                            'and start learning again from scratch.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () =>
+                                  Navigator.pop(dialogContext, false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () =>
+                                  Navigator.pop(dialogContext, true),
+                              child: const Text('Reset'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed != true) return;
+                      await trainer.reset();
+                      messenger.showSnackBar(
+                        const SnackBar(
+                          content: Text('Learned ranking reset.'),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              );
+            },
           ),
           const Divider(),
           const _SectionLabel('Privacy & lock'),

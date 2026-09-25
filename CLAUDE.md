@@ -783,6 +783,83 @@ something is playing, the long-run topic preference is damped to 0.4 and
 (which `playPrevious` *consumes*) so autoplay can avoid circling back through
 the same videos and channels.
 
+### The third pass: it learns, and it has a collaborative signal
+
+The two passes above reproduce YouTube's published *architecture* with
+hand-tuned constants. This closes the two things that were still missing.
+
+**The weights are learned now** (`ranker_trainer.dart` + `RankerWeights`).
+Every constant in the ranker was chosen by hand, which was the largest
+remaining difference from a real recommender: a fixed set of constants cannot
+notice it is wrong about somebody. There is now a real training loop —
+**weighted logistic regression with watch time as the positive weight**, which
+is the objective from the 2016 paper and is chosen for the same reason, that
+training on clicks alone promotes whatever gets clicked. A card that was seen
+and ignored is a negative of weight 1; one that was opened is a positive
+weighted by how much was watched.
+
+Three guards, and they are why this ships on by default:
+
+- **Blended, never replacing.** `RankerWeights.blend` caps the learned share at
+  half, growing with evidence, so the priors always hold at least half the
+  decision. They encode things a single user's data cannot easily show — that
+  popularity is a tiebreak, that a subscription is intent — and a model free to
+  discard them would, given one quiet week.
+- **Every weight clamped**, so one strange session cannot drive a feature to
+  dominate or invert. A test throws 5000 lopsided examples at it and asserts
+  the bounds hold.
+- **Nothing applied below 40 observations.** A linear model fitted to four data
+  points is worse than an honest guess.
+
+Feature vectors are captured **at ranking time** (`featuresOut`), not
+recomputed when the user acts — by then the profile has moved and the numbers
+would describe a different world from the one they reacted to.
+`markExampleOpened` only ever updates a row that already exists, so a video
+reached from search or a channel page is never trained on as though the ranker
+had suggested it. Settings → Recommendations shows the learned share and can
+reset it, because a switch that might or might not be doing something is the
+kind of feature this codebase keeps rediscovering was broken for months.
+
+**The `covisit` table is a local item-to-item graph**, and it is the one
+genuinely collaborative signal an account-less app can build. YouTube's
+candidate generator is trained on what millions of people watched next; that
+data is unreachable here — but every related list the app fetches is a *sample*
+of it, because that is how YouTube builds those lists. Accumulating them turns
+a series of one-off lookups into something queryable that **transfers**: a
+video found by a plain topic search still gets credit for being strongly
+co-visited with three things watched last night. Edges from a related list are
+position-weighted; an edge from the user's own A→B transition is weighted four
+times higher, because a related list is what YouTube believes about everybody
+while that is what this person actually did. It is borrowed collaborative
+filtering rather than computed, and it only covers videos the app has happened
+to see — both worth saying out loud.
+
+**Two more satisfaction signals, and one negative.** Saving to a playlist or
+downloading now floors a channel's satisfaction: those are the local stand-in
+for YouTube's likes and shares, and arguably stronger, since spending storage
+on something is not the reflex a thumb tap is. And opening a video then leaving
+within 8% of it (`WatchSignal.bailedOut`) now contributes **nothing** to
+affinity rather than the small positive its completion implies — a four-second
+visit is the user saying the title lied, and counting it as weak engagement is
+exactly how clickbait accumulates.
+
+**The Shorts feed is ranked** like everything else. It was the last surface
+still ordered by `shuffle()`, which meant the one people scroll fastest made
+the least use of what the app knew. Exploration and the rotating seed keep it
+different on every visit — the only thing shuffling was buying.
+
+Candidate generation was widened from three co-watch seeds to five. Worth
+remembering why that matters more than it looks: **ranking can only ever order
+what candidate generation found**, so the size of the net is the ceiling on the
+whole system, and it is the cheapest thing to raise.
+
+**What is still not YouTube, and cannot be from here.** No corpus access, so
+candidates come from a few hundred fetched videos rather than billions. No
+cross-user data, so the collaborative signal is borrowed rather than computed.
+No satisfaction surveys. The learning loop is one user's linear model, not a
+network retrained continuously and validated by live experiment. Say so plainly
+rather than implying parity.
+
 ### The screen is kept awake by the player, not by a widget
 
 `PlaybackController._syncWakelock` owns the screen wakelock. `better_player`
@@ -819,7 +896,7 @@ corrected within a tick instead of lasting the rest of the video.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 10**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 11**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
@@ -827,7 +904,8 @@ or the change is missing on one path: `downloads` (v2), `searches` (v3),
 survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7);
 `data_usage` and `kids_usage` arrived as whole tables in v8, and
 `feed_impressions` in v9; v10 added `not_interested` and gave
-`feed_impressions` its positional `attention` column.
+`feed_impressions` its positional `attention` column; v11 added `covisit` and
+`ranking_examples`.
 `data_usage` and `kids_usage` are keyed by a *day
 index*, not a timestamp — one row per day, so the tables stay tiny and
 yesterday's total can never leak into today's allowance — and that index comes

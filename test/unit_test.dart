@@ -2090,6 +2090,7 @@ Some blurb about the video.
         freshness: 1,
         popularity: 1,
         context: 0,
+        coVisit: 0,
         satisfaction: 0,
         impressionPenalty: 0,
         watchedPenalty: 0,
@@ -2103,6 +2104,7 @@ Some blurb about the video.
         freshness: 1,
         popularity: 1,
         context: 0,
+        coVisit: 0,
         satisfaction: 1,
         impressionPenalty: 0,
         watchedPenalty: 0,
@@ -2542,6 +2544,460 @@ Some blurb about the video.
           recentlyPlayed: const [],
         ).map((x) => x.id),
       );
+    });
+  });
+
+  // ------------------------------------------- the ranker's learning loop
+  //
+  // A single-user linear model fed a handful of examples will cheerfully
+  // conclude something absurd, so the guards matter more than the fit: these
+  // pin that it learns in the right direction AND that it cannot run away.
+
+  group('RankerWeights.predict', () {
+    test('is a probability', () {
+      final p = RankerWeights.prior.predict([1, 1, 1, 1, 1, 1, 1]);
+      expect(p, greaterThan(0));
+      expect(p, lessThan(1));
+    });
+
+    test('a stronger feature vector predicts a higher chance', () {
+      final weak = RankerWeights.prior.predict([0, 0, 0, 0, 0, 0, 0]);
+      final strong = RankerWeights.prior.predict([1, 1, 1, 1, 1, 1, 1]);
+      expect(strong, greaterThan(weak));
+    });
+
+    test('an absurd input saturates instead of overflowing', () {
+      // exp() of a large number is infinity, and an infinite score would sort
+      // unpredictably rather than loudly.
+      final p = RankerWeights.prior.predict([1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9]);
+      expect(p.isFinite, isTrue);
+      expect(p, lessThanOrEqualTo(1.0));
+    });
+
+    test('a short feature vector does not throw', () {
+      // Old rows written before a feature was added must degrade, not crash.
+      expect(RankerWeights.prior.predict([1, 1]).isFinite, isTrue);
+    });
+  });
+
+  group('RankerWeights.trainedOn', () {
+    List<double> only(int index) =>
+        [for (var i = 0; i < 7; i++) i == index ? 1.0 : 0.0];
+
+    test('no examples changes nothing', () {
+      final after = RankerWeights.prior.trainedOn(const []);
+      expect(after.affinity, RankerWeights.prior.affinity);
+      expect(after.bias, RankerWeights.prior.bias);
+    });
+
+    test('a feature present when videos get opened gains weight', () {
+      final after = RankerWeights.prior.trainedOn([
+        for (var i = 0; i < 30; i++)
+          RankingExample(features: only(1), opened: true, completion: 1),
+      ]);
+      expect(after.affinity, greaterThan(RankerWeights.prior.affinity));
+    });
+
+    test('a feature present when videos get ignored loses weight', () {
+      final after = RankerWeights.prior.trainedOn([
+        for (var i = 0; i < 30; i++)
+          RankingExample(features: only(4), opened: false, completion: 0),
+      ]);
+      expect(after.popularity, lessThan(RankerWeights.prior.popularity));
+    });
+
+    test('a video watched through teaches more than one bounced off', () {
+      // Watch time as the positive weight - the objective from the 2016 paper,
+      // and the reason a recommender does not end up optimising for clickbait.
+      double gain(double completion) =>
+          RankerWeights.prior.trainedOn([
+            RankingExample(
+              features: only(1),
+              opened: true,
+              completion: completion,
+            ),
+          ]).affinity -
+          RankerWeights.prior.affinity;
+
+      expect(gain(1.0), greaterThan(gain(0.05)));
+    });
+
+    test('a feature that was not present is left alone', () {
+      final after = RankerWeights.prior.trainedOn([
+        for (var i = 0; i < 20; i++)
+          RankingExample(features: only(1), opened: true, completion: 1),
+      ]);
+      expect(after.freshness, closeTo(RankerWeights.prior.freshness, 1e-9));
+    });
+
+    test('weights are clamped, so one strange run cannot take over', () {
+      final after = RankerWeights.prior.trainedOn([
+        for (var i = 0; i < 5000; i++)
+          RankingExample(
+            features: List.filled(7, 1),
+            opened: true,
+            completion: 1,
+          ),
+      ]);
+      for (final w in [
+        after.source,
+        after.affinity,
+        after.topic,
+        after.freshness,
+        after.popularity,
+        after.context,
+        after.coVisit,
+      ]) {
+        expect(w, lessThanOrEqualTo(3.0));
+        expect(w, greaterThanOrEqualTo(-0.5));
+      }
+      expect(after.bias.abs(), lessThanOrEqualTo(6.0));
+    });
+
+    test('training never produces a weight that is not a number', () {
+      final after = RankerWeights.prior.trainedOn([
+        for (var i = 0; i < 200; i++)
+          RankingExample(
+            features: List.filled(7, i.isEven ? 1.0 : 0.0),
+            opened: i % 3 == 0,
+            completion: i / 200,
+          ),
+      ]);
+      for (final w in after.toMap().values) {
+        expect(w.isFinite, isTrue, reason: 'weight went non-finite');
+      }
+    });
+  });
+
+  group('RankerWeights.blend', () {
+    final learned = RankerWeights.prior.trainedOn([
+      for (var i = 0; i < 200; i++)
+        RankingExample(
+          features: [0, 1, 0, 0, 0, 0, 0],
+          opened: true,
+          completion: 1,
+        ),
+    ]);
+
+    test('nothing learned is used before there is enough evidence', () {
+      // A model fitted to four data points is worse than an honest guess.
+      final blended =
+          RankerWeights.blend(learned, RankerWeights.minExamplesToApply - 1);
+      expect(blended.affinity, RankerWeights.prior.affinity);
+    });
+
+    test('learning starts to count once there is', () {
+      final blended =
+          RankerWeights.blend(learned, RankerWeights.examplesForFullTrust);
+      expect(blended.affinity, isNot(RankerWeights.prior.affinity));
+    });
+
+    test('the priors always keep at least half the decision', () {
+      final blended = RankerWeights.blend(learned, 1000000);
+      final gap = (blended.affinity - RankerWeights.prior.affinity).abs();
+      final full = (learned.affinity - RankerWeights.prior.affinity).abs();
+      expect(gap, lessThanOrEqualTo(full * RankerWeights.maxLearnedShare + 1e-9));
+    });
+
+    test('trust grows with evidence rather than switching on', () {
+      double share(int seen) =>
+          (RankerWeights.blend(learned, seen).affinity -
+                  RankerWeights.prior.affinity)
+              .abs();
+      expect(share(300), greaterThan(share(100)));
+      expect(share(100), greaterThan(share(50)));
+    });
+  });
+
+  group('RankerWeights round trip', () {
+    test('survives being stored and read back', () {
+      final original = RankerWeights.prior.trainedOn([
+        const RankingExample(
+          features: [1, 1, 1, 1, 1, 1, 1],
+          opened: true,
+          completion: 0.7,
+        ),
+      ]);
+      final restored = RankerWeights.fromMap(original.toMap());
+      expect(restored.toMap(), original.toMap());
+    });
+
+    test('a missing field falls back to the prior, never to zero', () {
+      // Zeros would rank every video equally, which looks exactly like the
+      // feature being broken rather than like a corrupted preference.
+      final restored = RankerWeights.fromMap(const {'affinity': 2.0});
+      expect(restored.affinity, 2.0);
+      expect(restored.topic, RankerWeights.prior.topic);
+      expect(restored.popularity, RankerWeights.prior.popularity);
+    });
+
+    test('a corrupted field falls back too', () {
+      final restored = RankerWeights.fromMap(const {
+        'affinity': 'not a number',
+        'topic': double.nan,
+        'freshness': double.infinity,
+      });
+      expect(restored.affinity, RankerWeights.prior.affinity);
+      expect(restored.topic, RankerWeights.prior.topic);
+      expect(restored.freshness, RankerWeights.prior.freshness);
+    });
+  });
+
+  group('learned weights change the ranking', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    Candidate c(String id, String channel, {int views = 1000}) => Candidate(
+          video: VideoBrief(
+            id: id,
+            title: 'a clip about $id',
+            author: channel,
+            channelId: channel,
+            viewCount: views,
+            uploadDate: now.subtract(const Duration(days: 1)),
+          ),
+          source: CandidateSource.search,
+        );
+
+    test('a feed ranked with different weights can come out differently', () {
+      // The whole point of the loop: if the weights could not move the order,
+      // learning them would be theatre.
+      final candidates = [
+        c('popular', 'UC-a', views: 5000000),
+        c('obscure', 'UC-b', views: 50),
+      ];
+      const popularityHeavy = RankerWeights(
+        source: 0.1,
+        affinity: 0.1,
+        topic: 0.1,
+        freshness: 0.1,
+        popularity: 3.0,
+        context: 0.1,
+        coVisit: 0.1,
+        bias: 0,
+      );
+      final byPopularity = rankFeed(
+        candidates: candidates,
+        profile: TasteProfile.empty,
+        now: now,
+        explore: false,
+        weights: popularityHeavy,
+      );
+      expect(byPopularity.first.id, 'popular');
+    });
+
+    test('the feature vector matches what the weights expect', () {
+      // Two lists that must stay the same length and order, in different
+      // files. If they drift, the model silently trains on the wrong columns -
+      // which would not crash and would not show up anywhere else.
+      final features = <String, List<double>>{};
+      rankFeed(
+        candidates: [c('a', 'UC-a')],
+        profile: TasteProfile.empty,
+        now: now,
+        explore: false,
+        featuresOut: features,
+      );
+      expect(features['a'], hasLength(7));
+      expect(
+        RankerWeights.prior.toMap().length,
+        features['a']!.length + 1, // + the intercept
+      );
+    });
+  });
+
+  group('co-visitation', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    VideoBrief v(String id, {String channel = 'UC-x'}) => VideoBrief(
+          id: id,
+          title: 'a clip about $id',
+          author: channel,
+          channelId: channel,
+          uploadDate: now.subtract(const Duration(days: 1)),
+        );
+
+    test('a strongly co-visited video outranks an identical one', () {
+      final profile = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        coVisit: const {'linked': 10, 'unlinked': 0},
+      );
+      double scoreOf(String id) => score(
+            candidate:
+                Candidate(video: v(id), source: CandidateSource.search),
+            profile: profile,
+            now: now,
+          ).total;
+      expect(scoreOf('linked'), greaterThan(scoreOf('unlinked')));
+    });
+
+    test('scores are normalised, so a heavy user and a light one agree', () {
+      final light = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        coVisit: const {'a': 1, 'b': 0.5},
+      );
+      final heavy = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        coVisit: const {'a': 1000, 'b': 500},
+      );
+      expect(light.coVisit['a'], heavy.coVisit['a']);
+      expect(light.coVisit['b'], heavy.coVisit['b']);
+    });
+
+    test('an empty graph contributes nothing rather than dividing by zero', () {
+      final profile = TasteProfile.from(
+        history: const [],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        coVisit: const {},
+      );
+      expect(profile.coVisit, isEmpty);
+      expect(
+        score(
+          candidate:
+              Candidate(video: v('a'), source: CandidateSource.search),
+          profile: profile,
+          now: now,
+        ).coVisit,
+        0,
+      );
+    });
+  });
+
+  group('endorsement and bail-out signals', () {
+    final now = DateTime(2026, 6, 1, 12);
+
+    test('saving or downloading from a channel lifts its satisfaction', () {
+      // The local stand-in for a like: not a reflex the way a thumb tap is.
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'a',
+            channelId: 'UC-saved',
+            title: 't',
+            watchedAt: now,
+            completion: 0.2,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        endorsedChannels: const {'UC-saved'},
+      );
+      final plain = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'a',
+            channelId: 'UC-saved',
+            title: 't',
+            watchedAt: now,
+            completion: 0.2,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(
+        profile.satisfactionFor('UC-saved'),
+        greaterThan(plain.satisfactionFor('UC-saved')),
+      );
+    });
+
+    test('an endorsement is a floor, not a bonus stacked on a good record', () {
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'a',
+            channelId: 'UC-loved',
+            title: 't',
+            watchedAt: now,
+            completion: 1,
+          ),
+          WatchSignal(
+            videoId: 'b',
+            channelId: 'UC-loved',
+            title: 't',
+            watchedAt: now,
+            completion: 1,
+          ),
+          WatchSignal(
+            videoId: 'c',
+            channelId: 'UC-loved',
+            title: 't',
+            watchedAt: now,
+            completion: 1,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+        endorsedChannels: const {'UC-loved'},
+      );
+      expect(profile.satisfactionFor('UC-loved'), lessThanOrEqualTo(1.0));
+    });
+
+    test('opening something and leaving at once is a rejection, not a watch',
+        () {
+      // A four-second visit is the user saying the title lied. Counted as a
+      // small positive - which is what a plain completion weighting does - it
+      // is exactly how clickbait accumulates.
+      final bailed = WatchSignal(
+        videoId: 'x',
+        channelId: 'c',
+        title: 't',
+        watchedAt: now,
+        completion: 0.02,
+      );
+      expect(bailed.bailedOut, isTrue);
+    });
+
+    test('a bail-out adds nothing to the channel it came from', () {
+      final profile = TasteProfile.from(
+        history: [
+          for (var i = 0; i < 10; i++)
+            WatchSignal(
+              videoId: 'b$i',
+              channelId: 'UC-bait',
+              title: 't',
+              watchedAt: now,
+              completion: 0.02,
+            ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(profile.channelAffinity['UC-bait'] ?? 0, 0);
+    });
+
+    test('a normal short view still counts for something', () {
+      // The threshold must not swallow ordinary partial viewing - somebody who
+      // watches a fifth of a long video is still interested.
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'a',
+            channelId: 'UC-ok',
+            title: 't',
+            watchedAt: now,
+            completion: 0.2,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {},
+        now: now,
+      );
+      expect(profile.channelAffinity['UC-ok'], greaterThan(0));
     });
   });
 }

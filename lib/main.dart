@@ -10,6 +10,7 @@ import 'src/data/db.dart';
 import 'src/data/download_manager.dart';
 import 'src/data/kids_guard.dart';
 import 'src/data/network_service.dart';
+import 'src/data/ranker_trainer.dart';
 import 'src/data/settings.dart';
 import 'src/data/storage_service.dart';
 import 'src/data/yt_repository.dart';
@@ -190,6 +191,18 @@ class AiBitApp extends StatelessWidget {
             database: context.read<AppDatabase>(),
             settings: context.read<SettingsService>(),
           )..load(),
+        ),
+        // Plain Provider for the same reason as DataUsageService below: the
+        // trainer holds one cached object and has nothing to notify about.
+        // Not lazy, because the first feed load of the session asks it for
+        // weights and a provider built on first read would hand back the
+        // untrained defaults for that load.
+        Provider<RankerTrainer>(
+          lazy: false,
+          create: (context) => RankerTrainer(
+            database: context.read<AppDatabase>(),
+            settings: context.read<SettingsService>(),
+          ),
         ),
         // Plain Provider: DataUsageService is a stateless facade over the
         // database, with nothing to notify about and nothing to dispose.

@@ -15,6 +15,7 @@ import 'settings_page.dart';
 import 'watch_page.dart';
 import '../data/battery_service.dart';
 import '../data/network_service.dart';
+import '../data/ranker_trainer.dart';
 import '../player/playback_controller.dart';
 import 'widgets/feed_impressions.dart';
 import 'widgets/feed_preview.dart';
@@ -62,6 +63,13 @@ class HomePageState extends State<HomePage>
   /// because it must die with this screen: a preview player outliving the feed
   /// is a decoder nobody can see and nobody can stop.
   FeedPreviewCoordinator? _previews;
+
+  /// Feature vectors for the feed currently on screen, keyed by video id.
+  ///
+  /// Held until a card is actually seen — an offer the user never scrolled to
+  /// is not an observation about the ranker's judgement, and training on it
+  /// would teach the model that its own unseen suggestions were rejected.
+  Map<String, List<double>> _pendingFeatures = const {};
 
   /// Counts which feed cards were actually on screen, for the ranker's
   /// impression feature. Built here and disposed with the screen so a pending
@@ -221,6 +229,12 @@ class HomePageState extends State<HomePage>
       final profile = await db.tasteProfile();
       final impressions = await db.feedImpressions();
       if (!mounted) return;
+      final trainer = context.read<RankerTrainer>();
+      // The features each card was scored on, captured as it is ranked. They
+      // have to be taken now rather than recomputed when the user acts: by
+      // then the profile has moved and the numbers would describe a different
+      // world from the one they reacted to.
+      final features = <String, List<double>>{};
       final feed = await repo.homeFeed(
         channelIds: seeds.channelIds,
         searches: searches,
@@ -230,6 +244,8 @@ class HomePageState extends State<HomePage>
         coWatchSeeds: seeds.videoIds,
         profile: profile,
         impressions: impressions,
+        weights: trainer.weights,
+        featuresOut: features,
         refreshToken: _refreshToken,
         kids: context.read<SettingsService>().kidsMode,
       );
@@ -239,6 +255,10 @@ class HomePageState extends State<HomePage>
         _loading = false;
         _error = feed.isEmpty ? 'Nothing came back from YouTube.' : null;
       });
+      _pendingFeatures = features;
+      // Trained after the feed is on screen, never before it: a training pass
+      // is cheap but nothing the user is waiting for should queue behind it.
+      unawaited(trainer.train());
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -275,6 +295,20 @@ class HomePageState extends State<HomePage>
   void _onCardSeen(String videoId, int rank) {
     if (_category != _CategoryChips.all) return;
     _impressions?.markSeen(videoId, rank);
+
+    // The same moment is when this card becomes a training example: it was
+    // offered, it was seen, and whether it gets opened is the label.
+    final features = _pendingFeatures[videoId];
+    if (features == null || !mounted) return;
+    final settings = context.read<SettingsService>();
+    if (settings.incognito || settings.kidsMode) return;
+    unawaited(
+      context
+          .read<AppDatabase>()
+          .recordRankingExamples({videoId: features}).catchError((Object e) {
+        debugPrint('AI BIT: ranking example not recorded - $e');
+      }),
+    );
   }
 
   static String _signature(List<String> searches, List<String> channelIds) =>

@@ -25,7 +25,7 @@ class AppDatabase {
     final path = kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db';
     final db = await openDatabase(
       path,
-      version: 10,
+      version: 11,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -36,6 +36,8 @@ class AppDatabase {
         await _createKidsUsage(db);
         await _createFeedImpressions(db);
         await _createNotInterested(db);
+        await _createCoVisit(db);
+        await _createRankingExamples(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -85,6 +87,10 @@ class AppDatabase {
           await db.execute(
             'UPDATE feed_impressions SET attention = shown WHERE attention = 0',
           );
+        }
+        if (from < 11) {
+          await _createCoVisit(db);
+          await _createRankingExamples(db);
         }
       },
     );
@@ -242,6 +248,53 @@ class AppDatabase {
         shown         INTEGER NOT NULL DEFAULT 0,
         attention     REAL NOT NULL DEFAULT 0,
         last_shown_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+
+  /// Which videos are watched near which others — a local item-to-item graph.
+  ///
+  /// This is the nearest thing an account-less app has to collaborative
+  /// filtering. Every related list YouTube returns is a *sample* of what
+  /// millions of people watched next, because that is how YouTube builds them;
+  /// accumulating those samples turns a series of one-off lookups into
+  /// something queryable, and something that transfers — a video found by a
+  /// plain topic search still gets credit for being co-visited with three
+  /// things watched last night.
+  ///
+  /// Edges are directed and weighted. Kept small by [_coVisitLimit]: an
+  /// unbounded graph on a phone is a slow query and a growing file, and the
+  /// long tail of weak edges changes no ranking.
+  static Future<void> _createCoVisit(Database db) async {
+    await db.execute('''
+      CREATE TABLE covisit (
+        from_id    TEXT NOT NULL,
+        to_id      TEXT NOT NULL,
+        weight     REAL NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (from_id, to_id)
+      )
+    ''');
+    await db.execute('CREATE INDEX idx_covisit_from ON covisit (from_id)');
+  }
+
+  /// What the ranker offered and what the user did about it.
+  ///
+  /// The training set for `RankerWeights`. One row per card that was actually
+  /// on screen, holding the feature vector it was scored on — captured then
+  /// rather than recomputed later, because by the next feed load the profile
+  /// has moved and the numbers would describe a different world.
+  ///
+  /// Rows are consumed by training and deleted, so this never becomes a log.
+  static Future<void> _createRankingExamples(Database db) async {
+    await db.execute('''
+      CREATE TABLE ranking_examples (
+        video_id   TEXT PRIMARY KEY,
+        features   TEXT NOT NULL,
+        opened     INTEGER NOT NULL DEFAULT 0,
+        completion REAL NOT NULL DEFAULT 0,
+        shown_at   INTEGER NOT NULL
       )
     ''');
   }
@@ -674,6 +727,200 @@ class AppDatabase {
     ];
   }
 
+  // ------------------------------------------------- co-visitation graph
+
+  /// Most edges kept. Beyond this the weakest are pruned.
+  static const _coVisitLimit = 4000;
+
+  /// Records that [related] are the videos YouTube lists alongside [videoId].
+  ///
+  /// Position-weighted: the first entry in a related list is a much stronger
+  /// statement than the twentieth, in the same way and for the same reason
+  /// that the first result of a search is.
+  Future<void> recordCoVisits(String videoId, List<String> related) async {
+    if (videoId.isEmpty || related.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final batch = _db.batch();
+    for (var i = 0; i < related.length && i < 20; i++) {
+      final other = related[i];
+      if (other.isEmpty || other == videoId) continue;
+      final weight = 1 / (1 + i * 0.25);
+      batch.rawInsert('''
+        INSERT INTO covisit (from_id, to_id, weight, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(from_id, to_id) DO UPDATE SET
+          weight = MIN(covisit.weight + excluded.weight, 12.0),
+          updated_at = excluded.updated_at
+      ''', [videoId, other, weight, now]);
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Records that the user went from [fromId] to [toId] themselves.
+  ///
+  /// Weighted far above a related-list edge, and deliberately so: a related
+  /// list is what YouTube believes about everybody, while this is what this
+  /// person actually did. It is also the only edge in the graph that is not
+  /// borrowed.
+  Future<void> recordWatchTransition(String fromId, String toId) async {
+    if (fromId.isEmpty || toId.isEmpty || fromId == toId) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _db.rawInsert('''
+      INSERT INTO covisit (from_id, to_id, weight, updated_at)
+      VALUES (?, ?, 4.0, ?)
+      ON CONFLICT(from_id, to_id) DO UPDATE SET
+        weight = MIN(covisit.weight + 4.0, 12.0),
+        updated_at = excluded.updated_at
+    ''', [fromId, toId, now]);
+  }
+
+  /// Co-visitation strength for everything reachable from [seeds], summed.
+  ///
+  /// [seeds] are recently watched video ids. A candidate strongly linked to
+  /// several of them scores higher than one linked to a single seed, which is
+  /// the point: agreement across the recent past is a better signal than one
+  /// strong edge from one video.
+  Future<Map<String, double>> coVisitScores(List<String> seeds) async {
+    final ids = seeds.where((s) => s.isNotEmpty).toSet().toList();
+    if (ids.isEmpty) return const {};
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final rows = await _db.rawQuery(
+      'SELECT to_id, SUM(weight) AS total FROM covisit '
+      'WHERE from_id IN ($placeholders) GROUP BY to_id '
+      'ORDER BY total DESC LIMIT 400',
+      ids,
+    );
+    return {
+      for (final r in rows)
+        r['to_id']! as String: (r['total'] as num?)?.toDouble() ?? 0,
+    };
+  }
+
+  /// Keeps the graph bounded. Called after writes rather than on a schedule,
+  /// so there is no separate job that can be forgotten.
+  Future<void> pruneCoVisits() async {
+    final count = Sqflite.firstIntValue(
+          await _db.rawQuery('SELECT COUNT(*) FROM covisit'),
+        ) ??
+        0;
+    if (count <= _coVisitLimit) return;
+    await _db.rawDelete('''
+      DELETE FROM covisit WHERE rowid NOT IN (
+        SELECT rowid FROM covisit ORDER BY weight DESC, updated_at DESC LIMIT ?
+      )
+    ''', [_coVisitLimit]);
+  }
+
+  // ------------------------------------------------------- ranker training
+
+  /// Examples older than this are dropped untrained. A month-old reaction to a
+  /// feed nobody remembers is not worth fitting to.
+  static const _exampleMemory = Duration(days: 30);
+
+  /// Notes that a card was offered, with the features it was scored on.
+  ///
+  /// Ignored if the video already has a row: the first offer is the one the
+  /// user reacted to, and re-offering it later does not create a second
+  /// independent observation.
+  Future<void> recordRankingExamples(Map<String, List<double>> features) async {
+    if (features.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final batch = _db.batch();
+    for (final entry in features.entries) {
+      if (entry.key.isEmpty) continue;
+      batch.insert(
+        'ranking_examples',
+        {
+          'video_id': entry.key,
+          'features': entry.value.join(','),
+          'opened': 0,
+          'completion': 0.0,
+          'shown_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Marks an offered video as opened, and how much of it was watched.
+  ///
+  /// Only updates a row that already exists — a video reached from search or a
+  /// channel page was never a recommendation, so it is not evidence about the
+  /// ranker's judgement and must not be trained on as though it were.
+  Future<void> markExampleOpened(String videoId, double completion) =>
+      _db.update(
+        'ranking_examples',
+        {'opened': 1, 'completion': completion.clamp(0.0, 1.0)},
+        where: 'video_id = ?',
+        whereArgs: [videoId],
+      );
+
+  /// Reads the untrained examples and removes them, so each is learnt from
+  /// exactly once.
+  ///
+  /// Read-then-delete rather than a trained flag: the alternative is a table
+  /// that grows for ever holding rows nothing will ever look at again.
+  Future<List<RankingExample>> takeRankingExamples({int limit = 500}) async {
+    final cutoff =
+        DateTime.now().subtract(_exampleMemory).millisecondsSinceEpoch;
+    await _db.delete(
+      'ranking_examples',
+      where: 'shown_at < ?',
+      whereArgs: [cutoff],
+    );
+
+    // An example is only meaningful once the user has had the chance to act on
+    // it. Rows from the feed still on screen are left for next time.
+    final settled = DateTime.now()
+        .subtract(const Duration(minutes: 20))
+        .millisecondsSinceEpoch;
+    final rows = await _db.query(
+      'ranking_examples',
+      where: 'shown_at < ?',
+      whereArgs: [settled],
+      orderBy: 'shown_at ASC',
+      limit: limit,
+    );
+    if (rows.isEmpty) return const [];
+
+    final out = <RankingExample>[];
+    for (final r in rows) {
+      final raw = (r['features'] as String?) ?? '';
+      final features = <double>[];
+      for (final part in raw.split(',')) {
+        final value = double.tryParse(part);
+        // A row we cannot read is skipped rather than fed in as zeros, which
+        // would train the model on a video that looked like nothing.
+        if (value == null || !value.isFinite) {
+          features.clear();
+          break;
+        }
+        features.add(value);
+      }
+      if (features.isEmpty) continue;
+      out.add(
+        RankingExample(
+          features: features,
+          opened: (r['opened'] as int? ?? 0) == 1,
+          completion: (r['completion'] as num?)?.toDouble() ?? 0,
+        ),
+      );
+    }
+
+    await _db.delete(
+      'ranking_examples',
+      where: 'shown_at < ?',
+      whereArgs: [settled],
+    );
+    return out;
+  }
+
+  Future<void> clearRankerLearning() async {
+    await _db.delete('ranking_examples');
+    await _db.delete('covisit');
+  }
+
   /// Builds the ranking profile from everything this device knows.
   ///
   /// Lives here rather than in each screen so Home and the watch page rank
@@ -685,11 +932,20 @@ class AppDatabase {
   /// rebuilt per load rather than cached because a profile that does not
   /// include what was watched five minutes ago is the stale-recommendations
   /// bug the Home screen already had once.
-  Future<TasteProfile> tasteProfile({DateTime? now}) async {
+  Future<TasteProfile> tasteProfile({
+    DateTime? now,
+    List<String> coVisitSeeds = const [],
+  }) async {
     final history = await watchSignals();
     final searches = await searchSignals();
     final subs = await subscriptions();
     final dismissed = await notInterested();
+    // Seeds default to the most recent watches, which is what the home feed
+    // wants; the watch page passes the video being watched instead.
+    final seeds = coVisitSeeds.isNotEmpty
+        ? coVisitSeeds
+        : [for (final w in history.take(8)) w.videoId];
+    final coVisit = await coVisitScores(seeds);
     return TasteProfile.from(
       history: history,
       searches: searches,
@@ -697,7 +953,24 @@ class AppDatabase {
       now: now ?? DateTime.now(),
       dislikedChannels: dismissed.channels,
       dislikedVideos: dismissed.videos,
+      coVisit: coVisit,
+      endorsedChannels: await endorsedChannels(),
     );
+  }
+
+  /// Channels the user saved a video from, or downloaded one from.
+  ///
+  /// The local stand-in for YouTube's like and share signals, and arguably a
+  /// stronger one: saving something for later or spending storage on it is not
+  /// the reflex a tap on a thumb is.
+  Future<Set<String>> endorsedChannels() async {
+    final rows = await _db.rawQuery(
+      'SELECT DISTINCT channel_id FROM playlist_items '
+      'WHERE channel_id != "" '
+      'UNION '
+      'SELECT DISTINCT channel_id FROM downloads WHERE channel_id != ""',
+    );
+    return {for (final r in rows) r['channel_id']! as String};
   }
 
   /// Counts one showing for each entry of [seen], mapping video id to how much
@@ -871,6 +1144,10 @@ class AppDatabase {
   Future<void> clearHistory() async {
     await _db.delete('history');
     await _db.delete('feed_impressions');
+    // The co-visitation graph and the untrained examples are both derived from
+    // history. Keeping them would let a cleared history go on shaping the feed
+    // through the back door, which is not what "clear watch history" promises.
+    await clearRankerLearning();
   }
 
   /// Where the database file lives, so its size can be reported in settings.

@@ -16,6 +16,7 @@ import '../data/db.dart';
 import '../data/download_manager.dart';
 import '../data/models.dart';
 import '../data/preview_data.dart';
+import '../data/ranker_trainer.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
@@ -197,14 +198,30 @@ class _WatchPageState extends State<WatchPage>
       // The same ordering feeds both the visible Up-next list and the queue,
       // so what autoplay plays is what the list said it would.
       final db = context.read<AppDatabase>();
+      final trainer = context.read<RankerTrainer>();
+      // Every related list YouTube returns is a sample of what people watch
+      // after this video. Recording it builds the local co-visitation graph,
+      // which is the one collaborative signal an account-less app can keep.
+      unawaited(
+        db
+            .recordCoVisits(_video.id, [for (final v in rawRelated) v.id])
+            .then((_) => db.pruneCoVisits())
+            .catchError((Object e) {
+          debugPrint('AI BIT: co-visits not recorded - $e');
+        }),
+      );
       final related = repo.personalisedUpNext(
         current: _video,
         related: rawRelated,
-        profile: await db.tasteProfile(),
+        // Seeded on the video being watched, so the co-visitation term answers
+        // "what do people watch after THIS" rather than "after any of the last
+        // eight things", which is the home feed's question.
+        profile: await db.tasteProfile(coVisitSeeds: [_video.id]),
         impressions: await db.feedImpressions(),
         // What this sitting has already played, so autoplay stops circling
         // back to the same handful of videos.
         recentlyPlayed: _playback?.playedThisSession ?? const [],
+        weights: trainer.weights,
       );
       if (!mounted) return;
       setState(() {

@@ -134,6 +134,8 @@ class YtRepository {
     List<String> coWatchSeeds = const [],
     TasteProfile profile = TasteProfile.empty,
     Map<String, ImpressionCount> impressions = const {},
+    RankerWeights weights = RankerWeights.prior,
+    Map<String, List<double>>? featuresOut,
     int refreshToken = 0,
     bool kids = false,
     DateTime? now,
@@ -163,9 +165,12 @@ class YtRepository {
     final tasks = <Future<(CandidateSource, List<VideoBrief>)>>[
       for (final id in rotatedSubs.take(6))
         _tagged(CandidateSource.subscription, () => channelUploads(id, limit: 6)),
-      // The co-watch graph. Three seeds rather than one because a single
-      // recent video biases the whole feed towards one evening's mood.
-      for (final videoId in rotatedSeeds.take(3))
+      // The co-watch graph. Several seeds rather than one because a single
+      // recent video biases the whole feed towards one evening's mood, and
+      // because this is the strongest source available — widening it is the
+      // cheapest real improvement to the feed, since ranking can only ever
+      // order what candidate generation found.
+      for (final videoId in rotatedSeeds.take(5))
         _tagged(CandidateSource.coWatch, () => _browse.related(videoId)),
       for (final id in rotatedChannels.take(4))
         _tagged(CandidateSource.watchedChannel, () => channelUploads(id, limit: 6)),
@@ -218,6 +223,8 @@ class YtRepository {
       // reshuffles the near-ties and offers a different set of novel channels,
       // rather than returning the same order with two rows moved.
       seed: refreshToken,
+      weights: weights,
+      featuresOut: featuresOut,
     );
   }
 
@@ -240,6 +247,7 @@ class YtRepository {
     required TasteProfile profile,
     Map<String, ImpressionCount> impressions = const {},
     List<VideoBrief> recentlyPlayed = const [],
+    RankerWeights weights = RankerWeights.prior,
     DateTime? now,
   }) =>
       rankUpNext(
@@ -249,6 +257,7 @@ class YtRepository {
         now: now ?? DateTime.now(),
         impressions: impressions,
         recentlyPlayed: recentlyPlayed,
+        weights: weights,
       );
 
   /// Newest uploads from the channels followed on this device, for the
@@ -372,8 +381,12 @@ class YtRepository {
   /// shuffled so the tab is not identical on every visit.
   Future<List<VideoBrief>> shortsFeed({
     List<String> searches = const [],
+    TasteProfile profile = TasteProfile.empty,
+    Map<String, ImpressionCount> impressions = const {},
+    RankerWeights weights = RankerWeights.prior,
     int refreshToken = 0,
     bool kids = false,
+    DateTime? now,
   }) async {
     if (isPreview) return _previewRows(refreshToken);
 
@@ -388,9 +401,29 @@ class YtRepository {
     final results = await Future.wait(
       topics.map((t) => _safeShorts(() => _search.searchShorts('$t shorts'))),
     );
-    return (_interleave(results)..shuffle())
-        .map((v) => v.asShort())
-        .toList();
+    final pooled = _interleave(results).map((v) => v.asShort()).toList();
+
+    // Kids mode ranks nothing, for the same reason the Kids home feed does
+    // not: it curates from a fixed topic list and must not consult a profile
+    // built from the adult's viewing.
+    if (kids || profile.isEmpty) return pooled..shuffle();
+
+    // Everything else goes through the ranker. Shorts were the last feed in
+    // the app still ordered by shuffle(), which meant the one surface people
+    // scroll fastest was the one making the least use of what it knew.
+    // Exploration is on and the seed rotates, so the tab is still different on
+    // every visit - that was the only thing shuffle() was buying.
+    return rankFeed(
+      candidates: [
+        for (final video in pooled)
+          Candidate(video: video, source: CandidateSource.search),
+      ],
+      profile: profile,
+      now: now ?? DateTime.now(),
+      impressions: impressions,
+      weights: weights,
+      seed: refreshToken,
+    );
   }
 
   Future<List<VideoBrief>> _safeShorts(

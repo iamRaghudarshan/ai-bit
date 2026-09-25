@@ -10,6 +10,8 @@ import 'package:share_plus/share_plus.dart';
 import '../core/format.dart';
 import '../data/db.dart';
 import '../data/models.dart';
+import '../data/ranker_trainer.dart';
+import '../data/recommender.dart';
 import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
@@ -91,8 +93,22 @@ class ShortsPageState extends State<ShortsPage> {
       if (!mounted) return;
       final kids = context.read<SettingsService>().kidsMode;
       _loadedKids = kids;
+      // Ranked like every other feed. Shorts was the last surface still
+      // ordered by shuffle(), which meant the one people scroll fastest made
+      // the least use of what the app knew about them. Exploration and the
+      // rotating seed keep it different on every visit, which was the only
+      // thing shuffling was buying.
+      final profile = kids ? TasteProfile.empty : await db.tasteProfile();
+      if (!mounted) return;
+      final impressions = kids
+          ? const <String, ImpressionCount>{}
+          : await db.feedImpressions();
+      if (!mounted) return;
       final shorts = await context.read<YtRepository>().shortsFeed(
         searches: searches,
+        profile: profile,
+        impressions: impressions,
+        weights: context.read<RankerTrainer>().weights,
         refreshToken: _refreshToken,
         kids: kids,
       );
@@ -192,9 +208,15 @@ class ShortsPageState extends State<ShortsPage> {
   Future<void> _appendMore() async {
     _refreshToken++;
     try {
+      final kids = context.read<SettingsService>().kidsMode;
+      final db = context.read<AppDatabase>();
+      final profile = kids ? TasteProfile.empty : await db.tasteProfile();
+      if (!mounted) return;
       final more = await context.read<YtRepository>().shortsFeed(
+        profile: profile,
+        weights: context.read<RankerTrainer>().weights,
         refreshToken: _refreshToken,
-        kids: context.read<SettingsService>().kidsMode,
+        kids: kids,
       );
       if (!mounted) return;
       final seen = _shorts.map((s) => s.id).toSet();

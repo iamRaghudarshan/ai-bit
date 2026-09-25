@@ -237,6 +237,33 @@ class SettingsService extends ChangeNotifier {
   bool get trackDataUsage => _prefs.getBool(_kTrackDataUsage) ?? true;
   set trackDataUsage(bool value) => _write(_kTrackDataUsage, value);
 
+  static const _kAdaptiveRanking = 'adaptive_ranking';
+  static const _kRankerWeights = 'ranker_weights';
+  static const _kRankerExamples = 'ranker_examples_seen';
+
+  /// Let the recommendations learn from what you actually watch.
+  ///
+  /// On by default. The learned weights are blended with the hand-tuned ones
+  /// and capped at half the decision (see `RankerWeights.blend`), so the worst
+  /// case is a feed that is slightly differently wrong rather than one that
+  /// has taught itself something absurd from a quiet week.
+  bool get adaptiveRanking => _prefs.getBool(_kAdaptiveRanking) ?? true;
+  set adaptiveRanking(bool value) => _write(_kAdaptiveRanking, value);
+
+  /// The learned weights as JSON, or empty before anything has been learnt.
+  ///
+  /// SharedPreferences rather than a table: it is one small object read once
+  /// per launch, which is exactly what this file is for, and keeping it out of
+  /// the database means clearing history cannot silently reset the model
+  /// halfway through a sentence about something else.
+  String get rankerWeightsJson => _prefs.getString(_kRankerWeights) ?? '';
+  set rankerWeightsJson(String value) => _write(_kRankerWeights, value);
+
+  /// Lifetime count of training examples, which is what decides how far the
+  /// learned weights are trusted.
+  int get rankerExamplesSeen => _prefs.getInt(_kRankerExamples) ?? 0;
+  set rankerExamplesSeen(int value) => _write(_kRankerExamples, value);
+
   void _write(String key, Object value) {
     switch (value) {
       case final int v:
