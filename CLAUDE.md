@@ -61,9 +61,10 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest release is 2.23.0** — Android build 127, iOS build 128 — published to
-the download site. Check `git tag --sort=-creatordate` rather than trusting
-this line, which ages.
+**Latest release is 2.25.0** — iOS build 131, Android build 132 — published to
+`safenesthub.in`. (2.24.0 was tagged but never published; the old host still
+advertises 2.23.0/127.) Check `git tag --sort=-creatordate` rather than
+trusting this line, which ages.
 
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
@@ -79,8 +80,11 @@ source of truth — do not "fix" it. **Identify a build to the user by its build
 number**, which is always unique, because several releases can share a version
 name. **Never build without the user's explicit approval in that same message**
 ("build" / "ok build") — not "fix it" or "do it", and not carried over from an
-earlier build in the session. **A build the user approves is published to the
-download site in the same job** — see below; they should not have to ask twice.
+earlier build in the session. **Publishing is a separate, manual step** —
+`release.yml` has only an `ios` and an `android` job and no publish step, and
+could not have one, because the download site is a tunnel-fronted machine that
+CI cannot reach. An approved build therefore means: tag, wait for CI, download
+the artifact, and then publish by hand as described below.
 
 That tag-derived version reaches the user in three places, all fed from the
 same `--build-name`/`--build-number` CI passes: the Android **launcher label**
@@ -106,35 +110,53 @@ playback crash, lock-screen media session) were found exactly this way.
 
 ### Download website and in-app updates
 
-> **STATUS, 17 September 2026 — the download host has moved and this is
-> half-done. Read this before touching updates.**
+> **STATUS, 25 September 2026 — the move is done for new builds. Read this
+> before touching updates.**
 >
-> The host is now **`safenesthub.in`** (a new machine, `DESKTOP-6KK3ELO`). It
-> already serves `/ai-bit-latest.json`, `/aibit-gate.js` and the 2.23.0 APK,
-> verified through the public domain.
+> The host is **`safenesthub.in`**, and it is **this machine**
+> (`DESKTOP-6KK3ELO`) — check `$env:COMPUTERNAME` before assuming you need
+> remote access, because an earlier note here claimed otherwise and sent two
+> sessions looking for a machine they were already sitting at.
 >
-> `lib/src/data/update_service.dart` has been pointed at the new host — **but
-> only in source. No build carries it yet.** Every installed copy still asks
-> `safenest.raghudarshan.online`, because a phone only ever asks the address
-> compiled into it and can learn a new one solely from a build that already has
-> it. So the order is fixed and cannot be shortened:
+> It serves `/ai-bit-latest.json`, `/aibit-gate.js` and `/ai-bit-2.25.0.apk`,
+> verified through the public domain. An earlier version of this note claimed
+> the same thing while all three were in fact 404 — verify with `curl` against
+> the real domain rather than trusting this paragraph.
 >
-> 1. Tag an AI BIT release (this builds in CI and publishes to the site).
-> 2. Wait until installs have actually taken it.
-> 3. Only then may `safenest.raghudarshan.online` be retired.
+> **The files live in `finmate-react/frontend/dist/`, served by the StaticFiles
+> mount at `/` in `backend/app/main.py`.** There are NO explicit routes and no
+> `finmate-react/aibit/` directory; a previous note described both and neither
+> exists. Dropping a file in `dist/` publishes it with no restart, which is the
+> whole mechanism — `packaging/build_exe.py` even has `FOREIGN_DIST_PREFIXES =
+> ("ai-bit", "aibit")` to keep these files out of a customer's build, which is
+> the clearest confirmation that staging them there is intended.
 >
-> Dropping the old address first strands every existing install. That already
-> happened once to a SafeNest customer in August; this is the same trap one layer
-> down.
+> **`npm run build` EMPTIES `dist/`.** That is what deleted the whole download
+> site on 25 September, and from a phone it looks like a network fault rather
+> than a missing file. After any web rebuild, re-publish the three AI BIT files.
 >
-> **The old address is still live on the OLD machine and must stay that way.**
+> **Every install up to 2.24 still polls `safenest.raghudarshan.online`**,
+> which is a genuinely different machine and is NOT reachable from here. It
+> still advertises 2.23.0/build 127, so **no existing install can discover
+> 2.25.0 on its own** — they need the APK by hand, or that host's manifest
+> updated. 2.25.0 and later ask `safenesthub.in`, so this is the last release
+> with the gap. Do not retire the old address until installs have moved; that
+> is what stranded a SafeNest customer in August.
 >
-> Also: on the new machine those three files no longer live in
-> `finmate-react/frontend/dist/`. They are in `finmate-react/aibit/`, served at
-> the same root URLs by explicit routes. They were moved because `npm run build`
-> EMPTIES `dist/`, so every web rebuild silently deleted the download site — and
-> from a phone that looks like a network fault, not a missing file. Publishing is
-> still restart-free: drop the APK in that folder and edit the manifest.
+> **The hidden web download link does not exist on the new host.** The served
+> storefront (`backend/storefront/index.html`) was redesigned and lost the
+> `dl-trigger` dot and the `#aibit-gate` modal; the older `index-classic.html`,
+> `index-dark.html` and `index-new.html` still carry both. `aibit-gate.js` is
+> published and now reads its download URL from `ai-bit-latest.json` instead of
+> hardcoding it — the deployed copy had drifted to three different versions in
+> three places — but nothing on the page calls it. Re-adding the markup means
+> editing SafeNest's live storefront, so **ask first**.
+>
+> **To publish a build:** tag → wait for CI → download the `aibit-android`
+> artifact → copy the arm64 slice to `dist/ai-bit-<version>.apk` → write
+> `dist/ai-bit-latest.json` (`version`, `build` = the Android CI run number,
+> `url`, `notes`). No restart. Then verify through the public domain, not
+> localhost.
 
 The APK is distributed (no store) from the SafeNest storefront, a *separate*
 project at **`D:\AI PRO`** (uvicorn on 127.0.0.1:8080, no `--reload`) behind a
