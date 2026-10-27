@@ -3213,4 +3213,66 @@ Some blurb about the video.
       expect(resolveCode('  ', '  ', 'US'), 'US');
     });
   });
+
+  group('withLanguages', () {
+    test('passes queries through when no language is chosen', () {
+      expect(withLanguages(['ai tools'], const []), ['ai tools']);
+    });
+
+    test('English adds no suffix', () {
+      // Its searchWord is empty, so asking for English changes nothing.
+      expect(withLanguages(['ai tools'], ['en']), ['ai tools']);
+    });
+
+    test('a language adds a suffixed variant and keeps the original', () {
+      expect(
+        withLanguages(['ai tools'], ['hi']),
+        ['ai tools', 'ai tools hindi'],
+      );
+    });
+
+    test('languages are interleaved per query, not concatenated', () {
+      // Candidate generation only takes the first few queries, so grouping all
+      // of one language first would mean the second never appeared at all -
+      // which looks exactly like the setting being ignored.
+      expect(
+        withLanguages(['a', 'b'], ['hi', 'ta']),
+        ['a', 'a hindi', 'a tamil', 'b', 'b hindi', 'b tamil'],
+      );
+    });
+
+    test('an unknown language code is ignored', () {
+      expect(withLanguages(['ai'], ['zz']), ['ai']);
+    });
+
+    test('duplicate codes do not duplicate queries', () {
+      expect(withLanguages(['ai'], ['hi', 'hi']), ['ai', 'ai hindi']);
+    });
+
+    test('no queries means no output, whatever the languages', () {
+      expect(withLanguages(const [], ['hi']), isEmpty);
+    });
+
+    test('every feed language has a usable search word except English', () {
+      for (final l in feedLanguageCatalogue) {
+        if (l.code == 'en') {
+          expect(l.searchWord, isEmpty);
+        } else {
+          expect(l.searchWord, isNotEmpty, reason: l.code);
+        }
+      }
+    });
+
+    test('feed language codes are unique', () {
+      expect(
+        feedLanguageCatalogue.map((l) => l.code).toSet(),
+        hasLength(feedLanguageCatalogue.length),
+      );
+    });
+
+    test('feedLanguageByCode finds a known one and nulls an unknown', () {
+      expect(feedLanguageByCode('ta')?.searchWord, 'tamil');
+      expect(feedLanguageByCode('zz'), isNull);
+    });
+  });
 }

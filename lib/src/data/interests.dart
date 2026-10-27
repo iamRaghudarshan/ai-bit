@@ -200,12 +200,100 @@ class ContentLanguage {
   const ContentLanguage({
     required this.code,
     required this.label,
+    this.searchWord = '',
   });
 
   /// The `hl` value sent to YouTube's endpoints. Empty means "use the
   /// device's own language", resolved at the call site.
   final String code;
   final String label;
+
+  /// The word to append to a search so results come back in this language.
+  ///
+  /// `hl` alone is not enough and this is the whole reason this field exists.
+  /// `hl` changes the *interface* language of the response — the labels, the
+  /// view-count wording — but YouTube still returns whatever its ranking
+  /// thinks is best, which for a broad query is overwhelmingly English. Adding
+  /// the language as a search term is what actually changes the results, and
+  /// it is what a person would type: "ai tools hindi".
+  ///
+  /// Empty for English and for "match my device", where no suffix is wanted.
+  final String searchWord;
+}
+
+/// Languages a feed can be asked to draw from, beyond the interface language.
+///
+/// Separate from [languageCatalogue] because they answer different questions:
+/// one language is what the app should *speak*, while several are what the
+/// feed should *contain*. Somebody in India may well want Hindi, Tamil and
+/// English videos in one feed while reading English labels, and a single
+/// setting cannot express that.
+const feedLanguageCatalogue = <ContentLanguage>[
+  ContentLanguage(code: 'en', label: 'English', searchWord: ''),
+  ContentLanguage(code: 'hi', label: 'हिन्दी (Hindi)', searchWord: 'hindi'),
+  ContentLanguage(code: 'ta', label: 'தமிழ் (Tamil)', searchWord: 'tamil'),
+  ContentLanguage(code: 'te', label: 'తెలుగు (Telugu)', searchWord: 'telugu'),
+  ContentLanguage(code: 'kn', label: 'ಕನ್ನಡ (Kannada)', searchWord: 'kannada'),
+  ContentLanguage(code: 'ml', label: 'മലയാളം (Malayalam)', searchWord: 'malayalam'),
+  ContentLanguage(code: 'mr', label: 'मराठी (Marathi)', searchWord: 'marathi'),
+  ContentLanguage(code: 'bn', label: 'বাংলা (Bengali)', searchWord: 'bengali'),
+  ContentLanguage(code: 'gu', label: 'ગુજરાતી (Gujarati)', searchWord: 'gujarati'),
+  ContentLanguage(code: 'pa', label: 'ਪੰਜਾਬੀ (Punjabi)', searchWord: 'punjabi'),
+  ContentLanguage(code: 'ur', label: 'اردو (Urdu)', searchWord: 'urdu'),
+  ContentLanguage(code: 'ar', label: 'العربية (Arabic)', searchWord: 'arabic'),
+  ContentLanguage(code: 'es', label: 'Español', searchWord: 'espanol'),
+  ContentLanguage(code: 'pt', label: 'Português', searchWord: 'portugues'),
+  ContentLanguage(code: 'fr', label: 'Français', searchWord: 'francais'),
+  ContentLanguage(code: 'de', label: 'Deutsch', searchWord: 'deutsch'),
+  ContentLanguage(code: 'ru', label: 'Русский', searchWord: 'russian'),
+  ContentLanguage(code: 'ja', label: '日本語 (Japanese)', searchWord: 'japanese'),
+  ContentLanguage(code: 'ko', label: '한국어 (Korean)', searchWord: 'korean'),
+  ContentLanguage(code: 'id', label: 'Bahasa Indonesia', searchWord: 'indonesia'),
+];
+
+ContentLanguage? feedLanguageByCode(String code) {
+  for (final l in feedLanguageCatalogue) {
+    if (l.code == code) return l;
+  }
+  return null;
+}
+
+/// Expands [queries] across the chosen [languageCodes].
+///
+/// With nothing chosen, or only English, the queries pass through unchanged —
+/// so this costs nothing until someone asks for it.
+///
+/// Each language multiplies the query count, and candidate generation only
+/// takes the first few, so the languages are **interleaved** rather than
+/// concatenated: "ai tools", "ai tools hindi", "gadget review",
+/// "gadget review hindi" — not every English query followed by every Hindi
+/// one. Concatenated, a cap of four would have meant the second language never
+/// appeared at all, which is the kind of bug that looks like the setting being
+/// ignored.
+List<String> withLanguages(
+  List<String> queries,
+  Iterable<String> languageCodes,
+) {
+  final words = <String>[];
+  for (final code in languageCodes) {
+    final word = feedLanguageByCode(code)?.searchWord ?? '';
+    if (word.isNotEmpty && !words.contains(word)) words.add(word);
+  }
+  if (queries.isEmpty || words.isEmpty) return queries;
+
+  final out = <String>[];
+  final seen = <String>{};
+  void add(String q) {
+    if (seen.add(q)) out.add(q);
+  }
+
+  for (final query in queries) {
+    add(query);
+    for (final word in words) {
+      add('$query $word');
+    }
+  }
+  return out;
 }
 
 /// A region, which YouTube treats separately from language: `gl` decides what

@@ -151,6 +151,7 @@ class YtRepository {
     RankerWeights weights = RankerWeights.prior,
     Map<String, List<double>>? featuresOut,
     List<String> interests = const [],
+    List<String> feedLanguages = const [],
     int refreshToken = 0,
     bool kids = false,
     DateTime? now,
@@ -201,7 +202,10 @@ class YtRepository {
     // Declared interests get a real share of the feed rather than a single
     // filler slot, and they keep it — somebody who ticked "AI" did not mean
     // "until you have watched enough for me to stop asking".
-    final chosen = _rotate(interestQueries(interests), refreshToken);
+    final chosen = _rotate(
+      withLanguages(interestQueries(interests), feedLanguages),
+      refreshToken,
+    );
     tasks.addAll(
       chosen.take(4).map(
             (q) => _tagged(
@@ -231,19 +235,17 @@ class YtRepository {
 
     final sections = await Future.wait(tasks);
 
-    // A profile with nothing in it cannot rank anything meaningfully — every
-    // personal term is zero and the order collapses onto source prior and
-    // popularity, which is a reasonable cold start but is not what the
-    // round-robin was for. A fresh install keeps the interleave so its feed is
-    // a mix rather than one topic's most-viewed videos in a row. Checked
-    // before ranking rather than after, so the cold-start path does not pay
-    // for a scoring pass whose result it throws away.
-    if (profile.isEmpty) {
-      return _interleave(
-        [for (final (_, videos) in sections) videos],
-        skip: refreshToken,
-      );
-    }
+    // NOTE: there used to be a bypass here — an empty profile returned the
+    // plain round-robin instead of ranking. It was wrong, and it was reported
+    // as "recommendations are not working", which was accurate: a fresh
+    // install has no history and, unless someone had found the interests
+    // screen, no declared interests either, so the ranker was skipped
+    // entirely and the feed was exactly what it had been before any of this
+    // was built. The reasoning for the bypass — that with every personal term
+    // at zero the order collapses onto source prior and popularity — was also
+    // wrong: freshness, the channel-repeat cost and the MMR topic spread all
+    // still apply, and together they order a cold feed better than fetch
+    // order does. Rank always.
 
     return rankFeed(
       candidates: [
@@ -416,6 +418,7 @@ class YtRepository {
   Future<List<VideoBrief>> shortsFeed({
     List<String> searches = const [],
     List<String> interests = const [],
+    List<String> feedLanguages = const [],
     TasteProfile profile = TasteProfile.empty,
     Map<String, ImpressionCount> impressions = const {},
     RankerWeights weights = RankerWeights.prior,
@@ -433,7 +436,10 @@ class YtRepository {
             // Chosen interests steer Shorts as well. A tab that ignored them
             // while the home feed honoured them would read as the setting only
             // half working, which is worse than not having it.
-            ..._rotate(interestQueries(interests), refreshToken).take(2),
+            ..._rotate(
+              withLanguages(interestQueries(interests), feedLanguages),
+              refreshToken,
+            ).take(2),
             ..._rotate(_shortsTopics, refreshToken).take(2),
           ];
 
@@ -445,7 +451,12 @@ class YtRepository {
     // Kids mode ranks nothing, for the same reason the Kids home feed does
     // not: it curates from a fixed topic list and must not consult a profile
     // built from the adult's viewing.
-    if (kids || profile.isEmpty) return pooled..shuffle();
+    // Kids mode ranks nothing, for the same reason the Kids home feed does
+    // not: it curates from a fixed topic list and must not consult a profile
+    // built from the adult's viewing. Everything else is ranked, including a
+    // cold profile — see the note in homeFeed about why the empty-profile
+    // bypass was a mistake.
+    if (kids) return pooled..shuffle();
 
     // Everything else goes through the ranker. Shorts were the last feed in
     // the app still ordered by shuffle(), which meant the one surface people

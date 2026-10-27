@@ -240,10 +240,15 @@ class SettingsPage extends StatelessWidget {
             title: const Text('Your interests'),
             subtitle: Text(
               settings.interestTopics.isEmpty
-                  ? 'Pick topics like Technology, AI or News'
-                  : settings.interestTopics
-                      .map((id) => interestById(id)?.label ?? id)
-                      .join(', '),
+                  ? 'Pick topics like Technology, AI or News, and the '
+                      'languages you watch in'
+                  : [
+                      settings.interestTopics
+                          .map((id) => interestById(id)?.label ?? id)
+                          .join(', '),
+                      if (settings.feedLanguages.isNotEmpty)
+                        '${settings.feedLanguages.length} languages',
+                    ].join(' · '),
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => InterestsPage.open(context),

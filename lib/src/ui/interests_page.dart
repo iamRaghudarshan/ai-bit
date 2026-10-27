@@ -29,11 +29,27 @@ class InterestsPage extends StatefulWidget {
 
 class _InterestsPageState extends State<InterestsPage> {
   late Set<String> _chosen;
+  late Set<String> _languages;
 
   @override
   void initState() {
     super.initState();
-    _chosen = context.read<SettingsService>().interestTopics.toSet();
+    final settings = context.read<SettingsService>();
+    _chosen = settings.interestTopics.toSet();
+    _languages = settings.feedLanguages.toSet();
+  }
+
+  void _toggleLanguage(String code) {
+    setState(() {
+      if (!_languages.remove(code)) _languages.add(code);
+    });
+    // Catalogue order again, for the same reason the interests are: tap order
+    // carries no meaning and would make two identical choices store
+    // differently.
+    context.read<SettingsService>().feedLanguages = [
+      for (final l in feedLanguageCatalogue)
+        if (_languages.contains(l.code)) l.code,
+    ];
   }
 
   void _toggle(String id) {
@@ -91,6 +107,32 @@ class _InterestsPageState extends State<InterestsPage> {
                   label: Text(interest.label),
                   selected: _chosen.contains(interest.id),
                   onSelected: (_) => _toggle(interest.id),
+                ),
+            ],
+          ),
+          const SizedBox(height: 28),
+          Text(
+            'Video languages',
+            style: theme.textTheme.titleSmall,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Pick more than one and the feed mixes them. Leave it empty to '
+            'take whatever YouTube gives you.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final language in feedLanguageCatalogue)
+                FilterChip(
+                  label: Text(language.label),
+                  selected: _languages.contains(language.code),
+                  onSelected: (_) => _toggleLanguage(language.code),
                 ),
             ],
           ),

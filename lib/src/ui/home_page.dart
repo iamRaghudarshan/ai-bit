@@ -11,6 +11,7 @@ import '../data/db.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
 import 'app_lock_page.dart';
+import 'interests_page.dart';
 import 'search_page.dart';
 import 'settings_page.dart';
 import 'watch_page.dart';
@@ -85,6 +86,56 @@ class HomePageState extends State<HomePage>
   void initState() {
     super.initState();
     _load();
+    // Asked once, after the first frame so the feed is already loading behind
+    // it. Without this the interests screen was buried in Settings and
+    // defaulted to empty, which meant the ranker had nothing to work with on
+    // a fresh install and the feed looked exactly as it did before the
+    // recommender existed — reported, accurately, as "recommendations are not
+    // working".
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeAskInterests());
+  }
+
+  /// Offers the interests picker on first launch.
+  ///
+  /// Skipped in Kids mode, which does not consult interests at all, and
+  /// recorded as asked either way so declining is respected rather than
+  /// re-prompted on every launch.
+  Future<void> _maybeAskInterests() async {
+    if (!mounted) return;
+    final settings = context.read<SettingsService>();
+    if (settings.askedForInterests || settings.kidsMode) return;
+    if (settings.interestTopics.isNotEmpty) {
+      // Already chosen some other way; nothing to ask.
+      settings.askedForInterests = true;
+      return;
+    }
+    settings.askedForInterests = true;
+
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('What do you want to watch?'),
+        content: const Text(
+          'Pick a few topics and your home feed starts off relevant instead '
+          'of generic. You can change them any time in Settings, and it also '
+          'learns from what you actually watch.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Pick topics'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !mounted) return;
+    await InterestsPage.open(context);
+    // Reload so the choice shows immediately rather than on the next visit.
+    if (mounted) await _load(reset: true);
   }
 
   @override
@@ -230,10 +281,10 @@ class HomePageState extends State<HomePage>
       // fetches videos and knows nothing about the database.
       // Kids mode never consults the adult's declared interests, for the same
       // reason it never consults their history.
+      final settingsNow = context.read<SettingsService>();
+      final kidsNow = settingsNow.kidsMode;
       final chosenInterests =
-          context.read<SettingsService>().kidsMode
-              ? const <String>[]
-              : context.read<SettingsService>().interestTopics;
+          kidsNow ? const <String>[] : settingsNow.interestTopics;
       final profile = await db.tasteProfile(
         interestQueries: interestQueries(chosenInterests),
       );
@@ -257,6 +308,7 @@ class HomePageState extends State<HomePage>
         weights: trainer.weights,
         featuresOut: features,
         interests: chosenInterests,
+        feedLanguages: kidsNow ? const [] : settingsNow.feedLanguages,
         refreshToken: _refreshToken,
         kids: context.read<SettingsService>().kidsMode,
       );

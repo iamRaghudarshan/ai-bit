@@ -237,7 +237,36 @@ class SettingsService extends ChangeNotifier {
   bool get trackDataUsage => _prefs.getBool(_kTrackDataUsage) ?? true;
   set trackDataUsage(bool value) => _write(_kTrackDataUsage, value);
 
+  static const _kAskedInterests = 'asked_interests';
+
+  /// Whether the first-run interest prompt has been shown.
+  ///
+  /// Separate from [interestTopics] being empty, because "I have not been
+  /// asked" and "I was asked and chose nothing" are different states and only
+  /// the first should produce a prompt. Conflating them would nag somebody who
+  /// has already declined, every time they opened the app.
+  bool get askedForInterests => _prefs.getBool(_kAskedInterests) ?? false;
+  set askedForInterests(bool value) => _write(_kAskedInterests, value);
+
   static const _kInterests = 'interest_topics';
+  static const _kFeedLanguages = 'feed_languages';
+
+  /// Languages the feed should draw videos FROM, as language codes.
+  ///
+  /// Distinct from [contentLanguage], which is the one language the app asks
+  /// YouTube to answer in. This is a list because a feed can legitimately
+  /// contain several: Hindi and Tamil and English in one scroll is a normal
+  /// thing to want in India, and one setting cannot say it.
+  ///
+  /// Empty means "whatever YouTube returns", which is the old behaviour.
+  List<String> get feedLanguages =>
+      _prefs.getStringList(_kFeedLanguages) ?? const [];
+
+  set feedLanguages(List<String> value) {
+    _prefs.setStringList(_kFeedLanguages, value);
+    notifyListeners();
+  }
+
   static const _kContentLanguage = 'content_language';
   static const _kContentRegion = 'content_region';
 

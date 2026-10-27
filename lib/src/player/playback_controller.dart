@@ -989,9 +989,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Skips [_position] past any sponsor segment it has entered. Called from the
   /// position listener, which runs about once a second.
+  /// How much of the start of a video is never skipped.
+  ///
+  /// A second guard behind the category list. Whatever SponsorBlock says, a
+  /// video has to begin where the viewer pressed play: jumping before the
+  /// first frame is seen reads as the app being broken, not as a feature, and
+  /// there is no way for the viewer to tell the difference. A segment that
+  /// starts inside this window is left alone; one that starts after it is
+  /// skipped as normal.
+  static const _neverSkipBefore = Duration(seconds: 2);
+
   void _applySponsorSkip() {
     if (_segments.isEmpty) return;
     for (final seg in _segments) {
+      if (seg.start < _neverSkipBefore) continue;
       // A small tolerance at the end so a segment that finishes just past the
       // playhead is not re-triggered.
       if (_position >= seg.start && _position < seg.end - const Duration(milliseconds: 300)) {

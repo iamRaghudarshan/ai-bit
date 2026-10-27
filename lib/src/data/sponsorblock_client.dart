@@ -41,13 +41,22 @@ class SponsorBlockClient {
 
   static const _host = 'sponsor.ajay.app';
 
-  /// The segment categories fetched. Chapters and highlights are left out —
-  /// only the parts a viewer would skip.
+  /// The segment categories fetched.
+  ///
+  /// Chapters and highlights are left out — only the parts a viewer would
+  /// skip. **`intro` and `outro` are left out too, and that is the point of
+  /// this list.** They are not promotions: `intro` is the channel's own
+  /// opening animation, and it almost always starts at 0:00, so skipping it
+  /// meant the video never began where the user pressed play. That was
+  /// reported as "it doesn't start from the beginning", which was exactly
+  /// right — the app was jumping forward before the viewer had seen a frame.
+  ///
+  /// What is left is what somebody actually means by an ad: a paid read, the
+  /// creator plugging their own thing, a like-and-subscribe break, and the
+  /// non-music stretches of a long music upload.
   static const _categories = [
     'sponsor',
     'selfpromo',
-    'intro',
-    'outro',
     'interaction',
     'music_offtopic',
   ];

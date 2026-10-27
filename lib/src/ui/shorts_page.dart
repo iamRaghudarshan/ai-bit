@@ -114,6 +114,8 @@ class ShortsPageState extends State<ShortsPage> {
       final shorts = await context.read<YtRepository>().shortsFeed(
         searches: searches,
         interests: chosenInterests,
+        feedLanguages:
+            kids ? const [] : context.read<SettingsService>().feedLanguages,
         profile: profile,
         impressions: impressions,
         weights: context.read<RankerTrainer>().weights,
