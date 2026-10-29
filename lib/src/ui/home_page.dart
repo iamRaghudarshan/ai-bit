@@ -74,6 +74,24 @@ class HomePageState extends State<HomePage>
   /// Mutable on purpose: entries are removed as they are used.
   Map<String, List<double>> _pendingFeatures = <String, List<double>>{};
 
+  /// True while another page is being fetched, so the near-end callback —
+  /// which fires on every build of the last few rows, not once — does not
+  /// start a dozen overlapping loads.
+  bool _loadingMore = false;
+
+  /// Set when a page comes back with nothing new to add, so the feed stops
+  /// asking. Without it, reaching a genuine end means retrying for ever
+  /// against sources that have no more to give.
+  bool _feedExhausted = false;
+
+  /// How many consecutive pages may add nothing before giving up.
+  ///
+  /// Not one: the sources rotate per page, so a single barren page is normal
+  /// — a different window of the same channels can legitimately be all
+  /// duplicates — while three in a row means there is genuinely nothing left.
+  static const _emptyPagesBeforeStopping = 3;
+  int _emptyPages = 0;
+
   /// Counts which feed cards were actually on screen, for the ranker's
   /// impression feature. Built here and disposed with the screen so a pending
   /// batch is flushed rather than dropped on the way out.
@@ -186,6 +204,9 @@ class HomePageState extends State<HomePage>
       // refresh keeps them (the pull-to-refresh spinner covers that).
       _loading = reset || _feed.isEmpty;
       if (reset) _feed = const [];
+      // A new feed is not exhausted, whatever the old one was.
+      _feedExhausted = false;
+      _emptyPages = 0;
       _error = null;
       _noSubscriptions = false;
     });
@@ -289,6 +310,9 @@ class HomePageState extends State<HomePage>
         interestQueries: interestQueries(chosenInterests),
       );
       final impressions = await db.feedImpressions();
+      final graph = kidsNow
+          ? const <VideoBrief>[]
+          : await db.coVisitCandidates(seeds.videoIds);
       if (!mounted) return;
       final trainer = context.read<RankerTrainer>();
       // The features each card was scored on, captured as it is ranked. They
@@ -309,8 +333,9 @@ class HomePageState extends State<HomePage>
         featuresOut: features,
         interests: chosenInterests,
         feedLanguages: kidsNow ? const [] : settingsNow.feedLanguages,
+        graphCandidates: graph,
         refreshToken: _refreshToken,
-        kids: context.read<SettingsService>().kidsMode,
+        kids: kidsNow,
       );
       if (!mounted) return;
       setState(() {
@@ -334,6 +359,115 @@ class HomePageState extends State<HomePage>
   Future<void> _refresh() async {
     _refreshToken++;
     await _load();
+  }
+
+  /// The strip under the last row: a spinner while loading, a quiet line when
+  /// there is genuinely nothing more, and nothing at all otherwise.
+  Widget? _feedFooter() {
+    if (_category != _CategoryChips.all) return null;
+    if (_loadingMore) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 24),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (_feedExhausted && _feed.isNotEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+        child: Center(
+          child: Text(
+            'That is everything for now. Pull down to refresh.',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+          ),
+        ),
+      );
+    }
+    return null;
+  }
+
+  /// Fetches another page and appends what is new.
+  ///
+  /// The home feed had no pagination at all: it showed one batch and then
+  /// simply ended, while Shorts had loaded more on scroll since it was
+  /// written. Scrolling to a hard stop after a screen or two is itself a
+  /// complaint about recommendations — there were more to be had, the app
+  /// just never asked.
+  ///
+  /// Pages come from advancing the refresh token, which is what rotates the
+  /// window over every candidate source, so each page consults different
+  /// channels, searches and co-watch seeds rather than re-ranking the same
+  /// pool.
+  Future<void> _loadMore() async {
+    if (_loadingMore || _feedExhausted || _loading) return;
+    if (_category != _CategoryChips.all) return;
+    if (_feed.isEmpty) return;
+    _loadingMore = true;
+    setState(() {});
+
+    try {
+      final repo = context.read<YtRepository>();
+      final db = context.read<AppDatabase>();
+      final settingsNow = context.read<SettingsService>();
+      final kidsNow = settingsNow.kidsMode;
+      final seeds = await db.feedSeeds();
+      final searches = await db.recentSearches();
+      if (!mounted) return;
+      final subscribed = await db.subscriptions();
+      if (!mounted) return;
+      final chosenInterests =
+          kidsNow ? const <String>[] : settingsNow.interestTopics;
+      final profile = await db.tasteProfile(
+        interestQueries: interestQueries(chosenInterests),
+      );
+      final impressions = await db.feedImpressions();
+      final graph = kidsNow
+          ? const <VideoBrief>[]
+          : await db.coVisitCandidates(seeds.videoIds);
+      if (!mounted) return;
+
+      _refreshToken++;
+      final features = <String, List<double>>{};
+      final page = await repo.homeFeed(
+        channelIds: seeds.channelIds,
+        searches: searches,
+        subscribedIds: [for (final c in subscribed) c.id],
+        coWatchSeeds: seeds.videoIds,
+        profile: profile,
+        impressions: impressions,
+        weights: context.read<RankerTrainer>().weights,
+        featuresOut: features,
+        interests: chosenInterests,
+        feedLanguages: kidsNow ? const [] : settingsNow.feedLanguages,
+        graphCandidates: graph,
+        refreshToken: _refreshToken,
+        kids: kidsNow,
+      );
+      if (!mounted) return;
+
+      final seen = _feed.map((v) => v.id).toSet();
+      final fresh = [for (final v in page) if (seen.add(v.id)) v];
+      if (fresh.isEmpty) {
+        _emptyPages++;
+        if (_emptyPages >= _emptyPagesBeforeStopping) _feedExhausted = true;
+      } else {
+        _emptyPages = 0;
+        _pendingFeatures.addAll(features);
+      }
+      setState(() => _feed = [..._feed, ...fresh]);
+    } catch (e) {
+      // Running out is not an error worth a banner: the rows already on
+      // screen are fine and the user is mid-scroll. Logged rather than
+      // swallowed so a permanently failing page is findable.
+      debugPrint('AI BIT: could not load more feed - $e');
+      _emptyPages++;
+      if (_emptyPages >= _emptyPagesBeforeStopping) _feedExhausted = true;
+    } finally {
+      _loadingMore = false;
+      if (mounted) setState(() {});
+    }
   }
 
   /// One feed card came far enough onto the screen to count as offered.
@@ -628,6 +762,8 @@ class HomePageState extends State<HomePage>
               videos: _feed,
               header: hasShelf ? shelf() : null,
               listPadding: const EdgeInsets.only(top: 8),
+              onNearEnd: _category == _CategoryChips.all ? _loadMore : null,
+              footer: _feedFooter(),
               // No RepaintBoundary on items: ListView.builder already gives
               // every child one, and a second is pure overhead.
               listItemBuilder: (context, index) => card(_feed[index]),

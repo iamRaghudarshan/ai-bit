@@ -567,6 +567,156 @@ void main() {
       }
     });
   });
+
+  group('graph candidates', skip: unavailable, () {
+    test('an edge with no cached row produces nothing', () async {
+      // The graph knows ids; a feed row needs a title and a channel. Without
+      // the cache this source cannot exist, which is the whole reason
+      // video_cache was added.
+      await db.recordCoVisits('seed', ['unknown']);
+      expect(await db.coVisitCandidates(['seed']), isEmpty);
+    });
+
+    test('a cached row is offered, strongest edge first', () async {
+      await db.cacheVideos([
+        video('strong', title: 'strong one'),
+        video('weak', title: 'weak one'),
+      ]);
+      // Position-weighted: first in the related list beats second.
+      await db.recordCoVisits('seed', ['strong', 'weak']);
+      final out = await db.coVisitCandidates(['seed']);
+      expect(out.map((v) => v.id).toList(), ['strong', 'weak']);
+      expect(out.first.title, 'strong one');
+    });
+
+    test('it needs no network and survives a restart', () async {
+      // The point of the cache: these candidates cost nothing and accumulate.
+      await db.cacheVideos([video('kept')]);
+      await db.recordCoVisits('seed', ['kept']);
+      expect(await db.coVisitCandidates(['seed']), hasLength(1));
+    });
+
+    test('already-watched videos are excluded', () async {
+      await db.cacheVideos([video('seen'), video('unseen')]);
+      await db.recordCoVisits('seed', ['seen', 'unseen']);
+      await db.recordWatch(video('seen'));
+      final out = await db.coVisitCandidates(['seed']);
+      expect(out.map((v) => v.id).toList(), ['unseen']);
+    });
+
+    test('agreement across seeds ranks higher than one strong edge', () async {
+      await db.cacheVideos([video('shared'), video('single')]);
+      await db.recordCoVisits('s1', ['shared']);
+      await db.recordCoVisits('s2', ['shared']);
+      await db.recordCoVisits('s3', ['single']);
+      final out = await db.coVisitCandidates(['s1', 's2', 's3']);
+      expect(out.first.id, 'shared');
+    });
+
+    test('no seeds means no query rather than a broken one', () async {
+      expect(await db.coVisitCandidates([]), isEmpty);
+      expect(await db.coVisitCandidates(['']), isEmpty);
+    });
+
+    test('the limit is honoured', () async {
+      await db.cacheVideos([for (var i = 0; i < 20; i++) video('v$i')]);
+      await db.recordCoVisits('seed', [for (var i = 0; i < 20; i++) 'v$i']);
+      expect(await db.coVisitCandidates(['seed'], limit: 5), hasLength(5));
+    });
+
+    test('a cached row round-trips its fields', () async {
+      await db.cacheVideos([
+        video('full', channel: 'UC-z', title: 'a real title').asShort(),
+      ]);
+      await db.recordCoVisits('seed', ['full']);
+      final out = (await db.coVisitCandidates(['seed'])).single;
+      expect(out.title, 'a real title');
+      expect(out.channelId, 'UC-z');
+      expect(out.isShort, isTrue);
+      expect(out.duration, const Duration(minutes: 10));
+    });
+
+    test('re-caching a video updates it rather than duplicating', () async {
+      await db.cacheVideos([video('v', title: 'old')]);
+      await db.cacheVideos([video('v', title: 'new')]);
+      await db.recordCoVisits('seed', ['v']);
+      final out = await db.coVisitCandidates(['seed']);
+      expect(out, hasLength(1));
+      expect(out.single.title, 'new');
+    });
+
+    test('clearing history clears the cache', () async {
+      await db.cacheVideos([video('v')]);
+      await db.recordCoVisits('seed', ['v']);
+      await db.clearHistory();
+      expect(await db.coVisitCandidates(['seed']), isEmpty);
+    });
+
+    test('pruning keeps the newest and never throws on a small cache',
+        () async {
+      await db.cacheVideos([video('a'), video('b')]);
+      await db.pruneVideoCache();
+      await db.recordCoVisits('seed', ['a', 'b']);
+      expect(await db.coVisitCandidates(['seed']), hasLength(2));
+    });
+  });
+
+  group('migration to v12', skip: unavailable, () {
+    test('an install from v11 gains the video cache', () async {
+      // The recurring bug in this schema is a table added to onCreate but not
+      // onUpgrade. Opening an older database is the only way to catch it.
+      final path = '${dir.path}/v11.db';
+      final legacy = await databaseFactoryFfi.openDatabase(
+        path,
+        options: OpenDatabaseOptions(
+          version: 11,
+          onCreate: (d, _) async {
+            // A real v11 install has `history` too — it dates from v1. Without
+            // it this fixture is not a v11 database, and the query under test
+            // fails on a missing table for a reason no user could ever hit.
+            await d.execute('''
+              CREATE TABLE history (
+                video_id   TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                author     TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                watched_at INTEGER NOT NULL
+              )
+            ''');
+            await d.execute('''
+              CREATE TABLE covisit (
+                from_id    TEXT NOT NULL,
+                to_id      TEXT NOT NULL,
+                weight     REAL NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (from_id, to_id)
+              )
+            ''');
+            await d.insert('covisit', {
+              'from_id': 'seed',
+              'to_id': 'other',
+              'weight': 1.0,
+              'updated_at': DateTime.now().millisecondsSinceEpoch,
+            });
+          },
+        ),
+      );
+      await legacy.close();
+
+      final upgraded =
+          await AppDatabase.open(path: path, factory: databaseFactoryFfi);
+      try {
+        // The old edge survived.
+        expect((await upgraded.coVisitScores(['seed']))['other'], 1.0);
+        // And the new table works.
+        await upgraded.cacheVideos([video('other', title: 'now cached')]);
+        final out = await upgraded.coVisitCandidates(['seed']);
+        expect(out.single.title, 'now cached');
+      } finally {
+        await upgraded.close();
+      }
+    });
+  });
 }
 
 /// Returns a skip reason when sqlite3 cannot be loaded here, or null when it

@@ -30,6 +30,8 @@ class ResponsiveVideoFeed extends StatelessWidget {
     required this.gridItemBuilder,
     this.header,
     this.listPadding = EdgeInsets.zero,
+    this.onNearEnd,
+    this.footer,
   });
 
   final List<VideoBrief> videos;
@@ -45,6 +47,27 @@ class ResponsiveVideoFeed extends StatelessWidget {
   final Widget? header;
 
   final EdgeInsets listPadding;
+
+  /// Called while building a row within [_prefetchRows] of the end, so the
+  /// caller can fetch more.
+  ///
+  /// Driven from the item builder rather than a ScrollController because both
+  /// layouts here scroll — a ListView on phones and a CustomScrollView on
+  /// tablets — and a controller would have to be threaded through both and
+  /// kept in step with the column count. The builder already knows which row
+  /// it is on, in either layout.
+  ///
+  /// The caller is responsible for ignoring repeat calls: building is not a
+  /// one-shot event and this will fire several times as rows come into view.
+  final VoidCallback? onNearEnd;
+
+  /// Optional widget below the last row — the "loading more" spinner.
+  final Widget? footer;
+
+  /// How far from the end to ask for more. Three rows is roughly a screen on
+  /// a phone, which is enough to have the next batch in hand before the user
+  /// reaches the bottom and sees an end that should not be there.
+  static const _prefetchRows = 3;
 
   /// Horizontal inset of the grid and the gap between its columns.
   static const _gutter = 16.0;
@@ -62,14 +85,19 @@ class ResponsiveVideoFeed extends StatelessWidget {
         final columns = feedColumnsFor(width);
         final headerCount = header == null ? 0 : 1;
 
+        final footerCount = footer == null ? 0 : 1;
+
         if (columns == 1) {
           return ListView.builder(
             padding: listPadding,
-            itemCount: videos.length + headerCount,
+            itemCount: videos.length + headerCount + footerCount,
             addAutomaticKeepAlives: false,
             itemBuilder: (context, index) {
               if (header != null && index == 0) return header!;
-              return listItemBuilder(context, index - headerCount);
+              final row = index - headerCount;
+              if (row >= videos.length) return footer!;
+              if (row >= videos.length - _prefetchRows) onNearEnd?.call();
+              return listItemBuilder(context, row);
             },
           );
         }
@@ -93,11 +121,17 @@ class ResponsiveVideoFeed extends StatelessWidget {
                   mainAxisExtent: cellHeight,
                 ),
                 delegate: SliverChildBuilderDelegate(
-                  gridItemBuilder,
+                  (context, index) {
+                    if (index >= videos.length - _prefetchRows) {
+                      onNearEnd?.call();
+                    }
+                    return gridItemBuilder(context, index);
+                  },
                   childCount: videos.length,
                 ),
               ),
             ),
+            if (footer != null) SliverToBoxAdapter(child: footer),
           ],
         );
       },

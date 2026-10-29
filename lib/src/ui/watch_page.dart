@@ -206,6 +206,11 @@ class _WatchPageState extends State<WatchPage>
         db
             .recordCoVisits(_video.id, [for (final v in rawRelated) v.id])
             .then((_) => db.pruneCoVisits())
+            // The rows themselves, not just the edges. Without these the
+            // graph can only boost a video the feed already fetched; with
+            // them it can offer one outright, with no request at all.
+            .then((_) => db.cacheVideos(rawRelated))
+            .then((_) => db.pruneVideoCache())
             .catchError((Object e) {
           debugPrint('AI BIT: co-visits not recorded - $e');
         }),

@@ -38,7 +38,7 @@ class AppDatabase {
         (kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db');
     final db = await openDatabase(
       resolved,
-      version: 11,
+      version: 12,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -51,6 +51,7 @@ class AppDatabase {
         await _createNotInterested(db);
         await _createCoVisit(db);
         await _createRankingExamples(db);
+        await _createVideoCache(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -112,6 +113,7 @@ class AppDatabase {
           await _createCoVisit(db);
           await _createRankingExamples(db);
         }
+        if (from < 12) await _createVideoCache(db);
       },
     );
     return AppDatabase._(db);
@@ -343,6 +345,39 @@ class AppDatabase {
         opened     INTEGER NOT NULL DEFAULT 0,
         completion REAL NOT NULL DEFAULT 0,
         shown_at   INTEGER NOT NULL
+      )
+    ''');
+  }
+
+
+  /// Rows needed to turn the co-visitation graph into a candidate SOURCE
+  /// rather than only a scoring term.
+  ///
+  /// The graph stores ids and weights, which is enough to boost a candidate
+  /// the feed happened to fetch, but not enough to produce one: a feed row
+  /// needs a title, a channel and a duration. Caching those as they go past
+  /// means the graph can be queried for candidates with **no network call at
+  /// all** — and because it accumulates, the feed gets richer the more the app
+  /// is used, which is the opposite of how the old fixed topic list behaved.
+  ///
+  /// Capped by [_videoCacheLimit]. The oldest rows go first, and nothing here
+  /// is precious: a missing row simply means that video is not offered from
+  /// the graph this time.
+  static Future<void> _createVideoCache(Database db) async {
+    await db.execute('''
+      CREATE TABLE video_cache (
+        video_id    TEXT PRIMARY KEY,
+        title       TEXT NOT NULL,
+        author      TEXT NOT NULL,
+        channel_id  TEXT NOT NULL,
+        duration_ms INTEGER,
+        view_count  INTEGER,
+        upload_raw  TEXT,
+        upload_date INTEGER,
+        is_live     INTEGER NOT NULL DEFAULT 0,
+        is_short    INTEGER NOT NULL DEFAULT 0,
+        is_kids     INTEGER NOT NULL DEFAULT 0,
+        cached_at   INTEGER NOT NULL
       )
     ''');
   }
@@ -859,6 +894,74 @@ class AppDatabase {
     ''', [_coVisitLimit]);
   }
 
+  /// How many videos are remembered for graph candidates.
+  static const _videoCacheLimit = 3000;
+
+  /// Remembers [videos] so the co-visitation graph can offer them later.
+  ///
+  /// Called with whatever a related list returned — the same call that records
+  /// the edges — so the cache fills as a side effect of normal browsing rather
+  /// than needing a crawl of its own.
+  Future<void> cacheVideos(Iterable<VideoBrief> videos) async {
+    final rows = videos.where((v) => v.id.isNotEmpty).toList();
+    if (rows.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final batch = _db.batch();
+    for (final v in rows) {
+      batch.insert(
+        'video_cache',
+        {...v.toMap(), 'cached_at': now},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Trims the cache. Oldest first, and called after writes rather than on a
+  /// schedule so there is no separate job to forget.
+  Future<void> pruneVideoCache() async {
+    final count = Sqflite.firstIntValue(
+          await _db.rawQuery('SELECT COUNT(*) FROM video_cache'),
+        ) ??
+        0;
+    if (count <= _videoCacheLimit) return;
+    await _db.rawDelete('''
+      DELETE FROM video_cache WHERE video_id IN (
+        SELECT video_id FROM video_cache ORDER BY cached_at ASC LIMIT ?
+      )
+    ''', [count - _videoCacheLimit]);
+  }
+
+  /// Candidates drawn from the co-visitation graph, strongest edge first.
+  ///
+  /// **No network call.** These are videos the app has already seen go past,
+  /// which the graph says are watched alongside [seeds] — the user's recent
+  /// watches. That makes this the one candidate source that costs nothing, is
+  /// instant, and grows richer with use instead of staying a fixed list.
+  ///
+  /// Already-watched videos are excluded in SQL rather than left to the ranker.
+  /// The ranker would sink them anyway, but they would have consumed slots in
+  /// a capped query first, and the whole point here is to widen the pool.
+  Future<List<VideoBrief>> coVisitCandidates(
+    List<String> seeds, {
+    int limit = 60,
+  }) async {
+    final ids = seeds.where((s) => s.isNotEmpty).toSet().toList();
+    if (ids.isEmpty) return const [];
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final rows = await _db.rawQuery('''
+      SELECT c.*, SUM(v.weight) AS total
+        FROM covisit v
+        JOIN video_cache c ON c.video_id = v.to_id
+       WHERE v.from_id IN ($placeholders)
+         AND v.to_id NOT IN (SELECT video_id FROM history)
+       GROUP BY v.to_id
+       ORDER BY total DESC
+       LIMIT ?
+    ''', [...ids, limit]);
+    return [for (final r in rows) VideoBrief.fromMap(r)];
+  }
+
   // ------------------------------------------------------- ranker training
 
   /// Examples older than this are dropped untrained. A month-old reaction to a
@@ -1209,10 +1312,12 @@ class AppDatabase {
   Future<void> clearHistory() async {
     await _db.delete('history');
     await _db.delete('feed_impressions');
-    // The co-visitation graph and the untrained examples are both derived from
-    // history. Keeping them would let a cleared history go on shaping the feed
-    // through the back door, which is not what "clear watch history" promises.
+    // The co-visitation graph, the cached video rows and the untrained
+    // examples are all derived from browsing. Keeping them would let a cleared
+    // history go on shaping the feed through the back door, which is not what
+    // "clear watch history" promises.
     await clearRankerLearning();
+    await _db.delete('video_cache');
   }
 
   /// Where the database file lives, so its size can be reported in settings.

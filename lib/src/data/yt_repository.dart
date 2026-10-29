@@ -152,6 +152,11 @@ class YtRepository {
     Map<String, List<double>>? featuresOut,
     List<String> interests = const [],
     List<String> feedLanguages = const [],
+    /// Videos the local co-visitation graph already knows are watched
+    /// alongside the user's recent viewing. Passed in rather than fetched
+    /// here because they come from the database, which this file does not
+    /// touch — the same reason [profile] is injected.
+    List<VideoBrief> graphCandidates = const [],
     int refreshToken = 0,
     bool kids = false,
     DateTime? now,
@@ -186,11 +191,21 @@ class YtRepository {
       // because this is the strongest source available — widening it is the
       // cheapest real improvement to the feed, since ranking can only ever
       // order what candidate generation found.
-      for (final videoId in rotatedSeeds.take(5))
+      for (final videoId in rotatedSeeds.take(6))
         _tagged(CandidateSource.coWatch, () => _browse.related(videoId)),
-      for (final id in rotatedChannels.take(4))
-        _tagged(CandidateSource.watchedChannel, () => channelUploads(id, limit: 6)),
-      for (final q in rotatedSearches.take(3))
+      // Two hops out: what people watch after the things people watch after
+      // what you watched. One hop only ever reaches YouTube's immediate
+      // neighbours, which for a well-known video is the same handful of
+      // obvious choices every time — the second hop is where anything the
+      // user has not already been offered actually comes from.
+      //
+      // Only two seeds, and only their top neighbour each, because the
+      // breadth is multiplicative and this is the most expensive source here.
+      for (final videoId in rotatedSeeds.take(2))
+        _tagged(CandidateSource.coWatch, () => _relatedTwoHops(videoId)),
+      for (final id in rotatedChannels.take(5))
+        _tagged(CandidateSource.watchedChannel, () => channelUploads(id, limit: 8)),
+      for (final q in rotatedSearches.take(4))
         _tagged(CandidateSource.search, () => search(q)),
     ];
 
@@ -207,7 +222,7 @@ class YtRepository {
       refreshToken,
     );
     tasks.addAll(
-      chosen.take(4).map(
+      chosen.take(6).map(
             (q) => _tagged(
               CandidateSource.interest,
               () => search(q, sortByViews: true),
@@ -235,6 +250,15 @@ class YtRepository {
 
     final sections = await Future.wait(tasks);
 
+    // Free candidates: no request was made for these. They are videos the app
+    // has already seen, which the graph says are co-watched with what the user
+    // has been watching, so they get the co-watch prior.
+    final withGraph = <(CandidateSource, List<VideoBrief>)>[
+      ...sections,
+      if (graphCandidates.isNotEmpty)
+        (CandidateSource.coWatch, graphCandidates),
+    ];
+
     // NOTE: there used to be a bypass here — an empty profile returned the
     // plain round-robin instead of ranking. It was wrong, and it was reported
     // as "recommendations are not working", which was accurate: a fresh
@@ -249,12 +273,16 @@ class YtRepository {
 
     return rankFeed(
       candidates: [
-        for (final (source, videos) in sections)
+        for (final (source, videos) in withGraph)
           for (final video in videos) Candidate(video: video, source: source),
       ],
       profile: profile,
       now: now ?? DateTime.now(),
       impressions: impressions,
+      // Raised with pagination: the cap used to be the whole feed, so 120 was
+      // also the point at which scrolling hit a wall. Now it is a page size,
+      // and a page wants to be a comfortable scroll rather than an afternoon.
+      limit: 80,
       // The refresh is what varies the exploration. Pulling down therefore
       // reshuffles the near-ties and offers a different set of novel channels,
       // rather than returning the same order with two rows moved.
@@ -262,6 +290,33 @@ class YtRepository {
       weights: weights,
       featuresOut: featuresOut,
     );
+  }
+
+  /// Related videos two hops from [videoId].
+  ///
+  /// Hop one is YouTube's related list for the video itself. Hop two takes the
+  /// strongest entry from that list and asks for *its* related list, which
+  /// reaches material the first hop cannot: for a popular video the immediate
+  /// neighbours are the same obvious choices for everybody, and the interesting
+  /// stuff is one step further out.
+  ///
+  /// The first hop's results are returned too, so this is strictly a widening.
+  /// Hop two failing is not an error — the hop-one list is still a perfectly
+  /// good answer, which is why it is caught here rather than left to abort the
+  /// whole source.
+  Future<List<VideoBrief>> _relatedTwoHops(String videoId) async {
+    final first = await _browse.related(videoId);
+    if (first.isEmpty) return first;
+    // The top entry rather than a random one: it is the strongest co-watch
+    // edge YouTube reported, so its own neighbourhood is the most likely to be
+    // relevant rather than merely different.
+    try {
+      final second = await _browse.related(first.first.id);
+      return [...first, ...second];
+    } catch (e) {
+      debugPrint('AI BIT: second co-watch hop failed for $videoId — $e');
+      return first;
+    }
   }
 
   /// Runs a candidate source and labels what came back, swallowing failures
