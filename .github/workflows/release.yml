@@ -25,6 +25,25 @@
 # own. See TESTFLIGHT.md.
 name: Release
 
+# FLUTTER_VERSION — the toolchain is pinned, and that is on purpose.
+#
+# Both jobs used `channel: stable`, which floats: every run picked up whatever
+# Flutter had released by then. For this project that is a liability rather
+# than a convenience, because neither Android nor iOS can be built on the
+# development machine — CI *is* the compiler, and a compiler that changes
+# underneath you turns "it was clean locally" into a coin toss.
+#
+# It stopped being hypothetical on 18 November 2026. A new stable deprecated
+# `package:flutter/material.dart` in favour of `package:material_ui`, so every
+# file in the app emitted a `deprecated_member_use` info — and `flutter
+# analyze` exits non-zero on infos. The build went red with nothing wrong in
+# it, on a release that had analyzed clean locally minutes earlier.
+#
+# Pinned to what the development machine runs, so "clean locally" means
+# "clean in CI". Bump it DELIBERATELY, together with the local SDK, and expect
+# the material_ui migration to be part of that bump rather than a surprise
+# inside an unrelated release.
+#
 # DELIBERATE RELEASES ONLY — a tag, or the button. Never an ordinary commit.
 #
 # A macOS runner bills at ten times the Linux rate, and a build that reaches
@@ -54,6 +73,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
+          # PINNED, not `channel: stable`. See FLUTTER_VERSION below.
+          flutter-version: "3.47.4"
           channel: stable
           cache: true
 
@@ -276,6 +297,8 @@ jobs:
           java-version: "17"
       - uses: subosito/flutter-action@v2
         with:
+          # PINNED, not `channel: stable`. See FLUTTER_VERSION below.
+          flutter-version: "3.47.4"
           channel: stable
           cache: true
 
