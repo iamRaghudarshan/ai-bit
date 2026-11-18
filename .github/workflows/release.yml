@@ -280,8 +280,23 @@ jobs:
           cache: true
 
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+
+      # Analyze and test report their own output as a workflow annotation when
+      # they fail, which looks redundant next to the log and is not: **reading
+      # a job log needs a token, and an annotation on a public repo does not.**
+      # Without this, a red build says only "Process completed with exit code
+      # 1" to anyone who cannot authenticate — and CI is the first place this
+      # project's Android and iOS code is ever compiled, so "read the CI log"
+      # is the normal way to find out what broke.
+      #
+      # Also worth knowing: CI tracks `channel: stable` while a developer
+      # machine is on whatever it last upgraded to, so the analyzer here is
+      # usually NEWER and can fail on code that is clean locally. That is a
+      # real difference, not a flake, and this is how it becomes legible.
+      - name: Analyze
+        run: .github/scripts/report.sh analyze flutter analyze
+      - name: Test
+        run: .github/scripts/report.sh test flutter test
 
       # No upload signing config, so this is signed with the debug key. Fine for
       # sideloading onto your own phone; it could not go to Play, which this app

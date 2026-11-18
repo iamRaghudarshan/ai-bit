@@ -3726,11 +3726,11 @@ Some blurb about the video.
 
 /// A stand-in for a pushed route, so the observer can be exercised without a
 /// widget tree. It only ever reads `settings.name`.
+/// Carries the name through `Route`'s own constructor rather than overriding
+/// the `settings` getter, which is the narrower thing to depend on: the getter
+/// has been reworked more than once upstream and this file is analysed against
+/// whatever stable Flutter CI has today, which is usually newer than the local
+/// SDK.
 class _FakeRoute extends Route<void> {
-  _FakeRoute(String? name) : _settings = RouteSettings(name: name);
-
-  final RouteSettings _settings;
-
-  @override
-  RouteSettings get settings => _settings;
+  _FakeRoute(String? name) : super(settings: RouteSettings(name: name));
 }

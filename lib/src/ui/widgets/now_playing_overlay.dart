@@ -40,18 +40,21 @@ class NowPlayingOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: routes,
-      builder: (context, _) {
+      // The app's whole UI, passed as the builder's `child` so that a push or
+      // a pop rebuilds this wrapper and nothing underneath it.
+      child: child,
+      builder: (context, child) {
         // select rather than watch: this only cares whether *something* is
         // playing. The mini player inside rebuilds itself on everything else.
         final hasVideo = context.select<PlaybackController, bool>(
           (playback) => playback.current != null,
         );
-        if (!hasVideo || !routes.wantsNowPlayingBar) return child;
+        if (!hasVideo || !routes.wantsNowPlayingBar) return child!;
 
         return Stack(
           children: [
-            child,
-            Positioned(
+            child!,
+            const Positioned(
               left: 0,
               right: 0,
               bottom: 0,
@@ -60,12 +63,13 @@ class NowPlayingOverlay extends StatelessWidget {
           ],
         );
       },
-      child: child,
     );
   }
 }
 
 class _Bar extends StatelessWidget {
+  const _Bar();
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
