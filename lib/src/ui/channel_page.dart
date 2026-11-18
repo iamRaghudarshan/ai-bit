@@ -327,44 +327,162 @@ class _ChannelPageState extends State<ChannelPage>
         message: 'This channel has not published any playlists.',
       );
     }
-    return ListView.separated(
-      itemCount: _playlists.length,
-      separatorBuilder: (_, _) => const Divider(height: 1),
-      itemBuilder: (context, i) {
-        final playlist = _playlists[i];
-        return ListTile(
-          leading: ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              width: 84,
-              height: 52,
-              child: playlist.thumbnailUrl == null
-                  ? const ColoredBox(
-                      color: AppColors.darkElevated,
-                      child: Icon(Icons.playlist_play, color: Colors.white38),
-                    )
-                  : CachedNetworkImage(memCacheWidth: 1080, 
-                      imageUrl: playlist.thumbnailUrl!,
-                      fit: BoxFit.cover,
-                      errorWidget: (_, _, _) =>
-                          const ColoredBox(color: AppColors.darkElevated),
+    // A grid of cards, which is what YouTube's Playlists tab is — two columns
+    // on a phone, wider on a tablet. It was a row list with an 84px thumbnail,
+    // and on a channel with 27 playlists that is a wall of near-identical text
+    // where YouTube gives you artwork to recognise. The column count comes
+    // from the same `feedColumnsFor` rule every other grid in the app uses, so
+    // this does not become a second breakpoint to keep in step — but with one
+    // added, because a playlist card is narrower than a video card and a phone
+    // fits two of them where it fits one video.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = (feedColumnsFor(constraints.maxWidth) + 1).clamp(2, 5);
+        return GridView.builder(
+          padding: const EdgeInsets.all(12),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: columns,
+            mainAxisSpacing: 16,
+            crossAxisSpacing: 12,
+            // Thumbnail at 16:9 plus room for two lines of title and the
+            // "View full playlist" line under it.
+            childAspectRatio: 0.78,
+          ),
+          itemCount: _playlists.length,
+          itemBuilder: (context, i) => _PlaylistCard(playlist: _playlists[i]),
+        );
+      },
+    );
+  }
+}
+
+/// One playlist, as YouTube draws it: artwork with the count badged over it,
+/// then the title, then the way in.
+class _PlaylistCard extends StatelessWidget {
+  const _PlaylistCard({required this.playlist});
+
+  final PlaylistBrief playlist;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: () => PlaylistPage.open(context, playlist),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // The stacked-card edge behind the thumbnail. It is what makes
+                // a playlist readable as a collection at a glance rather than
+                // as one video, which is the whole job of this tile.
+                Padding(
+                  padding: const EdgeInsets.only(left: 6, right: 6, bottom: 8),
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: FractionallySizedBox(
+                      widthFactor: 1,
+                      heightFactor: 0.14,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.28),
+                          borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(8),
+                          ),
+                        ),
+                      ),
                     ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: playlist.thumbnailUrl == null
+                        ? const ColoredBox(
+                            color: AppColors.darkElevated,
+                            child: Icon(
+                              Icons.playlist_play,
+                              color: Colors.white38,
+                            ),
+                          )
+                        : CachedNetworkImage(
+                            memCacheWidth: 1080,
+                            imageUrl: playlist.thumbnailUrl!,
+                            fit: BoxFit.cover,
+                            errorWidget: (_, _, _) =>
+                                const ColoredBox(color: AppColors.darkElevated),
+                          ),
+                  ),
+                ),
+                // The count badge, bottom-end, exactly where YouTube puts it
+                // and sourced from the same place in the response.
+                Positioned(
+                  right: 10,
+                  bottom: 12,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.82),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 6,
+                        vertical: 3,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.playlist_play,
+                            size: 14,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            // "Playlist" only when the count genuinely is not
+                            // in the response; it usually is now.
+                            playlist.videoCount == null
+                                ? 'Playlist'
+                                : '${playlist.videoCount}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-          title: Text(
+          const SizedBox(height: 8),
+          Text(
             playlist.title,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              height: 1.25,
+            ),
           ),
-          subtitle: Text(
-            playlist.videoCount == null
-                ? 'Playlist'
-                : '${playlist.videoCount} videos',
+          const SizedBox(height: 2),
+          Text(
+            'View full playlist',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => PlaylistPage.open(context, playlist),
-        );
-      },
+        ],
+      ),
     );
   }
 }

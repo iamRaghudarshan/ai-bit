@@ -196,7 +196,27 @@ internal class BetterPlayer(
                 )
             }
         } else {
-            dataSourceFactory = DefaultDataSource.Factory(context)
+            // PATCH: wrap the HTTP factory instead of discarding it.
+            //
+            // The original built a bare DefaultDataSource.Factory here, which
+            // was fine while a non-HTTP URI meant a local media file. It stops
+            // being fine for a *manifest* on local disk whose segments are
+            // remote, which is how AI BIT plays anything above 360p: it
+            // generates a DASH manifest from YouTube's separate video and audio
+            // tracks, writes it to the cache directory, and hands the player a
+            // file:// URL (see lib/src/data/dash_manifest.dart). The manifest
+            // loads from disk; every segment is fetched from googlevideo.
+            //
+            // DefaultDataSource does reach HTTP on its own, so playback worked
+            // — but through its own internal factory, so the User-Agent and
+            // headers the host app passed were silently dropped for exactly
+            // the requests that carry the video. Passing the configured HTTP
+            // factory as the upstream keeps file:// resolution (DefaultDataSource
+            // still handles that itself) and restores the headers for the rest.
+            dataSourceFactory = DefaultDataSource.Factory(
+                context,
+                getDataSourceFactory(userAgent, headers)
+            )
         }
         val mediaSource = buildMediaSource(uri, dataSourceFactory, formatHint, cacheKey, context)
         if (overriddenDuration != 0L) {

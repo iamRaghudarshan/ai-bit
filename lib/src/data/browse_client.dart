@@ -483,23 +483,63 @@ class YoutubeBrowseClient {
       ));
     }
 
-    // The newer lockup shape, which carries ids on a nested endpoint.
+    // The newer lockup shape, which is the only one a real channel returns
+    // now: a channel measured in November 2026 gave 27 `lockupViewModel`s and
+    // zero `gridPlaylistRenderer`s, so everything below is the live path and
+    // the grid branch above is the fallback.
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'lockupViewModel', lockups);
     for (final l in lockups) {
       final id = l['contentId'];
-      if (id is! String || !id.startsWith('PL') && !id.startsWith('UU')) continue;
+      if (id is! String) continue;
+      // Prefer what the lockup says it is. The id-prefix test is kept as a
+      // fallback for a lockup with no contentType, but on its own it was both
+      // too narrow and too broad — it missed album playlists (`OLAK5uy_…`) and
+      // would have accepted anything else beginning "PL".
+      final type = l['contentType'];
+      final looksRight = type is String
+          ? type == 'LOCKUP_CONTENT_TYPE_PLAYLIST' ||
+              type == 'LOCKUP_CONTENT_TYPE_ALBUM'
+          : id.startsWith('PL') || id.startsWith('UU') || id.startsWith('OLAK');
+      if (!looksRight) continue;
       if (!seen.add(id)) continue;
       out.add(PlaylistBrief(
         id: id,
         title: _deepText(l, 'title'),
-        videoCount: null,
+        videoCount: _lockupVideoCount(l),
         thumbnailUrl: _firstThumbnail(l),
         channelId: channelId,
       ));
     }
 
     return out;
+  }
+
+  /// Number of videos in a playlist lockup.
+  ///
+  /// This was returning null for every playlist, which is why the channel
+  /// Playlists tab showed "Playlist" under each row where YouTube shows
+  /// "9 videos" — the information was in the response the whole time.
+  ///
+  /// It lives in the thumbnail's overlay badge, not in the metadata rows:
+  ///
+  ///   contentImage.collectionThumbnailViewModel.primaryThumbnail
+  ///     .thumbnailViewModel.overlays[].thumbnailOverlayBadgeViewModel
+  ///     .thumbnailBadges[].thumbnailBadgeViewModel.text   -> "9 videos"
+  ///
+  /// The metadata rows beside it read "Playlist" and "View full playlist", so
+  /// a general search for the first number anywhere in the lockup is not safe
+  /// either — the badge is the only place the count appears. Addressed by
+  /// collecting badge view models rather than by walking that whole path,
+  /// because the path has changed shape before and the badge has not.
+  static int? _lockupVideoCount(Map<String, dynamic> lockup) {
+    final badges = <Map<String, dynamic>>[];
+    _collect(lockup, 'thumbnailBadgeViewModel', badges);
+    for (final badge in badges) {
+      final count = videoCountFromBadge(_text(badge['text']));
+      if (count != null) return count;
+    }
+    return null;
   }
 
   // ------------------------------------------------------------- helpers
@@ -595,6 +635,38 @@ class YoutubeBrowseClient {
 
 extension on String {
   String? get nullIfEmpty => trim().isEmpty ? null : this;
+}
+
+/// Reads a playlist's video count out of a thumbnail badge's text.
+///
+/// Pure and public so each shape it has to survive gets a test, which is the
+/// habit this codebase arrived at the hard way: the data-usage estimator read
+/// `1080p60` as 108060 because it stripped every non-digit and assumed it had
+/// seen all the shapes.
+///
+/// What arrives here, measured against a real channel:
+///
+///   * `"9 videos"` — the ordinary case.
+///   * `"1 video"` — singular, so the pattern cannot require the "s".
+///   * `"1,204 videos"` — grouped, and the separator is locale-dependent:
+///     a German response says `"1.204 Videos"`. Both separators are stripped
+///     rather than parsed, because a thousands separator never carries
+///     meaning here and treating `.` as a decimal point would read 1.204 as
+///     one video.
+///   * `"Playlist"` — the sibling metadata row, which must yield null rather
+///     than a number. This is why the word "video" has to be matched at all
+///     instead of taking the first run of digits in the lockup.
+///
+/// Returns null when the text is not a count, so the caller can keep looking
+/// at the other badges.
+int? videoCountFromBadge(String text) {
+  final match = RegExp(
+    r'([\d][\d,.   ]*)\s*(video|videos|Video|Videos)\b',
+  ).firstMatch(text);
+  if (match == null) return null;
+  final digits = match.group(1)!.replaceAll(RegExp(r'[^\d]'), '');
+  if (digits.isEmpty) return null;
+  return int.tryParse(digits);
 }
 
 class BrowseException implements Exception {

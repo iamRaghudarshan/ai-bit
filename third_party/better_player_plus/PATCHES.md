@@ -241,6 +241,29 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    it from the position listener, so it is self-healing rather than one-shot.
    `allowedScreenSleep` is consequently inert in this copy.
 
+24. `setDataSource` discarded the configured HTTP data source factory for any
+   URI that was not itself `http`/`https`, replacing it with a bare
+   `DefaultDataSource.Factory(context)`. That was correct while a non-HTTP URI
+   could only mean a local media file.
+
+   It stopped being correct when AI BIT started generating **DASH manifests**
+   to reach anything above 360p. YouTube's player endpoint now returns
+   `hlsManifestUrl` for roughly one video in eight (measured November 2026),
+   and every other video's HD renditions exist only as separate video-only and
+   audio-only tracks. `lib/src/data/dash_manifest.dart` builds a manifest from
+   those, writes it to the cache directory, and hands the player a `file://`
+   URL — so the **manifest** is local while every **segment** is remote.
+
+   `DefaultDataSource` reaches HTTP through an internal factory of its own, so
+   playback worked; but the host app's User-Agent and headers were dropped for
+   precisely the requests that carry the video, which is the kind of thing that
+   works until YouTube decides it should not. Passing the configured HTTP
+   factory as the upstream keeps `file://` resolution — `DefaultDataSource`
+   still handles that itself — and restores the headers for everything else.
+
+   No behaviour change for local media playback or for ordinary network
+   streams, both of which keep the factory they already had.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

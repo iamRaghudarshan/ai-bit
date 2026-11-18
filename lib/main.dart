@@ -18,6 +18,7 @@ import 'src/data/yt_repository.dart';
 import 'src/player/playback_controller.dart';
 import 'src/ui/app_lock_page.dart';
 import 'src/ui/root_shell.dart';
+import 'src/ui/widgets/now_playing_overlay.dart';
 
 /// The app-wide navigator, held here rather than inside [AiBitApp] because the
 /// app-lock gate needs it.
@@ -29,6 +30,10 @@ import 'src/ui/root_shell.dart';
 /// `Navigator.of` accepts the navigator's own element, so this key's context is
 /// a valid argument to [AppLockPage.unlock].
 final _navigatorKey = GlobalKey<NavigatorState>();
+
+/// Tracks the navigation stack so the now-playing bar can be painted over
+/// pushed routes. See [NowPlayingOverlay].
+final _routeStack = RouteStackObserver();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -263,6 +268,7 @@ class AiBitApp extends StatelessWidget {
           title: 'AI BIT',
           debugShowCheckedModeBanner: false,
           navigatorKey: _navigatorKey,
+          navigatorObservers: [_routeStack],
           themeMode: settings.themeMode,
           theme: buildTheme(
             Brightness.light,
@@ -274,9 +280,16 @@ class AiBitApp extends StatelessWidget {
             amoled: settings.amoledBlack,
           ),
           builder: (context, child) {
+            // The now-playing bar goes on first, so it is inside the lock
+            // shield: a bar showing what is playing — with artwork and a title
+            // — must not be visible over a locked app.
+            final withBar = NowPlayingOverlay(
+              routes: _routeStack,
+              child: child ?? const SizedBox.shrink(),
+            );
             // The gate wraps the Navigator, so the shield hides whatever route
             // is on top rather than only the feed underneath it.
-            final gated = _AppLockGate(child: child ?? const SizedBox.shrink());
+            final gated = _AppLockGate(child: withBar);
             // In a browser the app would otherwise stretch across a desktop
             // window, which is nothing like how it looks on a phone. The frame
             // stays outermost so the shield appears inside the bezel.

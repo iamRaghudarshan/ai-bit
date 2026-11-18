@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
 import 'browse_client.dart';
 import 'comments_client.dart';
+import 'dash_manifest.dart';
 import 'interests.dart';
 import 'models.dart';
 import 'player_client.dart';
@@ -846,11 +849,69 @@ class YtRepository {
 
   final _prefetching = <String>{};
 
-  Future<PlaybackSources> resolve(String videoId, {bool audioOnly = false}) async {
+  /// Whether this platform can play a generated DASH manifest.
+  ///
+  /// Android's ExoPlayer has first-class DASH support and the vendored plugin
+  /// already wires `DashMediaSource` to the `dash` format hint, so this costs
+  /// no native code. AVPlayer has never supported DASH and Apple is not adding
+  /// it, so iOS keeps the HLS-or-360p behaviour — see the note at the top of
+  /// `dash_manifest.dart`. Web has no native player at all.
+  static bool get canUseDash => !kIsWeb && Platform.isAndroid;
+
+  /// Writes a generated DASH manifest to the cache directory and returns its
+  /// `file://` URL, or null when these formats cannot make one.
+  ///
+  /// On disk rather than in memory because the player is handed a URL, not a
+  /// document. It goes in the **cache** directory on purpose: the segment URLs
+  /// inside expire within hours, so a manifest is worthless the next day and
+  /// the OS is welcome to reclaim it. One file per video, overwritten on
+  /// re-resolve, so a long session cannot accumulate them.
+  ///
+  /// Failures return null rather than throwing: the caller's next step is the
+  /// 360p stream, which is exactly the right answer when the manifest cannot
+  /// be written.
+  Future<String?> _writeDashManifest(
+    String videoId,
+    List<AdaptiveFormat> formats,
+  ) async {
+    final manifest = buildDashManifest(formats);
+    if (manifest == null) return null;
+    try {
+      final dir = Directory(
+        '${(await getTemporaryDirectory()).path}/dash',
+      );
+      await dir.create(recursive: true);
+      // The .mpd extension is not cosmetic. ExoPlayer is told the format
+      // explicitly, but better_player's own `isDataSourceDash` sniffs the URL
+      // for "mpd" to decide a source is adaptive, and the plugin's fallback
+      // content-type inference reads the path extension too.
+      final file = File('${dir.path}/$videoId.mpd');
+      await file.writeAsString(manifest, flush: true);
+      return file.uri.toString();
+    } catch (e) {
+      debugPrint('AI BIT: could not write DASH manifest for $videoId — $e');
+      return null;
+    }
+  }
+
+  Future<PlaybackSources> resolve(
+    String videoId, {
+    bool audioOnly = false,
+    bool force = false,
+  }) async {
     final key = '$videoId:$audioOnly';
-    final cached = _streamCache[key];
-    if (cached != null && DateTime.now().difference(cached.at) < _streamTtl) {
-      return cached.sources;
+    // `force` skips the cache, for recovery after a playback failure. A
+    // googlevideo URL can stop serving before the cache entry expires — it is
+    // bound to an expiry stamp of YouTube's choosing and can be refused
+    // outright mid-session — and handing the player the same dead URL again is
+    // the one certain way to fail twice.
+    if (force) {
+      _streamCache.remove(key);
+    } else {
+      final cached = _streamCache[key];
+      if (cached != null && DateTime.now().difference(cached.at) < _streamTtl) {
+        return cached.sources;
+      }
     }
 
     // Ask YouTube's player endpoint first. It is the only source of the HLS
@@ -876,6 +937,21 @@ class YtRepository {
             isHls: true,
             isLive: streams.isLive,
           ));
+        }
+        // No ladder from YouTube, but the separate tracks are there. Build our
+        // own manifest so the player can put them back together — this is what
+        // lifts playback off the 360p floor on Android. See dash_manifest.dart.
+        if (canUseDash) {
+          final dashUrl = await _writeDashManifest(videoId, streams.adaptiveFormats);
+          if (dashUrl != null) {
+            return _cache(key, PlaybackSources(
+              url: dashUrl,
+              qualities: const {},
+              ladder: dashLadder(streams.adaptiveFormats),
+              audioOnlyUrl: streams.audioUrl,
+              isDash: true,
+            ));
+          }
         }
         if (streams.muxedUrl != null) {
           return _cache(key, PlaybackSources(

@@ -214,6 +214,7 @@ problem is upstream or ours:
 D:/flutter/bin/dart.bat run tool/check_streams.dart [videoId]    # is extraction working?
 D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
+D:/flutter/bin/dart.bat run tool/check_dash.dart [videoId]       # can HD play? (ladder + manifest + real byte ranges)
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
 D:/flutter/bin/dart.bat run tool/check_takeout.dart <playlists dir> # does the Takeout parser match a real export
 D:/flutter/bin/dart.bat run tool/takeout_to_backup.dart <takeout dir> # Takeout -> one importable backup file
@@ -242,14 +243,28 @@ and Captions inline, the rest (Sleep, Audio only, Autoplay, Repeat, Queue, PiP,
 Cast, Stats, Save, Share) in the sheet — rather than a sideways-scrolling chip
 row.
 
-Quality is the HLS ladder where one exists and muxed renditions where not; the
-picker reads live tracks off the manifest, and Settings offers the full ladder
-as a saved default.
+Quality on Android is a full 144p–2160p ladder: YouTube's HLS manifest where it
+still offers one, and otherwise a DASH manifest the app builds from the
+separate video and audio tracks — see "Stream resolution is the fragile core",
+which is where the "HD never plays, it is always 360p" report was answered. iOS
+gets the HLS ladder or 360p, because AVPlayer cannot play DASH. Settings offers
+the full ladder as a saved default.
 
 Browsing: home feed (ranked against local watch history, searches and
 subscriptions — see "Recommendations are two-stage" below — or curated in Kids
 mode), Shorts, channel pages (Videos, Shorts, Live, Playlists), comments with
-replies, local playlists, subscriptions, queue. **Search is not a tab** — it is
+replies, local playlists, subscriptions, queue. A channel's **Playlists tab is
+a grid of cards** with the stacked-card edge and the video-count badge, as
+YouTube draws it, rather than the row list it was: on a channel with 27
+playlists a text list is a wall of near-identical lines where artwork is what
+you actually recognise. The count had been null for every playlist — it lives
+in the lockup's *thumbnail overlay badge*, not in the metadata rows beside it,
+which read "Playlist" and "View full playlist", so a general search for a
+number in the lockup would not do. `videoCountFromBadge` is pure and has a test
+per shape ("9 videos", "1 video", "1,204 videos", "1.204 Videos", "Playlist").
+Playlists are also matched on `contentType` now rather than on an id prefix,
+which was both too narrow (it dropped `OLAK5uy_…` album playlists) and too
+broad. **Search is not a tab** — it is
 the top-bar magnifying glass on Home, opening a focused screen with recent
 searches, live completions and combinable filters (YouTube's own layout). The
 bottom nav is Home, Shorts, Subscriptions, You.
@@ -322,10 +337,12 @@ auto-skip, **backup & restore** of the library to a JSON file
 saver** setting (streams the lowest rendition; reuses the audio-only low-quality
 path), per-channel remembered speed, an **A–B loop**, chapter ticks on the seek
 bar, a Continue-watching shelf, AMOLED-black + accent-colour theming, and a
-channel **Subscribe button + subscriber count** on the watch page. Note the
-streaming quality floor: most videos now expose only the 360p combined stream,
-so Data saver and the quality picker cannot go below 360p while *watching* even
-though *downloads* reach 144p.
+channel **Subscribe button + subscriber count** on the watch page. The old
+360p *floor* on Data saver and the quality picker is gone with the ceiling —
+a generated DASH manifest carries the whole 144p–2160p ladder, so on Android
+both ends of the picker are real. On iOS the floor stands on any video YouTube
+gives no HLS ladder for, since the 360p progressive stream is then the only
+thing AVPlayer can be handed.
 
 **Big screens get a multi-column feed** (2.17.0). `feedColumnsFor(width)` in
 `lib/src/ui/widgets/responsive_feed.dart` is the single breakpoint rule — 2
@@ -450,23 +467,85 @@ sideloaded APKs are the distribution model. **Stable baseline is 2.6.1**, tag
 
 ### Stream resolution is the fragile core
 
-`lib/src/data/yt_repository.dart` wraps `youtube_explode_dart`. The critical
-constraint: **the player takes exactly one URL**, so only a *combined*
-video+audio stream is playable. YouTube has retired nearly all of them — as of
-this build the only one left is the legacy 360p MP4, and only the Android-family
-clients return it. The iOS client returns separate video-only and audio-only
-tracks with no HLS ladder.
+`lib/src/data/yt_repository.dart` wraps `youtube_explode_dart`. The player
+takes exactly **one URL**, so a *combined* video+audio stream is the only thing
+it can be handed directly — and YouTube has retired all of those above the
+legacy 360p MP4, which only the Android-family clients still return. Everything
+above 360p therefore has to arrive as a **manifest**, and `resolve()` tries
+them in this order:
 
-Consequences baked into the code:
+1. **`hlsManifestUrl`** from the player endpoint (`player_client.dart`).
+   Adaptive, already muxed, up to 2160p, and the only thing that plays a live
+   stream at all.
+2. **A DASH manifest the app builds itself** (`dash_manifest.dart`), Android
+   only. See below.
+3. **The 360p progressive MP4.**
+4. **Audio only**, flagged via `PlaybackSources.videoUnavailable` so the UI can
+   say so. An earlier version returned audio on the first client that had it,
+   which silently played every video as audio.
 
-- `_clientChain` is ordered by which clients actually yield combined streams.
-  Do not reorder it from first principles; re-measure with `probe_clients.dart`.
-- `resolve()` walks the whole chain before falling back to audio-only, and flags
-  that fallback via `PlaybackSources.videoUnavailable` so the UI can say so.
-  An earlier version returned audio on the first client that had it, which
-  silently played every video as audio.
-- Getting HD would require playing the two tracks together, which needs a
-  different engine (`media_kit`/libmpv) that cannot do native iOS PiP.
+**Why (2) exists: `hlsManifestUrl` mostly stopped coming back.** Measured in
+November 2026 across clients and video ages, the player endpoint returns it for
+roughly **one video in eight** — it used to be every video. Everything else
+fell straight through to 360p, which is exactly the "HD never plays, it is
+always 360p" that was reported. The same responses still carry plain,
+unciphered `adaptiveFormats` URLs up to 2160p; they are just video-only and
+audio-only tracks rather than one stream.
+
+**An earlier version of this file said getting HD "would require a different
+engine (`media_kit`/libmpv) that cannot do native iOS PiP". That was wrong.**
+ExoPlayer plays separate tracks together natively given a DASH manifest, and
+the vendored plugin already wires `DashMediaSource` to the `dash` format hint —
+so this needed no new engine and no new native code. `dash_manifest.dart`
+builds the XML from `adaptiveFormats`, `_writeDashManifest` drops it in the
+cache directory, and the player is handed a `file://` URL: the manifest is
+local, every segment is fetched from googlevideo. Verify with
+`dart run tool/check_dash.dart`, which checks the ladder, the XML, and that
+googlevideo really honours the byte ranges the manifest claims — the last of
+those cannot be established by reading the code.
+
+Things in there worth not undoing:
+
+- **Every `&` in a stream URL is escaped.** A googlevideo URL is twenty-odd
+  query parameters joined by `&`; one raw ampersand makes the document
+  malformed, and the video then does not play *at all*, which looks nothing
+  like an escaping bug from the outside.
+- **AV1 is excluded.** It is the codec most likely to fall to a software
+  decoder on a mid-range phone, where 4K does not decode in real time and
+  playback stutters rather than looking better — and ExoPlayer would pick it.
+  VP9 is hardware-decoded essentially everywhere and still reaches 2160p. Same
+  "playable beats bigger" rule as `_downloadableVideos` preferring AVC.
+- **One AdaptationSet per codec family.** A set is the unit ExoPlayer adapts
+  within and it can only switch between renditions one decoder handles.
+- **Null rather than a half-manifest** when there is not both a video and an
+  audio track. A silent HD video is worse than the 360p it replaced.
+- **The ladder comes from `PlaybackSources.ladder`, not from the player.**
+  `better_player`'s ASMS `parse` hands *every* manifest to its HLS parser
+  whatever the format, so a DASH source populates no track list. It does not
+  need to: the app wrote the manifest and therefore knows the ladder. Quality
+  switching still works because `setTrack` is only `setMaxVideoSize` on
+  ExoPlayer's track selector and never looks at the manifest.
+
+**iOS keeps the old behaviour, and that is a platform fact.** AVPlayer has
+never supported DASH. Generating HLS from these formats instead would mean
+parsing each track's `sidx` box to emit byte-range segment lists — possible,
+not done — so on iOS it is still the HLS ladder when YouTube offers one and
+360p when it does not. `canUseDash` is Android-only for that reason.
+
+`_clientChain` is ordered by which clients actually yield combined streams. Do
+not reorder it from first principles; re-measure with `probe_clients.dart`.
+
+**A failed stream retries itself once.** "Sometimes a video just fails" had no
+pattern because it has several causes with one cure: a googlevideo URL carries
+an expiry stamp, can be refused after a network change, and the generated DASH
+manifest it points at lives in a cache directory the OS may reclaim at any
+moment. All of them arrive as one opaque platform exception.
+`PlaybackController._recoverFromFailure` re-resolves with `force: true`
+(skipping the stream cache, since handing back the same dead URL is the one
+certain way to fail twice) and resumes at the saved position. Once per video —
+`_recoveredVideoId` — so a genuinely broken stream reports instead of looping,
+and a deliberate reopen earns a fresh attempt. Offline files are excluded: a
+download that fails is really broken, and re-resolving cannot mend it.
 
 ### One player for the whole app
 
@@ -1096,6 +1175,33 @@ from `_onTabSelected` via a `GlobalKey` — `SearchPage.focusInput()` and
 
 The watch screen is a non-opaque route that slides up, so the feed stays visible
 while the player is dragged down to minimise into the mini player.
+
+**The now-playing bar is on every route, not only the four tabs.** It used to
+live in `RootShell.bottomNavigationBar`, which is exactly as far as it reached:
+opening a channel, a playlist, search, history or settings pushed a route over
+the shell and the bar — the only handle back to what was playing — disappeared
+while the audio carried on. YouTube does not have this problem because its
+channel and playlist screens render *inside* the tab shell; matching that would
+mean a nested `Navigator` per tab and re-testing every push in the app,
+including the watch page's non-opaque route.
+
+`NowPlayingOverlay` takes the shorter path to the same visible behaviour: it
+paints the bar over whatever route is on top, from `MaterialApp.builder` — the
+same place `_AppLockGate` sits and for the same reason, that a builder wraps the
+Navigator. It goes **inside** the lock shield, because a bar showing artwork and
+a title must not be visible over a locked app.
+
+It only paints on *pushed* routes; on the root tabs the shell's own bar is
+already there and laid out above the navigation bar rather than over it, which
+is the better arrangement where it is available. `MaterialApp.builder` runs
+outside the Navigator it wraps, so there is no route to ask about from in
+there — `RouteStackObserver`, installed via `navigatorObservers`, is how it
+knows. Two details with tests: the condition is "the watch route is **nowhere
+in the stack**" rather than "is not on top", because the player pushes its
+fullscreen route *above* the watch page and a mini player floating over a
+fullscreen video is absurd; and routes are removed **by name** rather than by
+dropping the last entry, because `popUntil` and dialogs do not pop in push
+order and a stack left out of step shows up as a bar that never comes back.
 
 ### Settings that override each other say so
 

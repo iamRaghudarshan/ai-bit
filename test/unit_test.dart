@@ -15,6 +15,10 @@ import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:ai_bit/src/core/settings_rules.dart';
 import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
+import 'package:ai_bit/src/data/dash_manifest.dart';
+import 'package:ai_bit/src/data/browse_client.dart';
+import 'package:ai_bit/src/ui/widgets/now_playing_overlay.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -3360,4 +3364,373 @@ Some blurb about the video.
       expect(out.single.query, 'one');
     });
   });
+
+  // ------------------------------------------------------------------ DASH
+  //
+  // How HD plays at all. YouTube returns `hlsManifestUrl` for about one video
+  // in eight now, and for the rest the only renditions above 360p are the
+  // separate video-only and audio-only tracks. These tests pin the manifest
+  // that puts them back together — see lib/src/data/dash_manifest.dart.
+
+  group('parseAdaptiveFormat', () {
+    Map<String, Object?> video({
+      Object? url = 'https://r1.googlevideo.com/v?a=1&b=2',
+      Object? mimeType = 'video/mp4; codecs="avc1.640028"',
+      Object? height = 1080,
+      Object? initEnd = 752,
+      Object? indexStart = 753,
+      Object? indexEnd = 1528,
+      Object? duration = '313780',
+    }) => {
+      'itag': 299,
+      'url': url,
+      'mimeType': mimeType,
+      'bitrate': 5889664,
+      'width': 1920,
+      'height': height,
+      'fps': 60,
+      'initRange': {'start': '0', 'end': '$initEnd'},
+      'indexRange': {'start': '$indexStart', 'end': '$indexEnd'},
+      'approxDurationMs': duration,
+    };
+
+    test('splits the codec out of the mime type', () {
+      final f = parseAdaptiveFormat(video())!;
+      expect(f.mimeType, 'video/mp4');
+      expect(f.codecs, 'avc1.640028');
+      expect(f.codecFamily, 'avc');
+    });
+
+    test('reads ranges that arrive as strings', () {
+      // initRange.start is "0" and height is 1080 in the same response: every
+      // number here has to be read, not cast.
+      final f = parseAdaptiveFormat(video())!;
+      expect(f.initStart, 0);
+      expect(f.initEnd, 752);
+      expect(f.indexStart, 753);
+      expect(f.indexEnd, 1528);
+      expect(f.height, 1080);
+      expect(f.durationMs, 313780);
+    });
+
+    test('a format behind signatureCipher is dropped', () {
+      // No plain URL means deciphering, which needs the player JS. Emitting it
+      // would put a Representation in the manifest that cannot be fetched.
+      expect(parseAdaptiveFormat(video(url: null)), isNull);
+    });
+
+    test('a format with no index range is dropped', () {
+      // DASH SegmentBase has nothing to point at without one.
+      expect(parseAdaptiveFormat(video(indexStart: 0, indexEnd: 0)), isNull);
+    });
+
+    test('a format with no duration is dropped', () {
+      expect(parseAdaptiveFormat(video(duration: null)), isNull);
+    });
+
+    test('codec families are recognised', () {
+      String family(String codecs) => parseAdaptiveFormat(
+        video(mimeType: 'video/mp4; codecs="$codecs"'),
+      )!.codecFamily;
+      expect(family('avc1.640028'), 'avc');
+      expect(family('vp9'), 'vp9');
+      expect(family('vp09.00.50.08'), 'vp9');
+      expect(family('av01.0.12M.08'), 'av1');
+    });
+
+    test('junk is not a format', () {
+      expect(parseAdaptiveFormat(null), isNull);
+      expect(parseAdaptiveFormat('nonsense'), isNull);
+      expect(parseAdaptiveFormat(<String, Object?>{}), isNull);
+    });
+  });
+
+  group('buildDashManifest', () {
+    AdaptiveFormat vid(
+      int height, {
+      String codecs = 'avc1.640028',
+      String url = 'https://r1.googlevideo.com/v?a=1&b=2',
+    }) => AdaptiveFormat(
+      itag: height,
+      url: url,
+      mimeType: 'video/mp4',
+      codecs: codecs,
+      bitrate: height * 3000,
+      durationMs: 60000,
+      initStart: 0,
+      initEnd: 700,
+      indexStart: 701,
+      indexEnd: 1500,
+      width: height * 16 ~/ 9,
+      height: height,
+      fps: 30,
+    );
+
+    AdaptiveFormat aud({
+      String codecs = 'mp4a.40.2',
+      String mimeType = 'audio/mp4',
+      int bitrate = 128000,
+      int durationMs = 60100,
+    }) => AdaptiveFormat(
+      itag: 140,
+      url: 'https://r1.googlevideo.com/a?x=1&y=2',
+      mimeType: mimeType,
+      codecs: codecs,
+      bitrate: bitrate,
+      durationMs: durationMs,
+      initStart: 0,
+      initEnd: 731,
+      indexStart: 732,
+      indexEnd: 1147,
+      audioSampleRate: 44100,
+      audioChannels: 2,
+    );
+
+    test('every ampersand in a stream URL is escaped', () {
+      // The single most important line in the file. A googlevideo URL is a
+      // query string of twenty-odd parameters joined by `&`; one raw `&` makes
+      // the document malformed and the video does not play at all, which looks
+      // nothing like an escaping bug from the outside.
+      final xml = buildDashManifest([vid(720), aud()])!;
+      expect(xml, contains('a=1&amp;b=2'));
+      expect(RegExp(r'&(?!(amp|lt|gt|quot|apos);)').hasMatch(xml), isFalse);
+    });
+
+    test('emits the byte ranges the player will ask for', () {
+      final xml = buildDashManifest([vid(720), aud()])!;
+      expect(xml, contains('indexRange="701-1500"'));
+      expect(xml, contains('<Initialization range="0-700"/>'));
+      expect(xml, contains('indexRangeExact="true"'));
+    });
+
+    test('declares the LONGER of the two durations', () {
+      // Video and audio differ by milliseconds on almost every video, and
+      // declaring the shorter one clips the end off.
+      final xml = buildDashManifest([vid(720), aud(durationMs: 60100)])!;
+      expect(xml, contains('PT60.100S'));
+    });
+
+    test('nothing without both a video and an audio track', () {
+      // A manifest with no audio plays silent, which is worse than the 360p
+      // stream it would have replaced. The caller falls back on null.
+      expect(buildDashManifest([vid(720)]), isNull);
+      expect(buildDashManifest([aud()]), isNull);
+      expect(buildDashManifest(const []), isNull);
+    });
+
+    test('AV1 is excluded, so 4K comes from VP9 instead', () {
+      // AV1 is the codec most likely to fall to a software decoder on a
+      // mid-range phone, where 4K does not decode in real time — ExoPlayer
+      // would happily pick it and playback would stutter rather than look
+      // better. Same "playable beats bigger" rule as HD downloads.
+      final ladder = dashLadder([
+        vid(2160, codecs: 'av01.0.12M.08'),
+        vid(1440, codecs: 'vp9'),
+        vid(1080),
+        aud(),
+      ]);
+      expect(ladder, ['1440p', '1080p']);
+      final xml = buildDashManifest([
+        vid(2160, codecs: 'av01.0.12M.08'),
+        vid(1080),
+        aud(),
+      ])!;
+      expect(xml, isNot(contains('av01')));
+      expect(xml, contains('avc1'));
+    });
+
+    test('codec families get separate AdaptationSets', () {
+      // A set is the unit ExoPlayer adapts within, and it can only switch
+      // between renditions one decoder handles. Mixing AVC and VP9 in one set
+      // makes a stream that claims to be switchable and is not.
+      final xml = buildDashManifest([
+        vid(1080),
+        vid(720, codecs: 'vp9'),
+        aud(),
+      ])!;
+      final videoSets =
+          RegExp('contentType="video"').allMatches(xml).length;
+      expect(videoSets, 2);
+    });
+
+    test('AAC wins over Opus, and Opus is used when it is all there is', () {
+      final withBoth = buildDashManifest([
+        vid(720),
+        aud(),
+        aud(codecs: 'opus', mimeType: 'audio/webm'),
+      ])!;
+      expect(withBoth, contains('mp4a.40.2'));
+      expect(withBoth, isNot(contains('opus')));
+
+      final opusOnly = buildDashManifest([
+        vid(720),
+        aud(codecs: 'opus', mimeType: 'audio/webm'),
+      ])!;
+      expect(opusOnly, contains('opus'));
+    });
+
+    test('every audio rung of the chosen codec is kept', () {
+      // So ExoPlayer can drop the audio bitrate on a weak connection instead
+      // of stalling the video.
+      final xml = buildDashManifest([
+        vid(720),
+        aud(bitrate: 48000),
+        aud(bitrate: 128000),
+      ])!;
+      expect(RegExp('bandwidth="48000"').hasMatch(xml), isTrue);
+      expect(RegExp('bandwidth="128000"').hasMatch(xml), isTrue);
+    });
+
+    test('ladder is highest first and deduplicated', () {
+      expect(
+        dashLadder([vid(1080), vid(1080, codecs: 'vp9'), vid(360), vid(720)]),
+        ['1080p', '720p', '360p'],
+      );
+    });
+  });
+
+  // ------------------------------------------------- the now-playing bar
+  //
+  // Where the persistent mini player is allowed to paint. The bar used to live
+  // in the tab shell, so it vanished the moment anything was pushed over it —
+  // a channel, a playlist, search, settings — while the audio kept playing.
+
+  group('RouteStackObserver', () {
+    final shell = _FakeRoute(null);
+    Route<dynamic> route(String? name) => _FakeRoute(name);
+
+    test('nothing to paint over on a root tab', () {
+      // The shell draws its own bar, above the navigation bar rather than over
+      // it, so a second one here would double it up.
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('appears once a route is pushed, and goes again on pop', () {
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final channel = route('channel');
+      o.didPush(channel, shell);
+      expect(o.wantsNowPlayingBar, isTrue);
+      o.didPop(channel, shell);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('never over the watch page', () {
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      o.didPush(route(RouteStackObserver.watchRouteName), shell);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('never over fullscreen, which sits ABOVE the watch page', () {
+      // The condition is "the watch page is nowhere in the stack", not "is not
+      // on top": the player pushes its own fullscreen route over the watch
+      // page, and a mini player floating over a fullscreen video is absurd.
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final watch = route(RouteStackObserver.watchRouteName);
+      o.didPush(watch, shell);
+      o.didPush(route(null), watch);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('comes back after the watch page is dismissed over a channel', () {
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final channel = route('channel');
+      o.didPush(channel, shell);
+      final watch = route(RouteStackObserver.watchRouteName);
+      o.didPush(watch, channel);
+      expect(o.wantsNowPlayingBar, isFalse);
+      o.didPop(watch, channel);
+      expect(o.wantsNowPlayingBar, isTrue);
+    });
+
+    test('routes popped out of order do not strand the stack', () {
+      // popUntil, or a dialog dismissed behind a page transition, can pop in
+      // an order the pushes did not predict. Removing the wrong entry would
+      // leave the stack permanently out of step, which shows up as a bar that
+      // never comes back.
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final a = route('a');
+      final b = route('b');
+      o.didPush(a, shell);
+      o.didPush(b, a);
+      o.didPop(a, shell);
+      o.didPop(b, shell);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('a replacement keeps the depth', () {
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final a = route('a');
+      o.didPush(a, shell);
+      o.didReplace(newRoute: route('b'), oldRoute: a);
+      expect(o.wantsNowPlayingBar, isTrue);
+    });
+
+    test('notifies only when the answer changes', () {
+      // didPush and didPop fire on every navigation and most of them do not
+      // alter whether the bar belongs on screen.
+      final o = RouteStackObserver();
+      var notifications = 0;
+      o.addListener(() => notifications++);
+      o.didPush(shell, null);
+      final a = route('a');
+      o.didPush(a, shell);
+      expect(notifications, 1);
+      final b = route('b');
+      o.didPush(b, a);
+      expect(notifications, 1, reason: 'still on a pushed route');
+      o.didPop(b, a);
+      o.didPop(a, shell);
+      expect(notifications, 2);
+    });
+  });
+
+  // ------------------------------------------- channel playlist video counts
+
+  group('videoCountFromBadge', () {
+    test('the ordinary case', () {
+      expect(videoCountFromBadge('9 videos'), 9);
+    });
+
+    test('singular, so the pattern cannot require the s', () {
+      expect(videoCountFromBadge('1 video'), 1);
+    });
+
+    test('grouped, with either separator', () {
+      // A German response says "1.204 Videos". Treating `.` as a decimal point
+      // would read that as one video.
+      expect(videoCountFromBadge('1,204 videos'), 1204);
+      expect(videoCountFromBadge('1.204 Videos'), 1204);
+    });
+
+    test('"Playlist" is not a count', () {
+      // It is what the sibling metadata row says, which is why the word
+      // "video" has to be matched instead of taking the first run of digits.
+      expect(videoCountFromBadge('Playlist'), isNull);
+      expect(videoCountFromBadge('View full playlist'), isNull);
+      expect(videoCountFromBadge(''), isNull);
+    });
+
+    test('a bare number is not a count either', () {
+      expect(videoCountFromBadge('12'), isNull);
+    });
+  });
+}
+
+/// A stand-in for a pushed route, so the observer can be exercised without a
+/// widget tree. It only ever reads `settings.name`.
+class _FakeRoute extends Route<void> {
+  _FakeRoute(String? name) : _settings = RouteSettings(name: name);
+
+  final RouteSettings _settings;
+
+  @override
+  RouteSettings get settings => _settings;
 }

@@ -391,6 +391,8 @@ class PlaybackSources {
     required this.qualities,
     this.audioOnlyUrl,
     this.isHls = false,
+    this.isDash = false,
+    this.ladder = const [],
     this.isLive = false,
     this.videoUnavailable = false,
   });
@@ -405,6 +407,19 @@ class PlaybackSources {
   final String? audioOnlyUrl;
 
   final bool isHls;
+
+  /// True when [url] is a generated DASH manifest on local disk rather than a
+  /// stream URL — the Android route to anything above 360p. See
+  /// `dash_manifest.dart`.
+  final bool isDash;
+
+  /// Heights this source can actually play, highest first (`['1080p', ...]`).
+  ///
+  /// Only populated for DASH, where the app generated the manifest and so
+  /// knows the ladder exactly. `better_player` cannot report it: its ASMS
+  /// parser understands HLS only, so a DASH source leaves the track list
+  /// empty. For HLS the player reads the ladder itself and this stays empty.
+  final List<String> ladder;
 
   /// Live streams have no duration and cannot be seeked past the edge; the
   /// player needs telling so it shows a LIVE badge instead of a broken bar.

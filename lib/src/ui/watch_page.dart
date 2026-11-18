@@ -27,6 +27,7 @@ import 'widgets/stats_overlay.dart';
 import 'widgets/cast_button.dart';
 import 'widgets/cast_sheet.dart';
 import 'widgets/description_sheet.dart';
+import 'widgets/now_playing_overlay.dart';
 import 'widgets/player_gestures.dart';
 import 'widgets/queue_sheet.dart';
 import 'widgets/sheets.dart';
@@ -47,6 +48,11 @@ class WatchPage extends StatefulWidget {
   static Future<void> open(BuildContext context, VideoBrief video) {
     return Navigator.of(context).push(
       PageRouteBuilder<void>(
+        // Named so RouteStackObserver can tell the player's own screens apart
+        // from every other pushed route: the persistent now-playing bar must
+        // not be painted over the watch page or over the fullscreen route the
+        // player pushes above it.
+        settings: const RouteSettings(name: RouteStackObserver.watchRouteName),
         opaque: false,
         barrierColor: Colors.black26,
         transitionDuration: const Duration(milliseconds: 260),

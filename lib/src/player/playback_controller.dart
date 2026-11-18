@@ -95,8 +95,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // video that has both showed only one of them, which is why the picker
     // looked short of options.
     final labels = <String>{
-      for (final track in _player?.betterPlayerAsmsTracks ?? const [])
-        if ((track.height ?? 0) > 0) '${track.height}p',
+      for (final h in _ladderHeights) '${h}p',
       ...?_sources?.qualities.keys,
     };
     final sorted = labels.toList()
@@ -431,6 +430,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     _current = video;
+    // A deliberate reopen earns a fresh automatic retry; only a second failure
+    // without leaving the video is treated as genuine.
+    _recoveredVideoId = null;
     // Recorded for the session-aware "up next" ordering. Deduplicated so a
     // replay does not weigh twice, and capped because only the recent tail of
     // a sitting is informative.
@@ -530,6 +532,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       video,
       _preferredUrl(sources),
       isHls: sources.isHls,
+      isDash: sources.isDash,
     );
 
     if (_player == null) {
@@ -583,6 +586,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     VideoBrief video,
     String url, {
     required bool isHls,
+    bool isDash = false,
   }) {
     return BetterPlayerDataSource(
       _isOffline
@@ -596,14 +600,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           ((_sources?.isLive ?? false) || video.isLive),
       // Tell the player it is HLS. The manifest URL has no .m3u8 extension, so
       // without the hint AVPlayer guesses from the path and gets it wrong.
-      videoFormat: isHls ? BetterPlayerVideoFormat.hls : null,
+      videoFormat: isHls
+          ? BetterPlayerVideoFormat.hls
+          : (isDash ? BetterPlayerVideoFormat.dash : null),
       // Only reaches the cache manager on iOS, which is bypassed here — kept
       // because Android's ExoPlayer does use it to pick a extractor for a URL
       // with no file extension.
       // Describe the URL that is actually being loaded, not the mode. Audio
       // mode now stays on the video file and simply hides the picture, so
       // claiming 'm4a' would have told ExoPlayer to expect the wrong container.
-      videoExtension: isHls
+      videoExtension: isHls || isDash
           ? null
           : (url == _sources?.audioOnlyUrl ? 'm4a' : 'mp4'),
       // Let better_player read the ladder's variants off the manifest, which is
@@ -678,9 +684,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // slow connection routinely arrived after the loop had already given up,
     // which is why audio mode "came after a while" on one video and never
     // arrived on the next.
+    // A generated DASH manifest needs no waiting at all: the ladder came from
+    // the document the app wrote, not from the player's parser, so it is known
+    // before the first frame.
     for (var attempt = 0; attempt < 30; attempt++) {
       if (token != _qualityToken) return;
-      if ((_player?.betterPlayerAsmsTracks.isNotEmpty ?? false)) {
+      if ((_player?.betterPlayerAsmsTracks.isNotEmpty ?? false) ||
+          ((_sources?.isDash ?? false) && _ladderHeights.isNotEmpty)) {
         // Worked out here, inside the loop, and not before it.
         //
         // Audio mode picks the smallest rendition, which is read off the track
@@ -689,10 +699,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // early, so audio-only streamed the full-size video behind the artwork
         // and saved no data at all.
         final wanted = qualityForConditions(
-          ladder: [
-            for (final track in _player?.betterPlayerAsmsTracks ?? const [])
-              if ((track.height ?? 0) > 0) '${track.height}p',
-          ],
+          ladder: [for (final h in _ladderHeights) '${h}p'],
           preferred: _config.preferredQuality,
           lowest: isAudioOnly ||
               _droppedVideo ||
@@ -872,16 +879,51 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Label of the smallest rendition on offer, used by audio mode.
-  String get _lowestQuality {
+  /// Heights the loaded source can play, smallest first.
+  ///
+  /// Two sources, because the two adaptive formats report differently. For HLS
+  /// `better_player` parses the ladder and exposes it as ASMS tracks. For a
+  /// generated DASH manifest it never will — its ASMS `parse` hands every
+  /// manifest to the HLS parser whatever the format — so the ladder comes from
+  /// `PlaybackSources.ladder`, which the app filled in when it *built* that
+  /// manifest. Nothing has to be parsed back out of a document we wrote.
+  List<int> get _ladderHeights {
     final tracks = _player?.betterPlayerAsmsTracks ?? const [];
-    final heights = tracks
-        .map((t) => t.height ?? 0)
+    if (tracks.isNotEmpty) {
+      return tracks
+          .map((t) => t.height ?? 0)
+          .where((h) => h > 0)
+          .toSet()
+          .toList()
+        ..sort();
+    }
+    return (_sources?.ladder ?? const [])
+        .map((l) => int.tryParse(l.replaceAll(RegExp('[^0-9]'), '')) ?? 0)
         .where((h) => h > 0)
+        .toSet()
         .toList()
       ..sort();
+  }
+
+  /// Label of the smallest rendition on offer, used by audio mode.
+  String get _lowestQuality {
+    final heights = _ladderHeights;
     return heights.isEmpty ? SettingsService.autoQuality : '${heights.first}p';
   }
+
+  /// Caps the ladder at [height] on an adaptive source.
+  ///
+  /// `setTrack` is only ever `setMaxVideoSize(width, height)` plus
+  /// `setMaxVideoBitrate` on ExoPlayer's track selector, so it works on a DASH
+  /// source exactly as well as on an HLS one — it never looks at the manifest.
+  /// The width is deliberately a number nothing can exceed rather than a
+  /// guessed 16:9 companion: ExoPlayer drops a track that breaches *either*
+  /// bound, and a portrait video at 1080p is 608 wide, so pairing 1080 with a
+  /// computed 1920 would be fine while pairing it with a computed 607 would
+  /// exclude the very rung being asked for. The request is "no taller than
+  /// this", so only the height is constrained.
+  Future<void> _capHeight(BetterPlayerController player, int height) =>
+      player.setTrack(BetterPlayerAsmsTrack('', 100000, height, 0, 0, '', ''));
 
   /// Applies [label] to whatever is loaded now.
   ///
@@ -891,24 +933,30 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final player = _player;
     if (player == null) return;
 
+    final isAdaptive =
+        player.betterPlayerAsmsTracks.isNotEmpty || (_sources?.isDash ?? false);
+
     if (label == SettingsService.autoQuality) {
       // An empty default track hands the choice back to the bitrate ladder.
-      if (player.betterPlayerAsmsTracks.isNotEmpty) {
+      if (isAdaptive) {
         await player.setTrack(BetterPlayerAsmsTrack.defaultTrack());
       }
       return;
     }
 
     final wanted = int.tryParse(label.replaceAll(RegExp('[^0-9]'), ''));
-    if (wanted != null && player.betterPlayerAsmsTracks.isNotEmpty) {
+    if (wanted != null && isAdaptive) {
       // Nearest at or below the request, so asking for 1080p on a video that
       // tops out at 720p plays 720p rather than silently doing nothing.
-      final candidates = player.betterPlayerAsmsTracks
-          .where((t) => (t.height ?? 0) > 0 && (t.height ?? 0) <= wanted)
-          .toList()
-        ..sort((a, b) => (b.height ?? 0).compareTo(a.height ?? 0));
-      if (candidates.isNotEmpty) {
-        await player.setTrack(candidates.first);
+      final at = _ladderHeights.where((h) => h <= wanted).toList();
+      if (at.isNotEmpty) {
+        await _capHeight(player, at.last);
+        return;
+      }
+      // Asking for less than the smallest rung: take the smallest rather than
+      // leaving the ladder uncapped, which is what audio mode depends on.
+      if (_ladderHeights.isNotEmpty) {
+        await _capHeight(player, _ladderHeights.first);
         return;
       }
     }
@@ -939,6 +987,60 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
     if (chosen.value != player.betterPlayerDataSource?.url) {
       await player.setResolution(chosen.value);
+    }
+  }
+
+  /// Which video the last automatic recovery was spent on.
+  ///
+  /// Scoped to the video rather than a plain bool so that moving on and coming
+  /// back gets a fresh attempt, while a stream that is genuinely broken cannot
+  /// loop: the second failure for the same video is reported.
+  String? _recoveredVideoId;
+
+  /// One automatic retry when the native player throws.
+  ///
+  /// "Sometimes a video just fails" was reported with no pattern, and the
+  /// pattern is that a googlevideo URL is perishable in more ways than one.
+  /// It carries an expiry stamp; it can be refused for an address that has
+  /// since changed network; the generated DASH manifest it points at lives in
+  /// the OS cache directory, which the system may reclaim at any moment; and
+  /// an HLS ladder fetched hours ago can simply stop serving. All of those
+  /// arrive here as one opaque exception from the platform, and all of them
+  /// have the same cure — ask YouTube again, skipping the cache, and carry on
+  /// from where the video had got to.
+  ///
+  /// Before this, the only recovery offered was a sentence asking the user to
+  /// reopen the video, which is exactly what the app can do for itself.
+  Future<void> _recoverFromFailure(String? detail) async {
+    final video = _current;
+    final message = detail == null || detail.isEmpty
+        ? 'Playback failed. Reopen the video to try again.'
+        : 'Playback failed: $detail';
+
+    // Offline files do not expire, so a failure there is a real one — a
+    // truncated or deleted download, which re-resolving cannot mend.
+    if (video == null || _isOffline || _recoveredVideoId == video.id) {
+      _error = message;
+      notifyListeners();
+      return;
+    }
+    _recoveredVideoId = video.id;
+
+    final resumeAt = _position;
+    debugPrint('AI BIT: playback failed ($detail) — re-resolving ${video.id}');
+    try {
+      final sources = await _repo.resolve(video.id, force: true);
+      if (_current?.id != video.id) return;
+      _sources = sources;
+      _error = null;
+      notifyListeners();
+      await _attach(video, sources, startAt: resumeAt);
+    } catch (e) {
+      if (_current?.id != video.id) return;
+      // Report the original failure, not the retry's: the first one is what
+      // the user saw, and a network error on the retry would mislead.
+      _error = message;
+      notifyListeners();
     }
   }
 
@@ -1596,7 +1698,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     //
     // Videos with no ladder simply keep playing at full size. No saving is
     // worth losing background playback over.
-    if (player.betterPlayerAsmsTracks.isEmpty) return;
+    if (_ladderHeights.isEmpty) return;
     if (!(player.isPlaying() ?? false)) return;
 
     _droppedVideo = true;
@@ -1615,10 +1717,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // came on.
     await _applyQuality(
       qualityForConditions(
-        ladder: [
-          for (final track in _player?.betterPlayerAsmsTracks ?? const [])
-            if ((track.height ?? 0) > 0) '${track.height}p',
-        ],
+        ladder: [for (final h in _ladderHeights) '${h}p'],
         preferred: _config.preferredQuality,
         lowest: _config.dataSaver || _mobileSaving,
         stepDown: _batterySaving,
@@ -1669,11 +1768,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         _persistPosition(force: true);
         unawaited(_onFinished());
       case BetterPlayerEventType.exception:
-        final detail = event.parameters?['exception']?.toString();
-        _error = detail == null || detail.isEmpty
-            ? 'Playback failed. Reopen the video to try again.'
-            : 'Playback failed: $detail';
-        notifyListeners();
+        unawaited(_recoverFromFailure(event.parameters?['exception']?.toString()));
       // Android's notification and lock-screen skip buttons, delivered by the
       // vendored plugin. iOS routes the same taps through AppDelegate's
       // MPRemoteCommandCenter handlers instead.

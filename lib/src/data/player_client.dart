@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'dash_manifest.dart';
+
 /// Talks to YouTube's `youtubei/v1/player` endpoint directly.
 ///
 /// This exists because `youtube_explode_dart` never surfaces
@@ -160,8 +162,21 @@ class YoutubePlayerClient {
       audioUrl: _bestAudio(streaming),
       muxedUrl: _bestMuxed(streaming),
       muxedQualities: _muxedQualities(streaming),
+      adaptiveFormats: _adaptiveFormats(streaming),
       isLive: details?['isLiveContent'] == true || details?['isLive'] == true,
     );
+  }
+
+  /// The separate video-only and audio-only tracks, kept so a DASH manifest
+  /// can be generated from them. See `dash_manifest.dart` — this is the only
+  /// route above 360p now that `hlsManifestUrl` comes back for roughly one
+  /// video in eight.
+  static List<AdaptiveFormat> _adaptiveFormats(Map<String, dynamic>? streaming) {
+    final formats = streaming?['adaptiveFormats'];
+    if (formats is! List) return const [];
+    return [
+      for (final f in formats) ?parseAdaptiveFormat(f),
+    ];
   }
 
   /// Best *playable* audio-only track, for the data-saver, screen-off and
@@ -258,6 +273,7 @@ class PlayerStreams {
     this.audioUrl,
     this.muxedUrl,
     this.muxedQualities = const {},
+    this.adaptiveFormats = const [],
     this.isLive = false,
   });
 
@@ -268,9 +284,19 @@ class PlayerStreams {
 
   /// Label to URL for each muxed rendition on offer.
   final Map<String, String> muxedQualities;
+
+  /// Separate video-only and audio-only tracks, up to 2160p. Raw material for
+  /// a generated DASH manifest on Android.
+  final List<AdaptiveFormat> adaptiveFormats;
   final bool isLive;
 
-  bool get hasVideo => hlsUrl != null || muxedUrl != null;
+  /// Whether a DASH manifest could be built from these formats — i.e. whether
+  /// HD is reachable at all for this video.
+  bool get hasAdaptiveVideo =>
+      adaptiveFormats.any((f) => f.isVideo) &&
+      adaptiveFormats.any((f) => f.isAudio);
+
+  bool get hasVideo => hlsUrl != null || muxedUrl != null || hasAdaptiveVideo;
 }
 
 class _ClientProfile {
