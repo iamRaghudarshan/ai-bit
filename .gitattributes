@@ -1,0 +1,8 @@
+# Shell scripts must reach the Linux CI runners with LF endings.
+#
+# This machine is Windows and git's autocrlf rewrites the working copy, which
+# is harmless for source but fatal for a script: a committed `#!/usr/bin/env
+# bash` followed by CRLF fails with "bad interpreter: ... ^M", and the error
+# names the interpreter rather than the line endings, so it reads as a missing
+# shell. Pinning it here means the next edit cannot reintroduce that.
+*.sh text eol=lf
