@@ -4,6 +4,7 @@ import 'package:ai_bit/src/data/app_lock_service.dart';
 import 'package:ai_bit/src/data/data_usage_service.dart';
 import 'package:ai_bit/src/data/dlna_client.dart';
 import 'package:ai_bit/src/data/kids_guard.dart';
+import 'package:ai_bit/src/data/custom_feeds.dart';
 import 'package:ai_bit/src/data/interests.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/recommender.dart';
@@ -3273,6 +3274,90 @@ Some blurb about the video.
     test('feedLanguageByCode finds a known one and nulls an unknown', () {
       expect(feedLanguageByCode('ta')?.searchWord, 'tamil');
       expect(feedLanguageByCode('zz'), isNull);
+    });
+  });
+
+  group('CustomFeed.queries', () {
+    CustomFeed feed(String query) => CustomFeed(name: 'f', query: query);
+
+    test('commas separate distinct searches', () {
+      expect(feed('ai tools, homelab').queries, ['ai tools', 'homelab']);
+    });
+
+    test('spaces do NOT — a phrase is one search', () {
+      // "machine learning tutorial" split into three words would return
+      // nothing like what was asked for.
+      expect(feed('machine learning tutorial').queries,
+          ['machine learning tutorial']);
+    });
+
+    test('newlines and semicolons separate too', () {
+      expect(feed('a\nbb;ccc').queries, ['bb', 'ccc']);
+    });
+
+    test('whitespace and empty fragments are dropped', () {
+      expect(feed('  proxmox , , truenas  ').queries, ['proxmox', 'truenas']);
+    });
+
+    test('a single character is not a search term', () {
+      expect(feed('x').queries, isEmpty);
+      expect(feed('x, proxmox').queries, ['proxmox']);
+    });
+
+    test('isUsable needs both a name and a term', () {
+      expect(const CustomFeed(name: 'Homelab', query: 'proxmox').isUsable,
+          isTrue);
+      expect(const CustomFeed(name: '', query: 'proxmox').isUsable, isFalse);
+      expect(const CustomFeed(name: 'Homelab', query: ' ').isUsable, isFalse);
+      expect(const CustomFeed(name: '  ', query: 'proxmox').isUsable, isFalse);
+    });
+  });
+
+  group('custom feed storage', () {
+    test('round-trips', () {
+      const feeds = [
+        CustomFeed(name: 'Homelab', query: 'proxmox, truenas'),
+        CustomFeed(name: 'AI', query: 'llm news'),
+      ];
+      final back = decodeCustomFeeds(encodeCustomFeeds(feeds));
+      expect(back.map((f) => f.name).toList(), ['Homelab', 'AI']);
+      expect(back.first.query, 'proxmox, truenas');
+    });
+
+    test('a name containing a comma survives', () {
+      // The reason this is JSON and not a joined string: users type
+      // separators, and a delimited format would split the name in half.
+      const feeds = [CustomFeed(name: 'Cars, bikes', query: 'car review')];
+      expect(decodeCustomFeeds(encodeCustomFeeds(feeds)).single.name,
+          'Cars, bikes');
+    });
+
+    test('empty storage decodes to nothing', () {
+      expect(decodeCustomFeeds(''), isEmpty);
+      expect(decodeCustomFeeds('   '), isEmpty);
+    });
+
+    test('corrupt storage costs the feeds, not the Home screen', () {
+      // A half-written preference is what a crash mid-write leaves behind.
+      expect(decodeCustomFeeds('{not json'), isEmpty);
+      expect(decodeCustomFeeds('"a string"'), isEmpty);
+      expect(decodeCustomFeeds('[1, 2, 3]'), isEmpty);
+    });
+
+    test('unusable entries are skipped, usable ones kept', () {
+      final out = decodeCustomFeeds(
+        '[{"name":"","query":"x"},{"name":"Good","query":"proxmox"},'
+        '{"name":"NoQuery","query":""}]',
+      );
+      expect(out.map((f) => f.name).toList(), ['Good']);
+    });
+
+    test('duplicate names are dropped — the name is the identity', () {
+      final out = decodeCustomFeeds(
+        '[{"name":"AI","query":"one"},{"name":"ai","query":"two"}]',
+      );
+      expect(out, hasLength(1));
+      expect(out.single.query, 'one');
     });
   });
 }

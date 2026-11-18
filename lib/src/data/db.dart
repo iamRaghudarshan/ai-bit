@@ -756,7 +756,20 @@ class AppDatabase {
   /// Kids-mode rows are excluded: that mode curates from a fixed topic list
   /// and consults no personal signal, so letting it feed the ordinary profile
   /// would push nursery rhymes into an adult's recommendations.
-  Future<List<WatchSignal>> watchSignals({int limit = 300}) async {
+  /// [shorts] splits the two feeds apart: false for long-form only, true for
+  /// Shorts only, null for everything.
+  ///
+  /// **The home feed must pass false.** A Short is twenty seconds long, so
+  /// watching one through scores a completion of 1.0 — the same as finishing a
+  /// forty-minute documentary, and vastly easier to earn. Mixed into one
+  /// profile, an evening of Shorts therefore drowns out months of real
+  /// viewing and the home feed fills with whatever the Shorts tab happened to
+  /// serve. YouTube separated its Shorts and long-form recommendation systems
+  /// in 2026 for precisely this reason, and the same arithmetic applies here.
+  Future<List<WatchSignal>> watchSignals({
+    int limit = 300,
+    bool? shorts = false,
+  }) async {
     final rows = await _db.query(
       'history',
       columns: [
@@ -767,7 +780,8 @@ class AppDatabase {
         'duration_ms',
         'watched_at',
       ],
-      where: 'is_kids = 0',
+      where: shorts == null ? 'is_kids = 0' : 'is_kids = 0 AND is_short = ?',
+      whereArgs: shorts == null ? null : [shorts ? 1 : 0],
       orderBy: 'watched_at DESC',
       limit: limit,
     );
@@ -1094,12 +1108,16 @@ class AppDatabase {
   /// rebuilt per load rather than cached because a profile that does not
   /// include what was watched five minutes ago is the stale-recommendations
   /// bug the Home screen already had once.
+  /// [shorts] is passed straight to [watchSignals] — false builds the
+  /// long-form profile the home feed and Up next want, true builds the Shorts
+  /// one. They are deliberately different people's worth of taste.
   Future<TasteProfile> tasteProfile({
     DateTime? now,
     List<String> coVisitSeeds = const [],
     List<String> interestQueries = const [],
+    bool? shorts = false,
   }) async {
-    final history = await watchSignals();
+    final history = await watchSignals(shorts: shorts);
     final searches = await searchSignals();
     final subs = await subscriptions();
     final dismissed = await notInterested();

@@ -948,6 +948,46 @@ to all four clients in one call because they must agree: a search answered in
 Hindi beside a browse answered in English is a feed that looks like two
 different apps stitched together.
 
+### Following YouTube's 2026 redesign, selectively
+
+Checked against what YouTube actually shipped in 2026, and the headline change
+was **not** copied: they removed the Subscriptions tab from the bottom bar in
+October and the reaction was close to universally negative — harder to reach
+subscribed content, and the Unwatched/Today/Live filters gone with it. AI BIT
+keeps its Subscriptions tab. Copying a change because it is new, when the
+people using it said it was worse, is not an improvement.
+
+Two things from that release were worth having.
+
+**Shorts no longer shape the long-form feed.** YouTube formally separated its
+Shorts and long-form recommendation systems in 2026, and the arithmetic behind
+that applies here exactly: a Short is twenty seconds long, so watching one
+through scores a completion of 1.0 — the same as finishing a forty-minute
+documentary and vastly easier to earn. Mixed into one profile, an evening of
+Shorts drowns out months of real viewing and the home feed fills with whatever
+the Shorts tab happened to serve. `watchSignals` and `tasteProfile` now take
+`shorts`, defaulting to **false** so every existing caller gets the long-form
+profile; the Shorts tab passes true on both its load paths.
+
+**Custom feeds** (`custom_feeds.dart`) are the good idea in that release: a
+`+` on the chip row, a name and some topics, and the result is a chip you can
+switch to and long-press to edit. It answers what the fixed chip row never
+could — the categories are whatever we chose, and "Technology" is not the same
+request as "self-hosting homelab tutorials".
+
+They go through `rankFeed` like everything else: the words decide what is
+*fetched*, not how it is *ordered*, so a custom feed still sinks what has been
+watched and spreads channels out. Without that it would be a search results
+page wearing a chip's clothes. Stored as JSON in preferences rather than as a
+delimited string, because the name is user-typed and users type separators —
+a feed called "Cars, bikes" has a test. Commas split a query into several
+searches while spaces do not, since "machine learning tutorial" is one search
+and chopping it into three returns nothing like what was asked for.
+
+Already present before this, and worth not re-adding: the Live, Music and
+Movies categories YouTube promoted to its new top bar have been chips here
+since the feed was written.
+
 ### The screen is kept awake by the player, not by a widget
 
 `PlaybackController._syncWakelock` owns the screen wakelock. `better_player`

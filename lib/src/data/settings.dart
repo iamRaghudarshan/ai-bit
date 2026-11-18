@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'custom_feeds.dart';
+
 /// What happens when a video ends.
 enum PlaybackRepeat {
   /// Move on to the queue, or stop.
@@ -236,6 +238,15 @@ class SettingsService extends ChangeNotifier {
   /// device-local and useless unless they have been collected all along.
   bool get trackDataUsage => _prefs.getBool(_kTrackDataUsage) ?? true;
   set trackDataUsage(bool value) => _write(_kTrackDataUsage, value);
+
+  static const _kCustomFeeds = 'custom_feeds';
+
+  /// Feeds the user described themselves, as JSON. See `custom_feeds.dart`.
+  List<CustomFeed> get customFeeds =>
+      decodeCustomFeeds(_prefs.getString(_kCustomFeeds) ?? '');
+
+  set customFeeds(List<CustomFeed> value) =>
+      _write(_kCustomFeeds, encodeCustomFeeds(value));
 
   static const _kAskedInterests = 'asked_interests';
 

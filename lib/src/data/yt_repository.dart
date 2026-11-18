@@ -351,6 +351,51 @@ class YtRepository {
         weights: weights,
       );
 
+  /// A feed built from search terms the user typed.
+  ///
+  /// Backs the custom feeds described in `custom_feeds.dart`. It goes through
+  /// the ranker like everything else, so a custom feed still sinks what has
+  /// been watched, spreads channels out and explores — the queries decide
+  /// WHAT is fetched, not how it is ordered. Without that it would be a
+  /// search results page wearing a chip's clothes.
+  Future<List<VideoBrief>> customFeed({
+    required List<String> queries,
+    TasteProfile profile = TasteProfile.empty,
+    Map<String, ImpressionCount> impressions = const {},
+    RankerWeights weights = RankerWeights.prior,
+    List<String> feedLanguages = const [],
+    int refreshToken = 0,
+    int limit = 80,
+    DateTime? now,
+  }) async {
+    if (isPreview) return _previewRows(refreshToken);
+    if (queries.isEmpty) return const [];
+
+    final expanded = _rotate(
+      withLanguages(queries, feedLanguages),
+      refreshToken,
+    );
+    final results = await Future.wait(
+      expanded.take(6).map((q) => _safe(() => search(q))),
+    );
+    final candidates = <Candidate>[
+      for (final section in results)
+        for (final video in section)
+          Candidate(video: video, source: CandidateSource.interest),
+    ];
+    if (candidates.isEmpty) return const [];
+
+    return rankFeed(
+      candidates: candidates,
+      profile: profile,
+      now: now ?? DateTime.now(),
+      impressions: impressions,
+      weights: weights,
+      limit: limit,
+      seed: refreshToken,
+    );
+  }
+
   /// Newest uploads from the channels followed on this device, for the
   /// "Subscribed" chip on Home.
   ///

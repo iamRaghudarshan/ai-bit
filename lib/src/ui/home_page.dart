@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/theme.dart';
+import '../data/custom_feeds.dart';
 import '../data/interests.dart';
 import '../data/kids_guard.dart';
 import '../data/settings.dart';
@@ -261,6 +262,53 @@ class HomePageState extends State<HomePage>
         return;
       }
 
+      // A feed the user described themselves. Ranked like every other feed —
+      // the words decide what is fetched, not how it is ordered — so it still
+      // sinks what has been watched and spreads the channels out rather than
+      // being a search results page with a chip on it.
+      if (_CategoryChips.isCustom(_category)) {
+        final name = _CategoryChips.customName(_category);
+        final feed = context
+            .read<SettingsService>()
+            .customFeeds
+            .where((f) => f.name == name)
+            .firstOrNull;
+        if (feed == null) {
+          // Deleted while selected. Fall back rather than showing an error
+          // for a chip that is no longer there.
+          setState(() {
+            _category = _CategoryChips.all;
+            _loading = true;
+          });
+          await _load(reset: true);
+          return;
+        }
+        final settingsNow = context.read<SettingsService>();
+        final db = context.read<AppDatabase>();
+        final profile = await db.tasteProfile(
+          interestQueries: interestQueries(settingsNow.interestTopics),
+        );
+        final impressions = await db.feedImpressions();
+        if (!mounted) return;
+        final rows = await repo.customFeed(
+          queries: feed.queries,
+          profile: profile,
+          impressions: impressions,
+          weights: context.read<RankerTrainer>().weights,
+          feedLanguages: settingsNow.feedLanguages,
+          refreshToken: _refreshToken,
+        );
+        if (!mounted) return;
+        setState(() {
+          _feed = rows;
+          _loading = false;
+          _error = rows.isEmpty
+              ? 'Nothing came back for "${feed.name}". Try different words.'
+              : null;
+        });
+        return;
+      }
+
       // Trending is the closest thing available without the official Data API:
       // several popular topics, each sorted by view count, interleaved.
       if (_category == _CategoryChips.trending) {
@@ -359,6 +407,137 @@ class HomePageState extends State<HomePage>
   Future<void> _refresh() async {
     _refreshToken++;
     await _load();
+  }
+
+  /// Asks for a name and some topics, and saves a custom feed.
+  Future<void> _createCustomFeed() async {
+    final settings = context.read<SettingsService>();
+    if (settings.customFeeds.length >= maxCustomFeeds) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('That is as many feeds as the row will hold.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    final created = await _feedDialog();
+    if (created == null || !mounted) return;
+    settings.customFeeds = [...settings.customFeeds, created];
+    setState(() => _category = _CategoryChips.customKey(created.name));
+    await _load(reset: true);
+  }
+
+  /// Long-press on a custom chip: rename, change the topics, or delete.
+  Future<void> _editCustomFeed(CustomFeed feed) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: Text('Edit "${feed.name}"'),
+              onTap: () => Navigator.pop(sheetContext, 'edit'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete feed'),
+              onTap: () => Navigator.pop(sheetContext, 'delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    final settings = context.read<SettingsService>();
+
+    if (action == 'delete') {
+      settings.customFeeds =
+          settings.customFeeds.where((f) => f.name != feed.name).toList();
+      if (!mounted) return;
+      setState(() => _category = _CategoryChips.all);
+      await _load(reset: true);
+      return;
+    }
+
+    final edited = await _feedDialog(existing: feed);
+    if (edited == null || !mounted) return;
+    settings.customFeeds = [
+      for (final f in settings.customFeeds)
+        if (f.name == feed.name) edited else f,
+    ];
+    setState(() => _category = _CategoryChips.customKey(edited.name));
+    await _load(reset: true);
+  }
+
+  /// The name-and-topics dialog, shared by create and edit.
+  ///
+  /// Returns null when cancelled or when what was typed cannot make a feed —
+  /// the Save button is disabled in that case, so this is belt and braces.
+  Future<CustomFeed?> _feedDialog({CustomFeed? existing}) {
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final queryController = TextEditingController(text: existing?.query ?? '');
+    return showDialog<CustomFeed>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (builderContext, setDialogState) {
+          final candidate = CustomFeed(
+            name: nameController.text,
+            query: queryController.text,
+          );
+          return AlertDialog(
+            title: Text(existing == null ? 'New feed' : 'Edit feed'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameController,
+                  autofocus: existing == null,
+                  textCapitalization: TextCapitalization.words,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    hintText: 'Homelab',
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: queryController,
+                  minLines: 2,
+                  maxLines: 4,
+                  decoration: const InputDecoration(
+                    labelText: 'Topics',
+                    hintText: 'self hosting, proxmox, home server',
+                    helperText: 'Separate different topics with commas',
+                    helperMaxLines: 2,
+                  ),
+                  onChanged: (_) => setDialogState(() {}),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: candidate.isUsable
+                    ? () => Navigator.pop(dialogContext, candidate)
+                    : null,
+                child: const Text('Save'),
+              ),
+            ],
+          );
+        },
+      ),
+      // Disposed here rather than in the builder: the builder runs on every
+      // keystroke, and disposing a controller still in use is a crash.
+    ).whenComplete(() {
+      nameController.dispose();
+      queryController.dispose();
+    });
   }
 
   /// The strip under the last row: a spinner while loading, a quiet line when
@@ -639,6 +818,9 @@ class HomePageState extends State<HomePage>
           if (!kids) ...[
             _CategoryChips(
               selected: _category,
+              customFeeds: context.watch<SettingsService>().customFeeds,
+              onCreateFeed: _createCustomFeed,
+              onEditFeed: _editCustomFeed,
               onSelected: (value) {
                 setState(() => _category = value);
                 _load(reset: true);
@@ -910,11 +1092,31 @@ class _ModeSwitch extends StatelessWidget {
 }
 
 class _CategoryChips extends StatelessWidget {
-  const _CategoryChips({required this.selected, required this.onSelected});
+  const _CategoryChips({
+    required this.selected,
+    required this.onSelected,
+    this.customFeeds = const [],
+    this.onCreateFeed,
+    this.onEditFeed,
+  });
 
   static const all = 'All';
   static const trending = 'Trending';
   static const subscribed = 'Subscribed';
+
+  /// Prefix marking a chip as one of the user's own feeds.
+  ///
+  /// The selected category is a plain string throughout this screen, so a
+  /// custom feed needs to be distinguishable from a topic search of the same
+  /// name — somebody will call a feed "Music". The prefix is a character a
+  /// name cannot contain, because the picker trims it.
+  static const customPrefix = '\u0001custom:';
+
+  static String customKey(String name) => '$customPrefix$name';
+  static bool isCustom(String category) => category.startsWith(customPrefix);
+  static String customName(String category) =>
+      category.substring(customPrefix.length);
+
   static const _categories = [
     all,
     subscribed,
@@ -933,24 +1135,68 @@ class _CategoryChips extends StatelessWidget {
   final String selected;
   final ValueChanged<String> onSelected;
 
+  /// The user's own feeds, shown right after All so they are reachable
+  /// without scrolling — they are the ones that were asked for by name.
+  final List<CustomFeed> customFeeds;
+
+  final VoidCallback? onCreateFeed;
+
+  /// Long-press on a custom chip. Rename and delete live there rather than on
+  /// an always-visible X, which would be easy to hit while scrolling the row.
+  final ValueChanged<CustomFeed>? onEditFeed;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    // All, then the user's own feeds, then the built-ins, then the + button.
+    final entries = <({String key, String label, CustomFeed? custom})>[
+      (key: all, label: all, custom: null),
+      for (final feed in customFeeds)
+        (key: customKey(feed.name), label: feed.name, custom: feed),
+      for (final c in _categories.skip(1))
+        (key: c, label: c, custom: null),
+    ];
+
     return SizedBox(
       height: 46,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        itemCount: _categories.length,
+        itemCount: entries.length + (onCreateFeed == null ? 0 : 1),
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
-          final category = _categories[index];
-          final isSelected = category == selected;
-          return ChoiceChip(
-            label: Text(category),
+          if (index == entries.length) {
+            return ActionChip(
+              avatar: const Icon(Icons.add, size: 18),
+              label: const Text('New feed'),
+              onPressed: onCreateFeed,
+              backgroundColor: scheme.onSurface.withValues(alpha: 0.08),
+              labelStyle: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: scheme.onSurface,
+              ),
+              side: BorderSide.none,
+              visualDensity: VisualDensity.compact,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            );
+          }
+
+          final entry = entries[index];
+          final isSelected = entry.key == selected;
+          final chip = ChoiceChip(
+            label: Text(entry.label),
+            avatar: entry.custom == null
+                ? null
+                : Icon(
+                    Icons.auto_awesome,
+                    size: 15,
+                    color: isSelected ? scheme.surface : scheme.onSurface,
+                  ),
             selected: isSelected,
             showCheckmark: false,
-            onSelected: (_) => onSelected(category),
+            onSelected: (_) => onSelected(entry.key),
             backgroundColor: scheme.onSurface.withValues(alpha: 0.08),
             selectedColor: scheme.onSurface,
             labelStyle: TextStyle(
@@ -961,6 +1207,13 @@ class _CategoryChips extends StatelessWidget {
             side: BorderSide.none,
             visualDensity: VisualDensity.compact,
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          );
+
+          final custom = entry.custom;
+          if (custom == null || onEditFeed == null) return chip;
+          return GestureDetector(
+            onLongPress: () => onEditFeed!(custom),
+            child: chip,
           );
         },
       ),

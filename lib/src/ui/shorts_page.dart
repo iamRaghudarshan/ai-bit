@@ -105,6 +105,9 @@ class ShortsPageState extends State<ShortsPage> {
           ? TasteProfile.empty
           : await db.tasteProfile(
               interestQueries: interestQueries(chosenInterests),
+              // The Shorts profile, not the long-form one. Watching Shorts
+              // should shape Shorts and nothing else.
+              shorts: true,
             );
       if (!mounted) return;
       final impressions = kids
@@ -220,7 +223,11 @@ class ShortsPageState extends State<ShortsPage> {
     try {
       final kids = context.read<SettingsService>().kidsMode;
       final db = context.read<AppDatabase>();
-      final profile = kids ? TasteProfile.empty : await db.tasteProfile();
+      // shorts: true here as well as on the first load — the two paths have
+      // drifted apart before, and a later page ranked against the long-form
+      // profile would quietly undo the split a few swipes in.
+      final profile =
+          kids ? TasteProfile.empty : await db.tasteProfile(shorts: true);
       if (!mounted) return;
       final more = await context.read<YtRepository>().shortsFeed(
         profile: profile,
