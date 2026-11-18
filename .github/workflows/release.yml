@@ -244,7 +244,8 @@ jobs:
           case "$BUILD_NAME" in
             *[!0-9.]* | '') BUILD_NAME="$(cat VERSION)" ;;
           esac
-          flutter build ipa --release \
+          .github/scripts/report.sh "ipa build" \
+            flutter build ipa --release \
             --build-name="$BUILD_NAME" \
             --build-number=${{ github.run_number }} \
             --export-options-plist=ios/ExportOptions.plist
@@ -338,7 +339,12 @@ jobs:
           # Split per ABI. R8 is off, so a fat APK carrying every architecture
           # is ~240MB and slow to move to a phone; the arm64 slice alone is
           # ~80MB. Almost every real device since 2017 is arm64-v8a.
-          flutter build apk --release --split-per-abi \
+          # Through report.sh, so a Gradle or Kotlin error reaches the
+          # annotations too. Native code for both platforms is written blind on
+          # a Windows machine and first compiles here, so this is the step
+          # where an unreadable failure costs the most.
+          .github/scripts/report.sh "apk build" \
+            flutter build apk --release --split-per-abi \
             --build-name="$BUILD_NAME" \
             --build-number=${{ github.run_number }}
           # A stable name for the slice nearly every phone needs, so consumers
