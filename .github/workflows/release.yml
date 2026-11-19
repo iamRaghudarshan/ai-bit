@@ -81,9 +81,17 @@ jobs:
       # analyze and test BEFORE anything expensive. On macOS a minute bills as
       # ten, so failing fast on a compile error costs a tenth of failing slowly
       # after an archive.
+      # Through report.sh, like the Android job's. These two were the steps
+      # that failed builds 137 and 138 while saying only "Process completed
+      # with exit code 1" — reading a job log needs a token, so on a public
+      # repo the annotation is the only account of a failure available without
+      # credentials. Leaving the iOS copies unwrapped meant the more expensive
+      # of the two jobs was the less debuggable one.
       - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - name: Analyze
+        run: .github/scripts/report.sh analyze flutter analyze
+      - name: Test
+        run: .github/scripts/report.sh test flutter test
 
       # Skipped rather than failed when the Apple secrets are absent, so the
       # workflow does not go permanently red before the account is wired up.
