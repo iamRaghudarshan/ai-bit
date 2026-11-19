@@ -76,6 +76,11 @@ dependencies:
   # PIN so the fallback never stores it in plain text in SharedPreferences.
   local_auth: ^3.0.2
   crypto: ^3.0.7
+  # A hidden WebView is the JavaScript runtime that mints the proof-of-origin
+  # token for HD (YouTube's bot check only runs in a real browser engine) and
+  # solves the web client's URL challenges. Never shown on screen. See
+  # lib/src/data/attestation/.
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   # Runs the real app on a real emulator/simulator in CI. Neither platform can

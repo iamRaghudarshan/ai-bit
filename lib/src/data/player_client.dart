@@ -150,6 +150,130 @@ class YoutubePlayerClient {
     return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
   }
 
+  /// The web-family clients, in the order worth asking with a web token.
+  ///
+  /// A proof-of-origin token minted in a browser engine is a *web* token, so
+  /// only these clients accept it. WEB first, because it is the one the token
+  /// was minted as; MWEB and TVHTML5 because they answer the same token and
+  /// have, at different times, handed out byte-range URLs when WEB answered
+  /// with server-side streaming instead.
+  static const webClients = <WebClientProfile>[
+    WebClientProfile(
+      name: 'WEB',
+      clientNameId: 1,
+      context: {
+        'clientName': 'WEB',
+        'clientVersion': '2.20250312.04.00',
+      },
+      userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+          '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    ),
+    WebClientProfile(
+      name: 'MWEB',
+      clientNameId: 2,
+      context: {
+        'clientName': 'MWEB',
+        'clientVersion': '2.20250311.03.00',
+      },
+      userAgent:
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) '
+          'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 '
+          'Safari/604.1',
+    ),
+    WebClientProfile(
+      name: 'TVHTML5',
+      clientNameId: 7,
+      context: {
+        'clientName': 'TVHTML5',
+        'clientVersion': '7.20251105.10.00',
+        'userAgent':
+            'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version,gzip(gfe)',
+        'originalUrl': 'https://www.youtube.com/tv',
+        'theme': 'CLASSIC',
+        'platform': 'DESKTOP',
+        'clientFormFactor': 'UNKNOWN_FORM_FACTOR',
+        'deviceMake': '',
+        'deviceModel': '',
+      },
+      userAgent: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version,gzip(gfe)',
+    ),
+  ];
+
+  /// One web-client player request carrying a proof-of-origin token.
+  ///
+  /// Returns the raw response, because the formats in it are not usable yet:
+  /// their URLs are behind the signature and `n` challenges, and resolving
+  /// those is the attestation service's job (see `web_formats.dart`). The
+  /// visitor id goes in both the context and the header, and it must be the
+  /// one the token was minted against — a token bound to a different session
+  /// is a token YouTube ignores.
+  Future<WebPlayerResponse> fetchWeb(
+    String videoId, {
+    required WebClientProfile client,
+    required String visitorData,
+    required String poToken,
+    required int signatureTimestamp,
+  }) async {
+    final response = await _http
+        .post(
+          _endpoint,
+          headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': client.userAgent,
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com/watch?v=$videoId',
+            'X-Goog-Visitor-Id': visitorData,
+            'X-YouTube-Client-Name': '${client.clientNameId}',
+            'X-YouTube-Client-Version': client.context['clientVersion']!,
+          },
+          body: jsonEncode({
+            'context': {
+              'client': {
+                ...client.context,
+                'hl': _hl,
+                'gl': _gl,
+                'visitorData': visitorData,
+              },
+            },
+            'videoId': videoId,
+            'serviceIntegrityDimensions': {'poToken': poToken},
+            'playbackContext': {
+              'contentPlaybackContext': {
+                'signatureTimestamp': signatureTimestamp,
+                'html5Preference': 'HTML5_PREF_WANTS',
+              },
+            },
+            'contentCheckOk': true,
+            'racyCheckOk': true,
+          }),
+        )
+        .timeout(const Duration(seconds: 20));
+    final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      // The error body says which argument was refused; "HTTP 400" alone
+      // cannot be acted on from a phone's settings screen.
+      final error = json['error'];
+      throw PlayerUnavailableException(
+        'HTTP ${response.statusCode}'
+        '${error is Map ? ' ${error['status']}: ${error['message']}' : ''}',
+      );
+    }
+    final status = json['playabilityStatus'] as Map?;
+    final streaming = json['streamingData'] as Map<String, dynamic>?;
+    final details = json['videoDetails'] as Map<String, dynamic>?;
+    return WebPlayerResponse(
+      client: client.name,
+      status: status?['status']?.toString() ?? '?',
+      reason: status?['reason']?.toString(),
+      hlsUrl: streaming?['hlsManifestUrl'] as String?,
+      serverAbr: streaming?['serverAbrStreamingUrl'] != null,
+      rawAdaptiveFormats: (streaming?['adaptiveFormats'] as List?) ?? const [],
+      rawFormats: (streaming?['formats'] as List?) ?? const [],
+      isLive: details?['isLiveContent'] == true || details?['isLive'] == true,
+    );
+  }
+
   static PlayerStreams _parse(Map<String, dynamic> json) {
     final streaming = json['streamingData'] as Map<String, dynamic>?;
     final details = json['videoDetails'] as Map<String, dynamic>?;
@@ -358,6 +482,61 @@ class PlayerStreams {
       isLive: isLive,
     );
   }
+}
+
+/// A web-family client, which is what a browser-minted token is good for.
+class WebClientProfile {
+  const WebClientProfile({
+    required this.name,
+    required this.clientNameId,
+    required this.context,
+    required this.userAgent,
+  });
+
+  final String name;
+
+  /// The numeric id YouTube wants in `X-YouTube-Client-Name`.
+  final int clientNameId;
+  final Map<String, String> context;
+  final String userAgent;
+}
+
+/// A web client's answer, before its formats have been made usable.
+class WebPlayerResponse {
+  const WebPlayerResponse({
+    required this.client,
+    required this.status,
+    this.reason,
+    this.hlsUrl,
+    this.serverAbr = false,
+    this.rawAdaptiveFormats = const [],
+    this.rawFormats = const [],
+    this.isLive = false,
+  });
+
+  final String client;
+  final String status;
+  final String? reason;
+  final String? hlsUrl;
+
+  /// True when the response offers server-side streaming, which is YouTube's
+  /// own session protocol and not something a plain byte-range player can
+  /// use. A response that is *only* that has no URLs to resolve.
+  final bool serverAbr;
+  final List<Object?> rawAdaptiveFormats;
+  final List<Object?> rawFormats;
+  final bool isLive;
+
+  bool get isOk => status == 'OK';
+
+  /// Whether any format carries something a URL can be made from.
+  bool get hasAddressableFormats => rawAdaptiveFormats.any(
+        (f) =>
+            f is Map &&
+            (f['url'] != null ||
+                f['signatureCipher'] != null ||
+                f['cipher'] != null),
+      );
 }
 
 class _ClientProfile {

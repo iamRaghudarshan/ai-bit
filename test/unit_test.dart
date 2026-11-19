@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
+import 'package:ai_bit/src/data/attestation/web_formats.dart';
 import 'package:ai_bit/src/data/app_lock_service.dart';
 import 'package:ai_bit/src/data/data_usage_service.dart';
 import 'package:ai_bit/src/data/dlna_client.dart';
@@ -4016,6 +4017,110 @@ Some blurb about the video.
   // byte-range segments since iOS 10 — and YouTube's adaptive tracks already
   // have that shape, with a `sidx` box listing every fragment. These tests pin
   // the parser and the playlists; see lib/src/data/hls_manifest.dart.
+
+  // The HD-unlock route: the web client's formats arrive with their URLs
+  // behind the player's signature and `n` challenges, and need the
+  // proof-of-origin token stamped on. The challenges themselves are solved in
+  // a WebView and cannot run here; everything around them is pure and these
+  // tests pin it. See lib/src/data/attestation/web_formats.dart.
+  group('web formats', () {
+    const base = 'https://rr1.googlevideo.com/videoplayback?expire=1&n=abc&clen=100';
+
+    test('challengesIn collects the scrambled signature and the n value once', () {
+      final formats = [
+        {'itag': 137, 'signatureCipher': 's=SCRAMBLED&sp=sig&url=${Uri.encodeQueryComponent(base)}'},
+        {'itag': 140, 'signatureCipher': 's=SCRAMBLED&sp=sig&url=${Uri.encodeQueryComponent(base)}'},
+        {'itag': 18, 'url': base},
+        'not a map',
+      ];
+      final wanted = challengesIn(formats);
+      expect(wanted.sig, ['SCRAMBLED']);
+      // Shared by every format of a response: one challenge, not three.
+      expect(wanted.n, ['abc']);
+    });
+
+    test('resolveFormat appends the signature under sp, swaps n, stamps pot', () {
+      final raw = {
+        'itag': 137,
+        'mimeType': 'video/mp4; codecs="avc1.64002a"',
+        'signatureCipher': 's=SCRAMBLED&sp=sig&url=${Uri.encodeQueryComponent(base)}',
+      };
+      final out = resolveFormat(
+        raw,
+        solvedN: {'abc': 'xyz'},
+        solvedSig: {'SCRAMBLED': 'UNSCRAMBLED'},
+        poToken: 'TOKEN',
+      )!;
+      final url = out['url'] as String;
+      expect(url, startsWith('https://rr1.googlevideo.com/videoplayback?expire=1'));
+      expect(Uri.parse(url).queryParameters['sig'], 'UNSCRAMBLED');
+      expect(Uri.parse(url).queryParameters['n'], 'xyz');
+      expect(Uri.parse(url).queryParameters['pot'], 'TOKEN');
+      // Untouched parameters are untouched: they are signed as written.
+      expect(url, contains('clen=100'));
+      expect(out.containsKey('signatureCipher'), isFalse);
+      expect(out['itag'], 137);
+    });
+
+    test('resolveFormat uses a plain url when there is no cipher', () {
+      final out = resolveFormat(
+        {'itag': 18, 'url': base},
+        solvedN: {'abc': 'xyz'},
+        solvedSig: const {},
+        poToken: 'T',
+      )!;
+      expect(Uri.parse(out['url'] as String).queryParameters['n'], 'xyz');
+      expect(Uri.parse(out['url'] as String).queryParameters['pot'], 'T');
+    });
+
+    test('resolveFormat refuses a format whose challenge went unsolved', () {
+      // A URL with the wrong n plays at a crawl and one with no signature
+      // answers 403, and either shows up as "HD is broken" later. Null now.
+      expect(
+        resolveFormat(
+          {'itag': 18, 'url': base},
+          solvedN: {'abc': null},
+          solvedSig: const {},
+          poToken: 'T',
+        ),
+        isNull,
+      );
+      expect(
+        resolveFormat(
+          {'signatureCipher': 's=S&sp=sig&url=${Uri.encodeQueryComponent(base)}'},
+          solvedN: {'abc': 'x'},
+          solvedSig: const {},
+          poToken: 'T',
+        ),
+        isNull,
+      );
+      expect(resolveFormat({'itag': 1}, solvedN: const {}, solvedSig: const {}, poToken: 'T'), isNull);
+    });
+
+    test('withPoToken replaces an existing token rather than adding a second', () {
+      final once = withPoToken(base, 'ONE');
+      final twice = withPoToken(once, 'TWO');
+      expect('pot='.allMatches(twice).length, 1);
+      expect(Uri.parse(twice).queryParameters['pot'], 'TWO');
+      // And the value is encoded so a websafe-base64 token survives.
+      expect(withPoToken('https://x/y', 'a=b&c'), 'https://x/y?pot=a%3Db%26c');
+    });
+
+    test('playerScriptUrlFromIframeApi reads the escaped build hash', () {
+      const body = r'var scriptUrl = "https:\/\/www.youtube.com\/s\/player\/0f8a1b2c\/www-widgetapi.vflset\/www-widgetapi.js";';
+      expect(
+        playerScriptUrlFromIframeApi(body),
+        'https://www.youtube.com/s/player/0f8a1b2c/player_ias.vflset/en_US/base.js',
+      );
+      expect(playerScriptUrlFromIframeApi('nothing here'), isNull);
+    });
+
+    test('signatureTimestampOf reads either spelling', () {
+      expect(signatureTimestampOf('x,signatureTimestamp:20315,y'), 20315);
+      expect(signatureTimestampOf('x,sts:20315,y'), 20315);
+      expect(signatureTimestampOf('sts:1'), isNull);
+    });
+  });
 
   group('parseSegmentIndex', () {
     /// Builds a real `sidx` box. Hand-assembled rather than captured from a

@@ -7,6 +7,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../core/format.dart';
+import 'attestation/attestation_service.dart';
+import 'attestation/web_formats.dart';
 import 'browse_client.dart';
 import 'comments_client.dart';
 import 'dash_manifest.dart';
@@ -28,18 +30,28 @@ import 'search_client.dart';
 /// occasionally — [resolve] therefore walks a fallback chain of API clients
 /// instead of trusting a single one.
 class YtRepository {
-  YtRepository()
+  YtRepository({WebAttestation? attestation})
     : _yt = yt.YoutubeExplode(),
       _search = YoutubeSearchClient(),
       _player = YoutubePlayerClient(),
       _browse = YoutubeBrowseClient(),
-      _comments = YoutubeCommentsClient();
+      _comments = YoutubeCommentsClient(),
+      // ignore: prefer_initializing_formals
+      _attestation = attestation;
 
   final yt.YoutubeExplode _yt;
   final YoutubeSearchClient _search;
   final YoutubePlayerClient _player;
   final YoutubeBrowseClient _browse;
   final YoutubeCommentsClient _comments;
+
+  /// Mints the proof-of-origin token the web client needs. Optional: without
+  /// it (and on the web preview) resolution stops at the routes that need no
+  /// token, exactly as before it existed.
+  final WebAttestation? _attestation;
+
+  /// Settings → Playback → "HD on every video". Bound from main.dart.
+  bool hdUnlockEnabled = true;
 
   /// Signed CDN URLs stay valid for roughly six hours; expire ours well before
   /// that so a long-lived app never hands a dead URL to the player.
@@ -1121,6 +1133,190 @@ class YtRepository {
   /// the OS is welcome to reclaim it. One file per video, overwritten on
   /// re-resolve, so a long session cannot accumulate them.
   ///
+  /// A generated manifest over [formats] — DASH for ExoPlayer, HLS for
+  /// AVPlayer — as cached playback sources, or null when neither can be built.
+  ///
+  /// The caller has already established that the tracks serve to the end;
+  /// this only puts them back together into the one URL the player takes.
+  Future<PlaybackSources?> _generatedSources(
+    String key,
+    String videoId,
+    List<AdaptiveFormat> formats, {
+    required String? audioOnlyUrl,
+    required String? fallbackUrl,
+  }) async {
+    if (canUseDash) {
+      final dashUrl = await _writeDashManifest(videoId, formats);
+      if (dashUrl != null) {
+        return _cache(key, PlaybackSources(
+          url: dashUrl,
+          qualities: const {},
+          ladder: dashLadder(formats),
+          audioOnlyUrl: audioOnlyUrl,
+          isDash: true,
+          // The one certain alternative if the manifest will not play.
+          fallbackUrl: fallbackUrl,
+        ));
+      }
+    }
+    if (canUseGeneratedHls) {
+      final hlsUrl = await _publishGeneratedHls(videoId, formats);
+      if (hlsUrl != null) {
+        return _cache(key, PlaybackSources(
+          url: hlsUrl,
+          qualities: const {},
+          ladder: _generatedLadder,
+          audioOnlyUrl: audioOnlyUrl,
+          isHls: true,
+          fallbackUrl: fallbackUrl,
+        ));
+      }
+    }
+    return null;
+  }
+
+  /// The web client's tracks for [videoId], resolved and stamped with a
+  /// proof-of-origin token — or null when the route is off, unsupported, or
+  /// fails anywhere along the way.
+  ///
+  /// Walks the web-family clients in order and takes the first that answers
+  /// OK with formats a URL can be made from. A client answering with
+  /// server-side streaming only (no URLs at all, which is what the web client
+  /// did for a signed-in session when measured) is skipped, not treated as
+  /// an error. Every reason for moving on is appended to [log] when given,
+  /// which is how Settings → "Test HD unlock" explains itself.
+  Future<PlayerStreams?> _attestedStreams(
+    String videoId, {
+    List<String>? log,
+  }) async {
+    final attestation = _attestation;
+    if (attestation == null ||
+        !hdUnlockEnabled ||
+        !WebAttestation.isSupported) {
+      return null;
+    }
+    try {
+      final session = await attestation.session();
+      if (session == null) {
+        log?.add('No token: ${attestation.status}');
+        return null;
+      }
+      final player = await attestation.player();
+      log?.add('Player build: ${Uri.parse(player.url).pathSegments[2]}, '
+          'sts ${player.signatureTimestamp}');
+
+      for (final client in YoutubePlayerClient.webClients) {
+        final response = await _player.fetchWeb(
+          videoId,
+          client: client,
+          visitorData: session.visitorData,
+          poToken: session.poToken,
+          signatureTimestamp: player.signatureTimestamp,
+        );
+        if (!response.isOk) {
+          log?.add('${client.name}: ${response.status} '
+              '${response.reason ?? ''}'.trim());
+          continue;
+        }
+        if (!response.hasAddressableFormats) {
+          log?.add('${client.name}: '
+              '${response.serverAbr ? 'server-side streaming only, no URLs' : 'no formats'}');
+          continue;
+        }
+        final solved =
+            await attestation.solve(player.url, response.rawAdaptiveFormats);
+        final formats = <AdaptiveFormat>[];
+        for (final raw in response.rawAdaptiveFormats) {
+          if (raw is! Map) continue;
+          final resolved = resolveFormat(
+            raw,
+            solvedN: solved.n,
+            solvedSig: solved.sig,
+            poToken: session.poToken,
+          );
+          final parsed = parseAdaptiveFormat(resolved);
+          if (parsed != null) formats.add(parsed);
+        }
+        final hasVideo = formats.any((f) => f.isVideo && f.isUsable);
+        final hasAudio = formats.any((f) => f.isAudio);
+        if (!hasVideo || !hasAudio) {
+          log?.add('${client.name}: ${formats.length} of '
+              '${response.rawAdaptiveFormats.length} tracks resolved — '
+              'challenges unsolved');
+          continue;
+        }
+        var top = 0;
+        for (final f in formats) {
+          if (f.isVideo && f.height > top) top = f.height;
+        }
+        log?.add('${client.name}: ${formats.length} tracks, up to ${top}p'
+            '${response.hlsUrl != null ? ', plus an HLS ladder' : ''}');
+        return PlayerStreams(
+          hlsUrl: response.hlsUrl,
+          audioUrl: _bestAacUrl(formats),
+          adaptiveFormats: formats,
+          isLive: response.isLive,
+        );
+      }
+    } catch (e) {
+      log?.add('Failed: $e');
+      debugPrint('AI BIT: attestation route failed for $videoId — $e');
+    }
+    return null;
+  }
+
+  /// Highest-bitrate AAC track, or any audio, as the audio-only URL. The
+  /// same preference as the player client's: AVPlayer decodes no Opus.
+  static String? _bestAacUrl(List<AdaptiveFormat> formats) {
+    AdaptiveFormat? best;
+    AdaptiveFormat? any;
+    for (final f in formats) {
+      if (!f.isAudio) continue;
+      if (any == null || f.bitrate > any.bitrate) any = f;
+      if (f.codecFamily == 'aac' && (best == null || f.bitrate > best.bitrate)) {
+        best = f;
+      }
+    }
+    return (best ?? any)?.url;
+  }
+
+  /// Runs the whole HD-unlock chain on one long video and reports each step.
+  ///
+  /// This is the on-device diagnostic for a route that cannot be exercised
+  /// on the development machine (no WebView there, and the bot check runs
+  /// only in a real browser engine). It forces a fresh token, so it also
+  /// answers "is the token itself still being issued" rather than reusing one
+  /// from this morning.
+  Future<List<String>> testHdUnlock({String videoId = 'aqz-KE-bpKQ'}) async {
+    final log = <String>[];
+    final attestation = _attestation;
+    if (attestation == null || !WebAttestation.isSupported) {
+      log.add('Not available on this platform');
+      return log;
+    }
+    final watch = Stopwatch()..start();
+    final session = await attestation.session(force: true);
+    if (session == null) {
+      log.add('Token: FAILED — ${attestation.status}');
+      return log;
+    }
+    log.add('Token: minted in ${watch.elapsed.inSeconds}s');
+    final streams = await _attestedStreams(videoId, log: log);
+    if (streams == null) {
+      log.add('Result: no usable HD streams from any web client');
+      return log;
+    }
+    if (streams.adaptiveFormats.isEmpty) {
+      log.add('Result: HLS ladder only; HD will play through it');
+      return log;
+    }
+    final full = await _adaptiveTracksPlayThroughout(streams.adaptiveFormats);
+    log.add(full
+        ? 'End of file: SERVED — HD will play in full'
+        : 'End of file: REFUSED — still capped, so HD stays off');
+    return log;
+  }
+
   /// Failures return null rather than throwing: the caller's next step is the
   /// 360p stream, which is exactly the right answer when the manifest cannot
   /// be written.
@@ -1205,33 +1401,43 @@ class YtRepository {
         if ((canUseDash || canUseGeneratedHls) &&
             streams.adaptiveFormats.isNotEmpty &&
             await _adaptiveTracksPlayThroughout(streams.adaptiveFormats)) {
-          if (canUseDash) {
-            final dashUrl =
-                await _writeDashManifest(videoId, streams.adaptiveFormats);
-            if (dashUrl != null) {
+          final generated = await _generatedSources(
+            key,
+            videoId,
+            streams.adaptiveFormats,
+            audioOnlyUrl: streams.audioUrl,
+            fallbackUrl: streams.muxedUrl,
+          );
+          if (generated != null) return generated;
+        }
+        // The tracks are capped. The last route to HD is to ask as the web
+        // client with a proof-of-origin token from YouTube's own bot check
+        // (see attestation_service.dart). Its tracks go through exactly the
+        // same end-of-file test: the token is supposed to lift the cap, and
+        // "supposed to" is not a reason to skip the measurement.
+        if (canUseDash || canUseGeneratedHls) {
+          final attested = await _attestedStreams(videoId);
+          if (attested != null) {
+            if (attested.hlsUrl != null) {
               return _cache(key, PlaybackSources(
-                url: dashUrl,
+                url: attested.hlsUrl!,
                 qualities: const {},
-                ladder: dashLadder(streams.adaptiveFormats),
                 audioOnlyUrl: streams.audioUrl,
-                isDash: true,
-                // The one certain alternative if the manifest will not play.
+                isHls: true,
+                isLive: attested.isLive,
                 fallbackUrl: streams.muxedUrl,
               ));
             }
-          }
-          if (canUseGeneratedHls) {
-            final hlsUrl =
-                await _publishGeneratedHls(videoId, streams.adaptiveFormats);
-            if (hlsUrl != null) {
-              return _cache(key, PlaybackSources(
-                url: hlsUrl,
-                qualities: const {},
-                ladder: _generatedLadder,
+            if (attested.adaptiveFormats.isNotEmpty &&
+                await _adaptiveTracksPlayThroughout(attested.adaptiveFormats)) {
+              final generated = await _generatedSources(
+                key,
+                videoId,
+                attested.adaptiveFormats,
                 audioOnlyUrl: streams.audioUrl,
-                isHls: true,
                 fallbackUrl: streams.muxedUrl,
-              ));
+              );
+              if (generated != null) return generated;
             }
           }
         }

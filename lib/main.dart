@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'src/core/theme.dart';
+import 'src/data/attestation/attestation_service.dart';
 import 'src/data/battery_service.dart';
 import 'src/data/data_usage_service.dart';
 import 'src/data/db.dart';
@@ -170,8 +171,15 @@ class AiBitApp extends StatelessWidget {
       providers: [
         Provider<AppDatabase>.value(value: database),
         ChangeNotifierProvider<SettingsService>.value(value: settings),
+        // Declared before the repository so it can be handed in. A
+        // ChangeNotifier because Settings shows its live status — the last
+        // thing this project needs is another feature that is silently off.
+        ChangeNotifierProvider<WebAttestation>(
+          create: (_) => WebAttestation(),
+        ),
         Provider<YtRepository>(
-          create: (_) => YtRepository(),
+          create: (context) =>
+              YtRepository(attestation: context.read<WebAttestation>()),
           dispose: (_, repo) => repo.dispose(),
         ),
         // Keeps every YouTube endpoint pointed at the language and region the
@@ -184,6 +192,7 @@ class AiBitApp extends StatelessWidget {
             language: settings.contentLanguage,
             region: settings.contentRegion,
             deviceLocale: View.of(context).platformDispatcher.locale,
+            hdUnlock: settings.hdUnlock,
           ),
           lazy: false,
         ),
@@ -315,7 +324,11 @@ class _LocaleBinding {
     required String language,
     required String region,
     required Locale deviceLocale,
+    required bool hdUnlock,
   }) {
+    // Rides along for the same reason: a setting the repository reads has to
+    // reach it when it changes, not at the next launch.
+    repository.hdUnlockEnabled = hdUnlock;
     repository.setLocale(
       // en and US as the last resort, which is what every endpoint was
       // hardcoded to before any of this existed.

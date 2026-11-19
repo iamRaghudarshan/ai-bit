@@ -6,7 +6,9 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/settings_rules.dart';
+import '../data/attestation/attestation_service.dart';
 import '../data/battery_service.dart';
+import '../data/yt_repository.dart';
 import '../data/network_service.dart';
 import '../data/interests.dart';
 import '../data/ranker_trainer.dart';
@@ -162,6 +164,33 @@ class SettingsPage extends StatelessWidget {
               if (playback.hasVideo) playback.reloadCurrent();
             },
           ),
+          if (WebAttestation.isSupported) ...[
+            Builder(
+              builder: (context) {
+                final attestation = context.watch<WebAttestation>();
+                return SwitchListTile(
+                  value: settings.hdUnlock,
+                  title: const Text('HD on every video'),
+                  subtitle: Text(
+                    'Passes YouTube\'s bot check so HD plays in full. '
+                    'Status: ${attestation.status}',
+                  ),
+                  onChanged: (value) {
+                    settings.hdUnlock = value;
+                    if (playback.hasVideo) playback.reloadCurrent();
+                  },
+                );
+              },
+            ),
+            ListTile(
+              title: const Text('Test HD unlock'),
+              subtitle: const Text(
+                'Runs the whole chain on a 10-minute video and shows each step.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _HdUnlockTest.show(context),
+            ),
+          ],
           SwitchListTile(
             value: settings.rememberSpeedPerChannel,
             title: const Text('Remember speed per channel'),
@@ -915,6 +944,74 @@ class SettingsPage extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Runs `YtRepository.testHdUnlock` and shows its step-by-step log.
+///
+/// The HD-unlock route cannot be exercised on the development machine, so
+/// this is where it gets exercised: on the phone, with every step named, so
+/// a failure says *which* step rather than "it didn't work".
+class _HdUnlockTest extends StatefulWidget {
+  const _HdUnlockTest();
+
+  static Future<void> show(BuildContext context) => showDialog<void>(
+        context: context,
+        builder: (_) => Provider<YtRepository>.value(
+          value: context.read<YtRepository>(),
+          child: const _HdUnlockTest(),
+        ),
+      );
+
+  @override
+  State<_HdUnlockTest> createState() => _HdUnlockTestState();
+}
+
+class _HdUnlockTestState extends State<_HdUnlockTest> {
+  List<String>? _lines;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    context.read<YtRepository>().testHdUnlock().then((lines) {
+      if (mounted) setState(() => _lines = lines);
+    }, onError: (Object e) {
+      if (mounted) setState(() => _error = e);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lines = _lines;
+    return AlertDialog(
+      title: const Text('HD unlock'),
+      content: lines == null && _error == null
+          ? const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 16),
+                Flexible(child: Text('Running the bot check… up to a minute.')),
+              ],
+            )
+          : SingleChildScrollView(
+              child: SelectableText(
+                _error != null ? 'Failed: $_error' : lines!.join('\n\n'),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
 }

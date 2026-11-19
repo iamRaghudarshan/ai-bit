@@ -81,6 +81,16 @@ class SettingsService extends ChangeNotifier {
   int get accentColor => _prefs.getInt(_kAccent) ?? 0xFFFF0033;
   set accentColor(int value) => _write(_kAccent, value);
 
+  static const _kHdUnlock = 'hd_unlock';
+
+  /// Ask YouTube's own bot check for the token that unlocks HD on every
+  /// video (see `attestation_service.dart`). On by default: the whole point
+  /// of the route is that videos play above 360p without the user having to
+  /// know why they did not. Off means resolution stops at the routes that
+  /// need no token, exactly as before the route existed.
+  bool get hdUnlock => _prefs.getBool(_kHdUnlock) ?? true;
+  set hdUnlock(bool value) => _write(_kHdUnlock, value);
+
   static const _kDataSaver = 'data_saver';
 
   /// Minimise data use: always stream the lowest-quality rendition a video
