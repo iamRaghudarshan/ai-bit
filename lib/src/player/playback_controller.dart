@@ -1560,25 +1560,61 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Stops playback and takes the now-playing bar off the screen.
+  ///
+  /// Ordered so that **nothing can stop the bar going away**, which is the one
+  /// thing the user is asking for by pressing the button. It was reported as
+  /// "close is not working", and the shape of the old version explains how:
+  /// bookkeeping ran first and `notifyListeners()` ran last, so an exception
+  /// anywhere in between left the bar on screen. Two ways that happened:
+  ///
+  ///   * `_flushWatchTime()` writes to SQLite. A failure there — a closed
+  ///     database during teardown, a disk error — threw before `_current` was
+  ///     ever cleared, so playback did not stop at all.
+  ///   * `dispose(forceDispose: true)` reaches into the native player, and it
+  ///     ran *before* the single `notifyListeners()`. A throw there left the
+  ///     controller correctly stopped and the UI never told about it, so the
+  ///     bar stayed up showing a video that was no longer playing — and
+  ///     pressing close again did nothing, because by then there was nothing
+  ///     left to stop.
+  ///
+  /// So the state is cleared and listeners are notified in the middle, with
+  /// the fallible work on either side wrapped. Bookkeeping still goes first,
+  /// because both calls read fields that are about to be cleared.
   Future<void> stop() async {
-    _cancelSleepTimer();
-    // Before the fields the decision reads are cleared below.
-    _releaseWakelock();
-    // Bank the last partial batch while _current still says what it belongs to.
-    _flushWatchTime();
+    final player = _player;
+
+    try {
+      _cancelSleepTimer();
+      // Before the fields the decision reads are cleared below.
+      _releaseWakelock();
+      // Bank the last partial batch while _current still says what it belongs
+      // to. Losing a few seconds of watch time is a far smaller failure than
+      // refusing to stop, so this is reported and stepped over.
+      _flushWatchTime();
+    } catch (e) {
+      debugPrint('AI BIT: could not bank state while stopping — $e');
+    }
+
     _watchMillis = 0;
     _watchTickAt = null;
-    final player = _player;
     _player = null;
     _current = null;
     _sources = null;
     _position = Duration.zero;
     _duration = Duration.zero;
     _playing = false;
-    player?.videoPlayerController?.removeListener(_onValueChanged);
-    player?.removeEventsListener(_onPlayerEvent);
-    player?.dispose(forceDispose: true);
+    // Before the native teardown, not after it: this is what removes the bar,
+    // and it must not be hostage to a plugin call that can throw.
     notifyListeners();
+
+    try {
+      player?.videoPlayerController?.removeListener(_onValueChanged);
+      player?.removeEventsListener(_onPlayerEvent);
+      player?.dispose(forceDispose: true);
+    } catch (e) {
+      debugPrint('AI BIT: could not dispose the player while stopping — $e');
+    }
   }
 
 

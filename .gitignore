@@ -45,3 +45,4 @@ web/sqlite3.wasm
 # OS noise
 .DS_Store
 Thumbs.db
+cookies*.txt
