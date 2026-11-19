@@ -725,16 +725,29 @@ worth writing down because each one looks promising from the outside:
 - **The `youtube_explode_dart` chain**, whose URLs are capped identically after
   deciphering.
 
-So the only two routes left both cost something real: a **proof-of-origin
-token**, which means running YouTube's BotGuard challenge in a WebView — and
-note that only *web*-client tokens can be minted that way, so it drags
-signature deciphering in with it — or a **signed-in session**, which puts a
-real Google account behind a ToS-violating client and is the thing this project
-declined on purpose (see Takeout, above). Neither is verified to lift the cap;
+- **A signed-in session.** Measured on 19 November 2026 with a real
+  browser session (`tool/check_signed_in.dart`, which takes a Netscape
+  `cookies.txt` and prints cookie *names* only). The account is accepted and
+  the token is then demanded anyway: WEB goes from refused to OK but answers
+  with **server-side ABR** — 40 formats and not one URL — so using it would
+  mean implementing YouTube's streaming session protocol rather than fetching
+  byte ranges; IOS and ANDROID ignore the cookies outright (identical capped
+  result with and without them) and 400 the auth header; TVHTML5, the client
+  yt-dlp pairs with cookies, moves from LOGIN_REQUIRED to "The page needs to
+  be reloaded", which is the token demand wearing a different sentence. A
+  login screen would therefore cost a Google account and buy no HD, which is
+  why there is no sign-in feature despite it having been asked for.
+
+So the only route left is a **proof-of-origin token**, which means running
+YouTube's BotGuard challenge in a WebView — and note that only *web*-client
+tokens can be minted that way, and the web client now answers with server-side
+ABR even when it is satisfied, so it drags both signature deciphering and a
+streaming protocol in with it. It is not verified to lift the cap either;
 yt-dlp users with working token providers still report 403s on adaptive formats.
 
-Re-run `tool/check_stream_limits.dart` and `tool/check_visitor_clients.dart`
-before building either. They are cheap, and the answer is YouTube's to change.
+Re-run `tool/check_stream_limits.dart`, `tool/check_visitor_clients.dart` and
+`tool/check_signed_in.dart` before building it. They are cheap, and the answer
+is YouTube's to change.
 
 `_clientChain` is ordered by which clients actually yield combined streams. Do
 not reorder it from first principles; re-measure with `probe_clients.dart`.

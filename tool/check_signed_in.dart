@@ -16,6 +16,26 @@
 // as an anonymous one is. That is the hypothesis under test. A day of building
 // a login flow is the wrong way to find out.
 //
+// **ANSWERED, 19 November 2026, with a real signed-in session: it does not.**
+// Measured per client, three ways each (cookies + SAPISIDHASH, cookies alone,
+// nothing):
+//
+//   * WEB accepts the session — it goes from "The page needs to be reloaded"
+//     to OK — but answers with **server-side ABR**: 40 formats and not one
+//     URL, plain or ciphered, only a `serverAbrStreamingUrl`. Using that means
+//     speaking YouTube's streaming session protocol, not fetching byte ranges.
+//   * IOS and ANDROID **ignore the cookies** (identical capped result with and
+//     without them) and answer 400 INVALID_ARGUMENT to the auth header.
+//   * TVHTML5 — the client yt-dlp uses with cookies — moves from
+//     LOGIN_REQUIRED to "The page needs to be reloaded" when signed in, which
+//     is the token demand. The account was accepted and the token still asked
+//     for.
+//   * MWEB and WEB_EMBEDDED_PLAYER refuse in every mode.
+//
+// So a login screen alone would buy nothing. The account is accepted and the
+// proof-of-origin token is then demanded anyway, which is the hypothesis
+// above, confirmed. Re-run before revisiting; the answer is YouTube's.
+//
 // ## Giving it a session, safely
 //
 // Export cookies for youtube.com from a browser you are signed into, in the
@@ -83,116 +103,163 @@ Future<void> main(List<String> args) async {
   );
 
   final client = http.Client();
-  var hdWorks = false;
+  final cookieHeader =
+      cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
 
-  // The WEB client, because that is the one a browser session belongs to.
-  // Asking as IOS with web cookies is a mismatch YouTube can see.
-  for (final attempt in [
-    ('WEB, authenticated', true),
-    ('WEB, same request unauthenticated', false),
-  ]) {
-    stdout.writeln('\n--- ${attempt.$1} ---');
-    try {
-      final headers = <String, String>{
-        'Content-Type': 'application/json',
-        'Origin': 'https://www.youtube.com',
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        if (attempt.$2) ...{
-          'Cookie': cookies.entries
-              .map((e) => '${e.key}=${e.value}')
-              .join('; '),
-          'Authorization': _sapisidHash(sapisid),
-          'X-Goog-AuthUser': '0',
-          'X-Origin': 'https://www.youtube.com',
-        },
-      };
-      final res = await client
-          .post(
-            Uri.parse(
-              'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
-            ),
-            headers: headers,
-            body: jsonEncode({
-              'context': {
-                'client': {
-                  'clientName': 'WEB',
-                  'clientVersion': '2.20250312.04.00',
-                  'hl': 'en',
-                  'gl': 'US',
-                  if (cookies['__Secure-YEC'] != null) 'visitorData': '',
+  // Every client is asked with the session. The WEB client is the one a
+  // browser session belongs to, but it has moved to server-side streaming
+  // (formats with no URL at all — see `sabr` below), so the question has to
+  // be put to the clients that still hand out byte-range URLs as well. That is
+  // what yt-dlp does with cookies, and it is the only way to find out which
+  // of them accepts a web session.
+  final results = <_Result>[];
+  for (final profile in _clients) {
+    // Three ways of presenting the session, because "400 with the session"
+    // can mean the cookies are refused or only the SAPISIDHASH header is.
+    for (final mode in _Mode.values) {
+      final label = '${profile.$1}, ${mode.name}';
+      stdout.writeln('\n--- $label ---');
+      try {
+        final headers = <String, String>{
+          'Content-Type': 'application/json',
+          'Origin': 'https://www.youtube.com',
+          'User-Agent': profile.$3,
+          if (mode != _Mode.anonymous) 'Cookie': cookieHeader,
+          if (mode == _Mode.signed) ...{
+            'Authorization': _sapisidHash(sapisid),
+            'X-Goog-AuthUser': '0',
+            'X-Origin': 'https://www.youtube.com',
+          },
+        };
+        final res = await client
+            .post(
+              Uri.parse(
+                'https://www.youtube.com/youtubei/v1/player?prettyPrint=false',
+              ),
+              headers: headers,
+              body: jsonEncode({
+                'context': {
+                  'client': {...profile.$2, 'hl': 'en', 'gl': 'US'},
                 },
-              },
-              'videoId': id,
-              'contentCheckOk': true,
-              'racyCheckOk': true,
-            }),
-          )
-          .timeout(const Duration(seconds: 30));
+                'videoId': id,
+                'contentCheckOk': true,
+                'racyCheckOk': true,
+              }),
+            )
+            .timeout(const Duration(seconds: 30));
 
-      final json =
-          jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
-      final ps = json['playabilityStatus'] as Map?;
-      final status = ps?['status']?.toString() ?? '?';
-      stdout.writeln('playabilityStatus: $status  ${ps?['reason'] ?? ''}');
-      if (status != 'OK') continue;
+        final json =
+            jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+        final ps = json['playabilityStatus'] as Map?;
+        final status = ps?['status']?.toString() ?? '?';
+        stdout.writeln('playabilityStatus: $status  ${ps?['reason'] ?? ''}');
+        if (ps == null) {
+          final err = json['error'];
+          stdout.writeln(
+            'HTTP ${res.statusCode}: '
+            '${err is Map ? '${err['code']} ${err['status']} ${err['message']}' : utf8.decode(res.bodyBytes).substring(0, 300)}',
+          );
+        }
+        final result = _Result(label, status);
+        results.add(result);
+        if (status != 'OK') continue;
 
-      final streaming = json['streamingData'] as Map<String, dynamic>?;
-      final raw = (streaming?['adaptiveFormats'] as List? ?? const []);
-      final ciphered =
-          raw.where((f) => f is Map && f['signatureCipher'] != null).length;
-      final formats = [for (final f in raw) ?parseAdaptiveFormat(f)];
-      final videos = [
-        for (final f in formats)
-          if (f.isVideo && f.codecFamily == 'avc') f,
-      ]..sort((a, b) => b.height.compareTo(a.height));
+        final streaming = json['streamingData'] as Map<String, dynamic>?;
+        final raw = (streaming?['adaptiveFormats'] as List? ?? const []);
+        final ciphered =
+            raw.where((f) => f is Map && f['signatureCipher'] != null).length;
+        final formats = [for (final f in raw) ?parseAdaptiveFormat(f)];
+        final videos = [
+          for (final f in formats)
+            if (f.isVideo && f.codecFamily == 'avc') f,
+        ]..sort((a, b) => b.height.compareTo(a.height));
+        result
+          ..hls = streaming?['hlsManifestUrl'] != null
+          ..sabr = streaming?['serverAbrStreamingUrl'] != null
+          ..plain = formats.length
+          ..ciphered = ciphered;
 
-      stdout.writeln(
-        'hls=${streaming?['hlsManifestUrl'] != null}  '
-        'adaptive=${raw.length}  plain-url=${formats.length}  '
-        'behind signatureCipher=$ciphered',
-      );
-      if (ciphered > 0 && formats.isEmpty) {
         stdout.writeln(
-          'Every track is behind signatureCipher, so the URLs cannot be used\n'
-          'without solving the player JS. That is a second project on top of\n'
-          'sign-in, and worth knowing now.',
+          'hls=${result.hls}  adaptive=${raw.length}  '
+          'plain-url=${formats.length}  behind signatureCipher=$ciphered  '
+          'server-abr=${result.sabr}',
         );
-        continue;
-      }
-      if (videos.isEmpty) {
-        stdout.writeln('no plain AVC track to test the cap with');
-        continue;
-      }
+        if (raw.isNotEmpty && formats.isEmpty && ciphered == 0) {
+          final first = raw.first;
+          stdout.writeln(
+            'Formats carry no URL at all (keys: '
+            '${first is Map ? first.keys.join(', ') : '?'}).\n'
+            'That is server-side ABR: the client is expected to stream through\n'
+            'a session protocol, not fetch byte ranges. Nothing to test here.',
+          );
+          continue;
+        }
+        if (ciphered > 0 && formats.isEmpty) {
+          stdout.writeln(
+            'Every track is behind signatureCipher, so the URLs cannot be used\n'
+            'without solving the player JS. That is a second project on top of\n'
+            'sign-in, and worth knowing now.',
+          );
+          continue;
+        }
+        if (result.hls) {
+          // The HLS route is never capped, so a client that hands out a
+          // ladder when signed in is a full answer by itself.
+          final hlsUrl = streaming!['hlsManifestUrl'] as String;
+          result.hlsTop = await _hlsTopHeight(client, hlsUrl);
+          stdout.writeln('HLS ladder tops out at ${result.hlsTop}p');
+        }
+        if (videos.isEmpty) {
+          stdout.writeln('no plain AVC track to test the cap with');
+          continue;
+        }
 
-      final top = videos.first;
-      final clen =
-          int.tryParse(Uri.parse(top.url).queryParameters['clen'] ?? '');
-      if (clen == null || clen < 4) {
-        stdout.writeln('${top.height}p track has no clen to test against');
-        continue;
+        final top = videos.first;
+        final clen =
+            int.tryParse(Uri.parse(top.url).queryParameters['clen'] ?? '');
+        if (clen == null || clen < 4) {
+          stdout.writeln('${top.height}p track has no clen to test against');
+          continue;
+        }
+        final start = await _serves(client, top.url, 0);
+        final end = await _serves(client, top.url, clen - 2);
+        result
+          ..height = top.height
+          ..fullLength = end;
+        stdout.writeln(
+          '${top.height}p: start=${start ? 'ok' : 'refused'}  '
+          'end of file=${end ? 'OK' : 'refused'}  '
+          '-> ${end ? 'FULL LENGTH ***' : 'still capped'}',
+        );
+      } catch (e) {
+        stdout.writeln('ERROR: $e');
       }
-      final start = await _serves(client, top.url, 0);
-      final end = await _serves(client, top.url, clen - 2);
-      stdout.writeln(
-        '${top.height}p: start=${start ? 'ok' : 'refused'}  '
-        'end of file=${end ? 'OK' : 'refused'}  '
-        '-> ${end ? 'FULL LENGTH ***' : 'still capped'}',
-      );
-      if (end && attempt.$2) hdWorks = true;
-    } catch (e) {
-      stdout.writeln('ERROR: $e');
     }
   }
 
   client.close();
+  stdout.writeln('\n================ SUMMARY ================');
+  for (final r in results) {
+    stdout.writeln('  ${r.label.padRight(26)} ${r.describe()}');
+  }
+  final lifts = results
+      .where((r) => !r.label.endsWith(_Mode.anonymous.name))
+      .where((r) => r.fullLength || (r.hls && (r.hlsTop ?? 0) > 360))
+      .toList();
   stdout.writeln('\n================ VERDICT ================');
-  if (hdWorks) {
+  if (lifts.isNotEmpty) {
     stdout.writeln(
-      'Signing in LIFTS the cap: an authenticated request served the last\n'
-      'byte of a 1080p track. A sign-in feature would give HD on every\n'
-      'video, and is worth building.',
+      'Signing in LIFTS the cap for: ${lifts.map((r) => r.label).join(', ')}.\n'
+      'A sign-in feature asking as one of those clients would give HD on\n'
+      'this video. Re-run on a few more ids before building it.',
+    );
+  } else if (results.any((r) => r.sabr && r.plain == 0 && r.ciphered == 0)) {
+    stdout.writeln(
+      'INCONCLUSIVE. The session was accepted, but every client that accepted\n'
+      'it answered with server-side ABR — formats with no URL to test — and\n'
+      'every client that still hands out URLs refused the session. HD through\n'
+      'sign-in would mean speaking that streaming protocol, which is a far\n'
+      'larger job than a login screen. Do not build the login screen alone.',
     );
   } else {
     stdout.writeln(
@@ -202,7 +269,109 @@ Future<void> main(List<String> args) async {
       'HD at all. Do not build it on this evidence.',
     );
   }
-  exit(hdWorks ? 0 : 1);
+  exit(lifts.isNotEmpty ? 0 : 1);
+}
+
+enum _Mode { signed, cookiesOnly, anonymous }
+
+class _Result {
+  _Result(this.label, this.status);
+  final String label;
+  final String status;
+  bool hls = false;
+  int? hlsTop;
+  bool sabr = false;
+  int plain = 0;
+  int ciphered = 0;
+  int height = 0;
+  bool fullLength = false;
+
+  String describe() {
+    if (status != 'OK') return status;
+    final parts = <String>[
+      if (hls) 'hls to ${hlsTop ?? '?'}p',
+      if (sabr && plain == 0 && ciphered == 0) 'server-abr only',
+      if (ciphered > 0) '$ciphered ciphered',
+      if (height > 0) '${height}p ${fullLength ? 'FULL LENGTH ***' : 'capped'}',
+    ];
+    return parts.isEmpty ? 'OK, nothing testable' : parts.join(', ');
+  }
+}
+
+/// The clients worth asking with a browser session. The app's own two first,
+/// then the ones yt-dlp reaches for when it has cookies.
+const _clients = <(String, Map<String, Object>, String)>[
+  (
+    'WEB',
+    {'clientName': 'WEB', 'clientVersion': '2.20250312.04.00'},
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  ),
+  (
+    'IOS',
+    {
+      'clientName': 'IOS',
+      'clientVersion': '20.10.4',
+      'deviceMake': 'Apple',
+      'deviceModel': 'iPhone16,2',
+      'osName': 'iPhone',
+      'osVersion': '18.3.2.22D82',
+    },
+    'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',
+  ),
+  (
+    'ANDROID',
+    {
+      'clientName': 'ANDROID',
+      'clientVersion': '20.10.38',
+      'osName': 'Android',
+      'osVersion': '11',
+      'androidSdkVersion': 30,
+    },
+    'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
+  ),
+  (
+    'TVHTML5',
+    {
+      'clientName': 'TVHTML5',
+      'clientVersion': '7.20251105.10.00',
+      'userAgent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version,gzip(gfe)',
+      'originalUrl': 'https://www.youtube.com/tv',
+      'theme': 'CLASSIC',
+      'platform': 'DESKTOP',
+      'clientFormFactor': 'UNKNOWN_FORM_FACTOR',
+      'deviceMake': '',
+      'deviceModel': '',
+    },
+    'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version,gzip(gfe)',
+  ),
+  (
+    'MWEB',
+    {'clientName': 'MWEB', 'clientVersion': '2.20250311.03.00'},
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 '
+        '(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  ),
+  (
+    'WEB_EMBEDDED',
+    {'clientName': 'WEB_EMBEDDED_PLAYER', 'clientVersion': '1.20250310.01.00'},
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  ),
+];
+
+/// Tallest variant in a YouTube-issued HLS master playlist.
+Future<int?> _hlsTopHeight(http.Client c, String url) async {
+  try {
+    final r = await c.get(Uri.parse(url)).timeout(const Duration(seconds: 20));
+    if (r.statusCode != 200) return null;
+    var top = 0;
+    for (final m in RegExp(r'RESOLUTION=\d+x(\d+)').allMatches(r.body)) {
+      top = top < int.parse(m.group(1)!) ? int.parse(m.group(1)!) : top;
+    }
+    return top;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Cookie names worth naming in the output. Values are never printed.
