@@ -61,16 +61,20 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.31.0, build 146** (tag `android-2.31.0`), published
-to `safenesthub.in` and hash-verified through the public domain
-(`59e866a1…30ec2`, 77,760,153 bytes). **Latest iOS build is 2.31.0, build
-145** (tag `v2.31.0`), on TestFlight. 2.31.0 carries the HD-unlock route
-(the token from YouTube's bot check, see "Stream resolution is the fragile
-core") and the now-playing bar's close fix. **The HD route was unverified at
-release** — nothing in it can run on this machine — and Settings → Playback →
-"Test HD unlock" on the phone is what settles it; record the result here.
+**Latest Android build is 2.32.0, build 148** (tag `android-2.32.0`), published
+to `safenesthub.in` (`b6b20655…1cce`, 77,760,721 bytes; the compiled manifest
+was checked for the label, the YouTube intent-filters and the deep-linking
+opt-out). **Latest iOS build is 2.32.0, build 147** (tag `v2.32.0`), on
+TestFlight. 2.32.0 plays at once and upgrades to HD behind the video, and
+opens YouTube links from other apps on Android. 2.31.0 (Android 146, iOS 145)
+introduced the HD-unlock route (the token from YouTube's bot check, see
+"Stream resolution is the fragile core") and the now-playing bar's close fix,
+and was reported within the hour as slow to start, which 2.32.0 answers.
+**The HD route is still unverified on a device** — nothing in it can run on
+this machine — and Settings → Playback → "Test HD unlock" on the phone is
+what settles it; record the result here.
 
-2.30.0 (Android 143, iOS 144) is the previous release.
+2.30.0 (Android 143, iOS 144) is the last release before the token route.
 
 2.30.0 is the release that made playback *finish*. 2.28.3 had got HD playing
 and 2.29.0 had fixed the feed, but both shipped a generated DASH manifest over
