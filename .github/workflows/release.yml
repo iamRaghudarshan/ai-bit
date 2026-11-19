@@ -264,20 +264,36 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
-          set -euo pipefail
-          xcrun altool --upload-app -f build/ios/ipa/*.ipa -t ios \
+          set -uo pipefail
+          # Through report.sh, because this step's failures are Apple's rather
+          # than ours and are the kind nothing else can diagnose. Build 141
+          # failed here with FORBIDDEN_ERROR.CONTRACT_NOT_VALID — an unaccepted
+          # App Store Connect agreement, nothing to do with the code — and the
+          # only thing visible without a token was "exit code 1". A whole
+          # macOS archive had already been paid for by that point.
+          .github/scripts/report.sh "TestFlight upload" \
+            xcrun altool --upload-app -f build/ios/ipa/*.ipa -t ios \
             -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD"
           echo "Uploaded. Apple takes 5-15 minutes to process before it appears"
           echo "in TestFlight."
 
-      # Kept regardless, so a failed upload does not mean a rebuild. The .ipa can
-      # be uploaded by hand from Transporter on any Mac.
+      # Kept regardless, so a failed upload does not mean a rebuild. The .ipa
+      # can be uploaded by hand from Transporter on any Mac.
+      #
+      # `always() &&` is what makes that comment true, and its absence made it
+      # a lie: a step's `if` defaults to `success()`, so gating on the secrets
+      # check alone ALSO required every earlier step to have passed. Build 141
+      # signed an archive successfully, failed the upload on an Apple account
+      # problem, and then skipped this step — throwing away the one artefact
+      # that would have let the upload be retried by hand, and making a
+      # ten-times-billed macOS run worth nothing.
       - uses: actions/upload-artifact@v4
-        if: steps.apple.outputs.ready == 'true'
+        if: always() && steps.apple.outputs.ready == 'true'
         with:
           name: aibit-ios
           path: build/ios/ipa/*.ipa
           retention-days: 14
+          if-no-files-found: warn
 
       - name: Say plainly which secrets are missing
         if: steps.apple.outputs.ready != 'true'
