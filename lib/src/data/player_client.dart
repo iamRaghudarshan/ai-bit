@@ -208,11 +208,17 @@ class YoutubePlayerClient {
   /// visitor id goes in both the context and the header, and it must be the
   /// one the token was minted against — a token bound to a different session
   /// is a token YouTube ignores.
+  ///
+  /// [poToken] may be null only for diagnostics: the request is then the
+  /// anonymous one YouTube refuses, and what the refusal says is the point.
+  /// A malformed token is answered with HTTP 400 INVALID_ARGUMENT — it is a
+  /// protobuf bytes field, so it must be base64 — which is not the same as
+  /// a refused one.
   Future<WebPlayerResponse> fetchWeb(
     String videoId, {
     required WebClientProfile client,
     required String visitorData,
-    required String poToken,
+    required String? poToken,
     required int signatureTimestamp,
   }) async {
     final response = await _http
@@ -237,7 +243,8 @@ class YoutubePlayerClient {
               },
             },
             'videoId': videoId,
-            'serviceIntegrityDimensions': {'poToken': poToken},
+            if (poToken != null)
+              'serviceIntegrityDimensions': {'poToken': poToken},
             'playbackContext': {
               'contentPlaybackContext': {
                 'signatureTimestamp': signatureTimestamp,

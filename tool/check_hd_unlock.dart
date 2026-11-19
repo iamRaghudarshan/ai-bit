@@ -10,12 +10,14 @@
 //
 //   1. the player build discovery (`iframe_api` → `base.js` → sts);
 //   2. the anonymous visitor id;
-//   3. a web-client player request carrying a visitor id and a *placeholder*
-//      token — because the shape of the answer is decided before the token
-//      is checked: the token is verified by googlevideo when bytes are
-//      requested, and the player endpoint's reply says whether this client
-//      still hands out byte-range URLs at all or has moved to server-side
-//      streaming, which no token helps with;
+//   3. a web-client player request carrying a visitor id and NO token. The
+//      expected answer is a refusal — LOGIN_REQUIRED "confirm you're not a
+//      bot" or UNPLAYABLE "the page needs to be reloaded", which are the two
+//      spellings of the token demand. That proves the request *shape* is
+//      accepted; an HTTP 400 would mean a field YouTube no longer takes. (A
+//      made-up token is worse than none: it is a protobuf bytes field, and a
+//      string that is not base64 is a 400 on its own, which is how this
+//      probe first misread its own placeholder as "the route is dead".)
 //   4. the solver modules, by hash.
 //
 // It cannot say "HD works". It can say "the route is dead before minting",
@@ -97,22 +99,27 @@ Future<void> main(List<String> args) async {
     stdout.writeln('  FAIL: $e');
   }
 
-  // 3. web clients with a placeholder token
+  // 3. web clients, token-less: the request shape
   if (visitor != null && sts != null) {
     final player = YoutubePlayerClient(client: client);
     var anyAddressable = false;
+    var anyAccepted = false;
     for (final profile in YoutubePlayerClient.webClients) {
-      stdout.writeln('--- ${profile.name}, visitor id + placeholder token ---');
+      stdout.writeln('--- ${profile.name}, visitor id, no token ---');
       try {
         final r = await player.fetchWeb(
           id,
           client: profile,
           visitorData: visitor,
-          poToken: 'placeholder',
+          poToken: null,
           signatureTimestamp: sts,
         );
         stdout.writeln('  playabilityStatus: ${r.status} ${r.reason ?? ''}');
-        if (!r.isOk) continue;
+        anyAccepted = true;
+        if (!r.isOk) {
+          stdout.writeln('  (a token demand; the shape was accepted)');
+          continue;
+        }
         var plain = 0, ciphered = 0, bare = 0;
         for (final f in r.rawAdaptiveFormats) {
           if (f is! Map) continue;
@@ -145,11 +152,16 @@ Future<void> main(List<String> args) async {
         stdout.writeln('  FAIL: $e');
       }
     }
-    if (!anyAddressable) {
+    if (!anyAccepted) {
       failures++;
       stdout.writeln(
-        '\n  No web client hands out byte-range URLs any more. The route is\n'
-        '  dead before minting; a token would have nothing to stamp.',
+        '\n  Every web client rejected the request itself (not the missing\n'
+        '  token). A field in fetchWeb is no longer accepted; fix that first.',
+      );
+    } else if (anyAddressable) {
+      stdout.writeln(
+        '\n  A web client answered OK with no token at all, which means this\n'
+        '  network is trusted today. The app will still stamp a token.',
       );
     }
   }

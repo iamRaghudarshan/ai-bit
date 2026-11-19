@@ -301,6 +301,8 @@ D:/flutter/bin/dart.bat run tool/check_dash.dart [videoId]       # can HD play? 
 D:/flutter/bin/dart.bat run tool/check_stream_limits.dart        # does a stream serve the WHOLE video, or just 60s?
 D:/flutter/bin/dart.bat run tool/check_hls.dart [videoId] [--ffmpeg=<path>]  # the iOS ladder: sidx, playlists, real decode
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
+D:/flutter/bin/dart.bat run tool/check_hd_unlock.dart            # the HTTP half of the token route; the rest is Settings → Test HD unlock
+D:/flutter/bin/dart.bat run tool/check_signed_in.dart <cookies.txt> # does a signed-in session lift the cap? (measured: no)
 D:/flutter/bin/dart.bat run tool/check_playback.dart         # what FRACTION of videos play, per platform?
 D:/flutter/bin/dart.bat run tool/check_feed_recency.dart      # is the feed's candidate pool actually recent?
 D:/flutter/bin/dart.bat run tool/check_home_feed.dart         # the whole ranked feed, by age and by source
@@ -738,16 +740,48 @@ worth writing down because each one looks promising from the outside:
   login screen would therefore cost a Google account and buy no HD, which is
   why there is no sign-in feature despite it having been asked for.
 
-So the only route left is a **proof-of-origin token**, which means running
-YouTube's BotGuard challenge in a WebView — and note that only *web*-client
-tokens can be minted that way, and the web client now answers with server-side
-ABR even when it is satisfied, so it drags both signature deciphering and a
-streaming protocol in with it. It is not verified to lift the cap either;
-yt-dlp users with working token providers still report 403s on adaptive formats.
+So the only route left is a **proof-of-origin token**, and it is built:
+`lib/src/data/attestation/`. It is the route NewPipe and yt-dlp use. A hidden
+WebView (`web_runtime.dart`, never on screen, loaded with youtube.com as its
+base URL) runs Google's BotGuard — `Waa/Create`, the interpreter it names, a
+snapshot, `Waa/GenerateIT`, then the minter the VM exposes, bound to an
+anonymous `visitorData` — which is `runtime_page.dart`. Only *web*-client
+tokens can be minted that way, so the same page also runs yt-dlp's `ejs`
+solver (pinned by hash, the release `youtube_explode_dart` carries) for the
+web client's `signatureCipher` and `n` challenges, since `youtube_explode_dart`
+can only run that solver through Deno on a desktop. `web_formats.dart` is the
+pure part — which challenges a response needs, assembling the URL, stamping
+`pot` — and is unit-tested; `attestation_service.dart` mints, caches the
+session for the integrity token's lifetime (six hours at most, in memory and
+in prefs), and keeps a human-readable `status`.
 
-Re-run `tool/check_stream_limits.dart`, `tool/check_visitor_clients.dart` and
-`tool/check_signed_in.dart` before building it. They are cheap, and the answer
-is YouTube's to change.
+`resolve()` tries it **only after the ordinary tracks prove capped**, walks
+WEB → MWEB → TVHTML5 (a client answering with server-side ABR and no URLs is
+skipped, not failed), and then puts the result through **the same
+`_adaptiveTracksPlayThroughout` probe** before building a manifest from it.
+The token is supposed to lift the cap; "supposed to" is not a reason to skip
+the measurement, and this is the one assertion that cannot pass for the wrong
+reason. Everything about it is optional — no session, no WebView, the switch
+off, any failure — and resolution then stops where it did before.
+
+**None of the browser half can run on this machine.** The HTTP half can:
+`tool/check_hd_unlock.dart` checks the player-build discovery, the visitor
+id, that the web clients accept the request *shape* (expected answer: a token
+demand, not a 400), and the solver modules' hashes. The rest is verified on
+the phone through **Settings → Playback → "Test HD unlock"**, which mints a
+fresh token, runs the chain on a ten-minute video and prints each step —
+including the end-of-file probe — so a failure names its step. A failure in
+the desktop probe means the player endpoint moved; a failure only on the
+phone means the attestation did. Two traps already met: a token that is not
+valid base64 is answered **HTTP 400 INVALID_ARGUMENT** (it is a protobuf
+bytes field), which looks like "the route is dead" and is not; and
+`iframe_api` names different player builds on consecutive requests, which is
+normal.
+
+Expect it to break every few months, as it does for every client that uses
+it. Re-run `tool/check_hd_unlock.dart`, then the phone test, before touching
+code; and re-run `check_stream_limits.dart`, `check_visitor_clients.dart` and
+`check_signed_in.dart` before concluding any cheaper route has opened.
 
 `_clientChain` is ordered by which clients actually yield combined streams. Do
 not reorder it from first principles; re-measure with `probe_clients.dart`.
