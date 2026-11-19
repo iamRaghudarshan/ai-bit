@@ -61,16 +61,23 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.29.0, build 142** (tag `android-2.29.0`), published
-to `safenesthub.in` — it carries the feed-recency fix on top of 2.28.3's DASH
-fix, which is the one that got HD playing again. 2.28.0 through 2.28.2 are
-tagged and red or superseded; they exist only because the toolchain broke under
-them, so **the version number skipped ahead without three releases happening**.
-Check `git tag --sort=-creatordate` and the run list rather than trusting this
-line, which ages.
+**Latest Android build is 2.30.0, build 143** (tag `android-2.30.0`), published
+to `safenesthub.in` and hash-verified through the public domain
+(`393e6ecf…534fc6`, 77,350,356 bytes). **Latest iOS build is 2.30.0, build
+144** (tag `v2.30.0`), on TestFlight — the upload step passed first time, so
+the App Store Connect agreement accepted before 2.29.0 is still in force.
 
-**Latest iOS build is 2.29.0, build 141** (tag `v2.29.0`), on TestFlight —
-delivery UUID `8029b8ef-19cd-474e-bc49-157a03f3d32e`.
+2.30.0 is the release that made playback *finish*. 2.28.3 had got HD playing
+and 2.29.0 had fixed the feed, but both shipped a generated DASH manifest over
+tracks YouTube serves for only 60 seconds, so HD died about a minute in — see
+"Stream resolution is the fragile core". **Treat 2.28.3 and 2.29.0 as unsound
+for playback** even though they are tagged green; the probes that passed under
+them were all asking about the start of a stream.
+
+2.28.0 through 2.28.2 are tagged and red or superseded; they exist only because
+the toolchain broke under them, so **the version number skipped ahead without
+three releases happening**. Check `git tag --sort=-creatordate` and the run
+list rather than trusting these lines, which age.
 
 It took two attempts, and the first failure is worth recognising rather than
 debugging: the archive built and signed perfectly and then `altool` returned
