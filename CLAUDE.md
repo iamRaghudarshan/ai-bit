@@ -61,10 +61,13 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest release is 2.25.0** — iOS build 131, Android build 132 — published to
-`safenesthub.in`. (2.24.0 was tagged but never published; the old host still
-advertises 2.23.0/127.) Check `git tag --sort=-creatordate` rather than
-trusting this line, which ages.
+**Latest Android build is 2.28.3, build 140** (tag `android-2.28.3`) — the one
+carrying the DASH fix that got HD playing again. 2.28.0 through 2.28.2 are
+tagged and red or superseded; they exist only because the toolchain broke under
+them, so **the version number skipped ahead without three releases happening**.
+2.25.0 was the last pair published to `safenesthub.in` (iOS build 131, Android
+132). Check `git tag --sort=-creatordate` and the run list rather than trusting
+this line, which ages.
 
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
@@ -86,6 +89,31 @@ could not have one, because the download site is a tunnel-fronted machine that
 CI cannot reach. An approved build therefore means: tag, wait for CI, download
 the artifact, and then publish by hand as described below.
 
+**The CI toolchain is PINNED, and a red build annotates its own reason.** Both
+jobs asked for `channel: stable`, which floats to whatever Flutter has shipped
+by the time a run starts — and on 18 November 2026 a new stable deprecated
+`package:flutter/material.dart` in favour of `package:material_ui`, so every
+file in the app emitted a `deprecated_member_use` info and `flutter analyze`,
+which exits non-zero on infos, failed two releases that had analyzed clean
+locally minutes earlier. `flutter-version: "3.47.4"` now matches the local SDK
+in both jobs, so "clean locally" means "clean in CI". Bump it deliberately,
+together with the local SDK, and treat the `material_ui` migration as its own
+piece of work rather than something to discover mid-release.
+
+Analyze, test and both builds run through `.github/scripts/report.sh`, which
+repeats a failing command's output as a single workflow **annotation**. That is
+not redundant with the log: reading a job log needs a token, annotations on a
+public repo do not, so a red build otherwise says only "Process completed with
+exit code 1" to anyone working without credentials. It found the deprecation
+above on the first run. When you add a step that can fail, wrap it the same
+way — and note `.gitattributes` pins `*.sh` to LF, because a CRLF shebang
+fails on Linux as "bad interpreter: …^M", which names the shell rather than the
+line endings.
+
+Expect a transient APK-build failure now and again: build 139 failed in
+`Build the APK` and build 140 of the identical tree passed. Re-tag rather than
+hunting it.
+
 That tag-derived version reaches the user in three places, all fed from the
 same `--build-name`/`--build-number` CI passes: the Android **launcher label**
 is `AI BIT <version>` via a `manifestPlaceholders["appName"]` in
@@ -97,8 +125,31 @@ update dialog. `package_info_plus` is the source for both in-app readings.
 The Android artifact is **split per ABI** (`--split-per-abi`); the arm64 slice
 is `app-arm64-v8a-release.apk` (~73MB, nearly every real phone) and a copy is
 also named `app-release.apk`. The artifact bundles all three slices, so its zip
-is large — the GitHub download to this PC is slow; run `gh run download` in the
-background and hand the user the arm64 path.
+is ~190MB and slow to pull to this PC — download it in the background and hand
+the user the arm64 path.
+
+**`gh` is NOT installed on this machine** (an earlier version of this note
+said to use `gh run download`). The repo is public, so **run status and job
+lists need no auth at all**:
+
+```bash
+curl -s "https://api.github.com/repos/iamRaghudarshan/ai-bit/actions/runs?per_page=1&branch=android-2.28.3"
+curl -s "https://api.github.com/repos/iamRaghudarshan/ai-bit/actions/runs/<id>/jobs"
+```
+
+**Downloading the artifact does need a token**, and one is already configured —
+git's credential helper (`credential.helper = store --file=…/.git-credentials-personal`)
+holds the PAT that pushes use. Ask git for it through its own interface rather
+than reading that file, and do not echo it:
+
+```bash
+TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
+curl -sL -H "Authorization: Bearer $TOKEN" -o out.zip \
+  "https://api.github.com/repos/iamRaghudarshan/ai-bit/actions/artifacts/<artifact-id>/zip"
+```
+
+**Job logs need that token too, and are 403 without it** — which is why the
+workflow annotates its own failures; see below.
 
 Testing on the user's device: their phone (a Xiaomi, Android 12, arm64) can be
 driven over adb. There is no adb on PATH here — download standalone
