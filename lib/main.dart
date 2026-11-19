@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import 'dart:async';
+
+import 'src/core/incoming_links.dart';
 import 'src/core/theme.dart';
 import 'src/data/attestation/attestation_service.dart';
 import 'src/data/battery_service.dart';
@@ -17,8 +20,11 @@ import 'src/data/settings.dart';
 import 'src/data/storage_service.dart';
 import 'src/data/yt_repository.dart';
 import 'src/player/playback_controller.dart';
+import 'src/data/models.dart';
 import 'src/ui/app_lock_page.dart';
+import 'src/ui/playlist_page.dart';
 import 'src/ui/root_shell.dart';
+import 'src/ui/watch_page.dart';
 import 'src/ui/widgets/now_playing_overlay.dart';
 
 /// The app-wide navigator, held here rather than inside [AiBitApp] because the
@@ -56,7 +62,58 @@ Future<void> main() async {
   // business inside the cold start ahead of the feed.
   WidgetsBinding.instance.addPostFrameCallback((_) {
     _pruneHistory(database, settings);
+    // Links tapped or shared from other apps: the one that launched us, and
+    // any that arrive while we are running.
+    IncomingLinks.initial().then((link) {
+      if (link != null) _openIncomingLink(link);
+    });
+    IncomingLinks.listen(_openIncomingLink);
+    // The HD-unlock token takes a bot check to mint; done now, behind the
+    // feed, so the first video does not pay for it. A few seconds late so it
+    // does not compete with the feed for the first paint.
+    Timer(const Duration(seconds: 4), () {
+      _navigatorKey.currentContext?.read<YtRepository>().warmUpHd();
+    });
   });
+}
+
+/// Opens whatever a tapped or shared YouTube link points at.
+///
+/// Playlists are checked first, as the search box does: a `watch?v=…&list=…`
+/// link names both and the list is the more specific intent. Text that is
+/// neither is logged and dropped — the SEND filter accepts any plain text,
+/// so a note shared by mistake must not do anything surprising.
+Future<void> _openIncomingLink(String text) async {
+  final context = _navigatorKey.currentContext;
+  if (context == null) return;
+  final reference = youtubeReferenceIn(text) ?? text.trim();
+  final repo = context.read<YtRepository>();
+
+  final playlistId = YtRepository.parsePlaylistId(reference);
+  if (playlistId != null) {
+    await PlaylistPage.openById(context, playlistId);
+    return;
+  }
+  final videoId = YtRepository.parseVideoId(reference);
+  if (videoId != null) {
+    try {
+      final details = await repo.videoDetails(videoId);
+      // Re-read after the await rather than reused: the lookup took a network
+      // round trip and the Navigator may have been rebuilt meanwhile.
+      final ctx = _navigatorKey.currentContext;
+      if (ctx == null || !ctx.mounted) return;
+      await WatchPage.open(ctx, VideoBrief.fromYt(details));
+    } catch (e) {
+      debugPrint('AI BIT: could not open shared video $videoId — $e');
+      final ctx = _navigatorKey.currentContext;
+      if (ctx == null || !ctx.mounted) return;
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(const SnackBar(
+        content: Text('That link could not be opened. It may be private or removed.'),
+      ));
+    }
+    return;
+  }
+  debugPrint('AI BIT: shared text is not a YouTube link: $text');
 }
 
 /// Applies `Settings -> History retention`.

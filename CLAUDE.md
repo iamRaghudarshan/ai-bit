@@ -560,6 +560,26 @@ phone's memory producing rows that are trimmed away. It writes through
 `AppDatabase.importWatch`, which takes the REAL watched time — `recordWatch`
 stamps `now`, which would collapse years of history onto today.
 
+**YouTube links from other apps open here, on Android** (`incoming_links.dart`,
+`MainActivity.kt`, the intent-filters in the manifest). Reported as "some
+videos open in the YouTube app": the app had never told Android it could
+open a YouTube link, so every tap in WhatsApp or a browser went to YouTube.
+Two things to know, both system rules rather than ours. On Android 12+ the
+YouTube app's links are *verified*, so a tapped link still opens YouTube
+directly until the user turns off its "Open by default" link handling —
+AI BIT cannot verify youtube.com and only ever appears in the chooser.
+**Share → AI BIT works regardless**, from any app including YouTube itself,
+which is why the plain-text SEND filter is the one that matters. iOS cannot
+claim another site's `https://` links at all (universal links need a file on
+youtube.com), so the YouTube app keeps them there and the Share sheet is the
+way in; a share extension is not built. `flutter_deeplinking_enabled` is set
+to **false** on purpose: the engine's own handling would push the raw URL as a
+named route, which this Navigator-based app cannot serve, so `MainActivity`
+hands links over on `ai.bit/incoming` instead — the launch intent through
+`initial`, later ones through `onLink`. `youtubeReferenceIn` is pure and
+tested: shared text is usually a sentence around a link, and `vnd.youtube:`
+carries a bare id.
+
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
 account behind a ToS-violating client - see Takeout above for how playlists
 arrive instead), the Google Cast SDK (needs a registered
@@ -760,14 +780,31 @@ pure part — which challenges a response needs, assembling the URL, stamping
 session for the integrity token's lifetime (six hours at most, in memory and
 in prefs), and keeps a human-readable `status`.
 
-`resolve()` tries it **only after the ordinary tracks prove capped**, walks
+`resolve()` tries it **only after the ordinary tracks prove capped, and
+never before playback starts.** The first version ran it inline and was
+reported within the hour as "videos take more time to load": a bot check, a
+player request and a challenge solve are seconds, and every capped video sat
+on a spinner for them. Now the progressive stream plays at once and the route
+runs behind it as `PlaybackSources.upgrade`, a future the controller
+(`_followUpgrade`) waits on; when it completes with HD sources that have been
+proved to play to the end, the player is rebuilt at the current position —
+the same rebuild an audio-only toggle does — and only if the viewer is still
+on that video, not offline, not in audio mode, and nothing has replaced the
+sources meanwhile. YouTube itself starts low and steps up. The route walks
 WEB → MWEB → TVHTML5 (a client answering with server-side ABR and no URLs is
-skipped, not failed), and then puts the result through **the same
+skipped, not failed) and puts the result through **the same
 `_adaptiveTracksPlayThroughout` probe** before building a manifest from it.
 The token is supposed to lift the cap; "supposed to" is not a reason to skip
 the measurement, and this is the one assertion that cannot pass for the wrong
-reason. Everything about it is optional — no session, no WebView, the switch
-off, any failure — and resolution then stops where it did before.
+reason. Three bounds keep a broken route cheap: the token, solver and player
+build are warmed at launch (`warmUpHd`, four seconds after the first frame,
+so the first video pays one player request rather than a bot check); a
+failure that is not about one video — no token, or every web client refusing
+the token — **pauses the route for ten minutes** rather than letting every
+capped video rediscover it; and an upgrade has a sixty-second budget, after
+which the viewer simply stays at 360p. Everything about it is optional — no
+session, no WebView, the switch off, any failure — and resolution then stops
+where it did before.
 
 **None of the browser half can run on this machine.** The HTTP half can:
 `tool/check_hd_unlock.dart` checks the player-build discovery, the visitor

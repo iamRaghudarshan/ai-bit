@@ -326,6 +326,19 @@ class WebAttestation extends ChangeNotifier {
     return (n: n, sig: sig);
   }
 
+  /// Does the slow parts ahead of time: the token, the solver and the player
+  /// build. Each is cached, so a later request pays only for itself.
+  Future<void> warmUp() async {
+    if (!isSupported) return;
+    try {
+      if (await session() == null) return;
+      await player();
+      await _ensureSolver();
+    } catch (e) {
+      _report('Warm-up failed: $e', error: true);
+    }
+  }
+
   /// Forgets the session so the next request mints a fresh one.
   Future<void> invalidate() async {
     _session = null;

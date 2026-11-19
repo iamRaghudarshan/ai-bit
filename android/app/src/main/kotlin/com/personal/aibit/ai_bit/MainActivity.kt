@@ -3,6 +3,7 @@ package com.personal.aibit.ai_bit
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
@@ -10,28 +11,87 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Hosts the Flutter engine and registers the one channel this app implements
- * itself: the Android floating player.
+ * Hosts the Flutter engine and registers the channels this app implements
+ * itself: the Android floating player, and incoming YouTube links.
  *
- * The channel is registered here rather than as a plugin because there is
- * exactly one Activity and the overlay permission flow needs it — starting the
- * settings screen and starting a foreground service both want an Activity
- * context, and a FlutterPlugin would have to go and find one.
+ * The channels are registered here rather than as plugins because there is
+ * exactly one Activity and both need it — the overlay permission flow wants
+ * an Activity context, and a link arrives *as* this Activity's Intent.
  */
 class MainActivity : FlutterActivity() {
 
     private companion object {
         const val CHANNEL = "ai.bit/floating_player"
+        const val INCOMING_CHANNEL = "ai.bit/incoming"
         const val TAG = "AiBitFloating"
 
         /** Dart-side method name for a failure that surfaced after `start`. */
         const val ON_FAILED = "onFailed"
+
+        /** Dart-side method name for a link that arrived while running. */
+        const val ON_LINK = "onLink"
     }
 
     private var channel: MethodChannel? = null
+    private var incoming: MethodChannel? = null
+
+    /**
+     * A link that arrived before Dart asked for it — the launch Intent, or one
+     * delivered in the gap before the engine was configured. Handed over once.
+     */
+    private var pendingLink: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        pendingLink = linkFrom(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val link = linkFrom(intent) ?: return
+        val target = incoming
+        if (target == null) {
+            pendingLink = link
+            return
+        }
+        try {
+            target.invokeMethod(ON_LINK, link)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not deliver the incoming link", e)
+            pendingLink = link
+        }
+    }
+
+    /**
+     * The YouTube reference an Intent carries: the URL of a tapped link, or
+     * the text of a share. Anything else is not for us and yields null.
+     */
+    private fun linkFrom(intent: Intent?): String? {
+        if (intent == null) return null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> intent.dataString
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            else -> null
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        val incomingChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, INCOMING_CHANNEL)
+        incoming = incomingChannel
+        incomingChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initial" -> {
+                    result.success(pendingLink)
+                    pendingLink = null
+                }
+
+                else -> result.notImplemented()
+            }
+        }
 
         val methodChannel =
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
@@ -126,6 +186,8 @@ class MainActivity : FlutterActivity() {
         FloatingPlayerService.onFailure = null
         channel?.setMethodCallHandler(null)
         channel = null
+        incoming?.setMethodCallHandler(null)
+        incoming = null
         super.cleanUpFlutterEngine(flutterEngine)
     }
 

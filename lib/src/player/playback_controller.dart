@@ -504,6 +504,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       if (token != _playToken) return;
       final resumeAt = await _db.resumePosition(video.id);
       await _attach(video, sources, startAt: resumeAt);
+      _followUpgrade(video, sources, token);
       _loading = false;
       // Opening a video after the day's Kids allowance is gone loads it and
       // stops, rather than refusing: the controller never puts up a dialog, it
@@ -1075,6 +1076,30 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       _error = message;
       notifyListeners();
     }
+  }
+
+  /// Switches to the HD sources when [PlaybackSources.upgrade] delivers them.
+  ///
+  /// Playback has already started on the stream that was available at once;
+  /// this waits for the better one in the background and, if the viewer is
+  /// still on the same video, rebuilds the player at the current position —
+  /// the same rebuild an audio-only toggle does. Every "still relevant" check
+  /// matters: the upgrade can land after the user has moved on, after a
+  /// download finished, or after a quality switch replaced the sources.
+  void _followUpgrade(VideoBrief video, PlaybackSources sources, int token) {
+    final upgrade = sources.upgrade;
+    if (upgrade == null) return;
+    unawaited(upgrade.then((better) async {
+      if (better == null) return;
+      if (token != _playToken || _current?.id != video.id) return;
+      if (_isOffline || !identical(_sources, sources)) return;
+      // Audio mode plays the lowest rendition on purpose; HD is no upgrade.
+      if (isAudioOnly) return;
+      debugPrint('AI BIT: switching ${video.id} to HD at $_position');
+      await reloadCurrent();
+    }).catchError((Object e) {
+      debugPrint('AI BIT: HD upgrade not applied — $e');
+    }));
   }
 
   /// Re-resolves the current video after an audio-only toggle, keeping the

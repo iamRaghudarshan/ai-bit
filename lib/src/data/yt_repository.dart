@@ -1175,6 +1175,73 @@ class YtRepository {
     return null;
   }
 
+  /// Whether the HD-unlock route is on, possible here, and not backed off.
+  bool get _hdUnlockWorthTrying =>
+      _attestation != null &&
+      hdUnlockEnabled &&
+      WebAttestation.isSupported &&
+      DateTime.now().isAfter(_hdUnlockPausedUntil);
+
+  /// After a failure that is not about one video — no token, or every web
+  /// client refusing the token — the route is left alone for a while. Every
+  /// capped video would otherwise pay the full cost of rediscovering that.
+  DateTime _hdUnlockPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _hdUnlockBackoff = Duration(minutes: 10);
+
+  /// How long an upgrade may take before the viewer is left at 360p. The
+  /// stream is already playing, so this bounds wasted work, not waiting.
+  static const _hdUpgradeBudget = Duration(seconds: 60);
+
+  /// Runs the HD-unlock route for an already-playing video and, if it yields
+  /// tracks that serve to the end, replaces the cache entry with the HD
+  /// sources and completes with them. Null on any failure.
+  Future<PlaybackSources?> _upgradeToHd(
+    String key,
+    String videoId,
+    PlayerStreams streams,
+  ) async {
+    try {
+      return await () async {
+        final attested = await _attestedStreams(videoId);
+        if (attested == null) return null;
+        if (attested.hlsUrl != null) {
+          return _cache(key, PlaybackSources(
+            url: attested.hlsUrl!,
+            qualities: const {},
+            audioOnlyUrl: streams.audioUrl,
+            isHls: true,
+            isLive: attested.isLive,
+            fallbackUrl: streams.muxedUrl,
+          ));
+        }
+        if (attested.adaptiveFormats.isEmpty ||
+            !await _adaptiveTracksPlayThroughout(attested.adaptiveFormats)) {
+          return null;
+        }
+        return _generatedSources(
+          key,
+          videoId,
+          attested.adaptiveFormats,
+          audioOnlyUrl: streams.audioUrl,
+          fallbackUrl: streams.muxedUrl,
+        );
+      }()
+          .timeout(_hdUpgradeBudget);
+    } catch (e) {
+      debugPrint('AI BIT: HD upgrade for $videoId did not complete — $e');
+      return null;
+    }
+  }
+
+  /// Mints the token, loads the solver and reads the player build ahead of
+  /// the first video, so the first upgrade costs one player request rather
+  /// than a bot check. Fire-and-forget; failures are reported through the
+  /// attestation's own status.
+  void warmUpHd() {
+    if (!_hdUnlockWorthTrying) return;
+    unawaited(_attestation!.warmUp());
+  }
+
   /// The web client's tracks for [videoId], resolved and stamped with a
   /// proof-of-origin token — or null when the route is off, unsupported, or
   /// fails anywhere along the way.
@@ -1199,12 +1266,14 @@ class YtRepository {
       final session = await attestation.session();
       if (session == null) {
         log?.add('No token: ${attestation.status}');
+        _pauseHdUnlock('no token');
         return null;
       }
       final player = await attestation.player();
       log?.add('Player build: ${Uri.parse(player.url).pathSegments[2]}, '
           'sts ${player.signatureTimestamp}');
 
+      var refusals = 0;
       for (final client in YoutubePlayerClient.webClients) {
         final response = await _player.fetchWeb(
           videoId,
@@ -1216,6 +1285,12 @@ class YtRepository {
         if (!response.isOk) {
           log?.add('${client.name}: ${response.status} '
               '${response.reason ?? ''}'.trim());
+          // A token demand with a token attached means the token is not
+          // being accepted; a video-specific refusal says something else.
+          if (response.status == 'LOGIN_REQUIRED' ||
+              (response.reason ?? '').contains('reloaded')) {
+            refusals++;
+          }
           continue;
         }
         if (!response.hasAddressableFormats) {
@@ -1258,11 +1333,21 @@ class YtRepository {
           isLive: response.isLive,
         );
       }
+      if (refusals == YoutubePlayerClient.webClients.length) {
+        _pauseHdUnlock('every web client refused the token');
+      }
     } catch (e) {
       log?.add('Failed: $e');
       debugPrint('AI BIT: attestation route failed for $videoId — $e');
     }
     return null;
+  }
+
+  void _pauseHdUnlock(String why) {
+    _hdUnlockPausedUntil = DateTime.now().add(_hdUnlockBackoff);
+    debugPrint(
+      'AI BIT: HD unlock paused for ${_hdUnlockBackoff.inMinutes} min — $why',
+    );
   }
 
   /// Highest-bitrate AAC track, or any audio, as the audio-only URL. The
@@ -1294,6 +1379,8 @@ class YtRepository {
       log.add('Not available on this platform');
       return log;
     }
+    // A deliberate test is the one caller that should not be told "paused".
+    _hdUnlockPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
     final watch = Stopwatch()..start();
     final session = await attestation.session(force: true);
     if (session == null) {
@@ -1410,46 +1497,27 @@ class YtRepository {
           );
           if (generated != null) return generated;
         }
-        // The tracks are capped. The last route to HD is to ask as the web
-        // client with a proof-of-origin token from YouTube's own bot check
-        // (see attestation_service.dart). Its tracks go through exactly the
-        // same end-of-file test: the token is supposed to lift the cap, and
-        // "supposed to" is not a reason to skip the measurement.
-        if (canUseDash || canUseGeneratedHls) {
-          final attested = await _attestedStreams(videoId);
-          if (attested != null) {
-            if (attested.hlsUrl != null) {
-              return _cache(key, PlaybackSources(
-                url: attested.hlsUrl!,
-                qualities: const {},
-                audioOnlyUrl: streams.audioUrl,
-                isHls: true,
-                isLive: attested.isLive,
-                fallbackUrl: streams.muxedUrl,
-              ));
-            }
-            if (attested.adaptiveFormats.isNotEmpty &&
-                await _adaptiveTracksPlayThroughout(attested.adaptiveFormats)) {
-              final generated = await _generatedSources(
-                key,
-                videoId,
-                attested.adaptiveFormats,
-                audioOnlyUrl: streams.audioUrl,
-                fallbackUrl: streams.muxedUrl,
-              );
-              if (generated != null) return generated;
-            }
-          }
-        }
         if (streams.muxedUrl != null) {
-          return _cache(key, PlaybackSources(
+          // The tracks are capped, so the progressive stream plays NOW — and
+          // the last route to HD runs behind it: ask as the web client with a
+          // proof-of-origin token from YouTube's own bot check (see
+          // attestation_service.dart). It takes seconds, and making playback
+          // wait for it put every capped video on a spinner. Its tracks go
+          // through exactly the same end-of-file test before the player is
+          // switched over: the token is supposed to lift the cap, and
+          // "supposed to" is not a reason to skip the measurement.
+          final sources = PlaybackSources(
             url: streams.muxedUrl!,
             // Without these the picker showed only "Auto" on every video that
             // has no HLS ladder, which reads as broken rather than as "this
             // video only comes in one size".
             qualities: streams.muxedQualities,
             audioOnlyUrl: streams.audioUrl,
-          ));
+            upgrade: (canUseDash || canUseGeneratedHls) && _hdUnlockWorthTrying
+                ? _upgradeToHd(key, videoId, streams)
+                : null,
+          );
+          return _cache(key, sources);
         }
       }
     } catch (e) {

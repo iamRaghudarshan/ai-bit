@@ -52,6 +52,55 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- YouTube links, so a tap elsewhere can land here instead of in
+                 the YouTube app. Not verifiable (youtube.com is not ours), so
+                 on Android 12+ this only shows in the chooser once the user
+                 has stopped the YouTube app from opening its links by default.
+                 The SEND filter below works regardless of that. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"/>
+                <data android:scheme="http"/>
+                <data android:host="youtu.be"/>
+                <data android:pathPattern="/..*"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"/>
+                <data android:scheme="http"/>
+                <data android:host="www.youtube.com"/>
+                <data android:host="youtube.com"/>
+                <data android:host="m.youtube.com"/>
+                <data android:host="music.youtube.com"/>
+                <data android:pathPrefix="/watch"/>
+                <data android:pathPrefix="/shorts/"/>
+                <data android:pathPrefix="/live/"/>
+                <data android:pathPrefix="/embed/"/>
+                <data android:pathPrefix="/playlist"/>
+            </intent-filter>
+            <!-- The YouTube app's own scheme: vnd.youtube:VIDEOID. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="vnd.youtube"/>
+            </intent-filter>
+            <!-- "Share -> AI BIT" from any app, the YouTube app included. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+            <!-- The engine's built-in deep linking would push the raw URL as a
+                 named route, which this Navigator-based app cannot serve.
+                 MainActivity hands links over on its own channel instead. -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="false"/>
         </activity>
         <!-- Holds the floating player's overlay window. A foreground service
              because a view added to the WindowManager dies with the context

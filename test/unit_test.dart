@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
+import 'package:ai_bit/src/core/incoming_links.dart';
 import 'package:ai_bit/src/data/attestation/web_formats.dart';
 import 'package:ai_bit/src/data/app_lock_service.dart';
 import 'package:ai_bit/src/data/data_usage_service.dart';
@@ -4023,6 +4024,60 @@ Some blurb about the video.
   // proof-of-origin token stamped on. The challenges themselves are solved in
   // a WebView and cannot run here; everything around them is pure and these
   // tests pin it. See lib/src/data/attestation/web_formats.dart.
+  // A link tapped in another app or shared into this one. See
+  // lib/src/core/incoming_links.dart for why Android gets this and iOS does
+  // not; the extraction is pure and these pin the shapes that arrive.
+  group('youtubeReferenceIn', () {
+    test('a tapped link arrives as itself', () {
+      expect(
+        youtubeReferenceIn('https://youtu.be/dQw4w9WgXcQ?si=abc'),
+        'https://youtu.be/dQw4w9WgXcQ?si=abc',
+      );
+      expect(
+        youtubeReferenceIn('https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx'),
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx',
+      );
+    });
+
+    test('shared text is a sentence around a link', () {
+      expect(
+        youtubeReferenceIn('Watch this! https://youtu.be/dQw4w9WgXcQ amazing'),
+        'https://youtu.be/dQw4w9WgXcQ',
+      );
+      // Trailing punctuation belongs to the sentence, not the URL.
+      expect(
+        youtubeReferenceIn('see https://m.youtube.com/shorts/dQw4w9WgXcQ.'),
+        'https://m.youtube.com/shorts/dQw4w9WgXcQ',
+      );
+    });
+
+    test("the YouTube app's own scheme carries a bare id", () {
+      expect(youtubeReferenceIn('vnd.youtube:dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+      expect(youtubeReferenceIn('vnd.youtube://dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
+    });
+
+    test('anything else is not a reference', () {
+      expect(youtubeReferenceIn('hello there'), isNull);
+      expect(youtubeReferenceIn('https://example.com/watch?v=dQw4w9WgXcQ'), isNull);
+      expect(youtubeReferenceIn('   '), isNull);
+    });
+
+    test('and the result is something parseVideoId understands', () {
+      for (final text in [
+        'Watch https://youtu.be/dQw4w9WgXcQ now',
+        'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        'https://www.youtube.com/shorts/dQw4w9WgXcQ',
+        'vnd.youtube:dQw4w9WgXcQ',
+      ]) {
+        expect(
+          YtRepository.parseVideoId(youtubeReferenceIn(text)!),
+          'dQw4w9WgXcQ',
+          reason: text,
+        );
+      }
+    });
+  });
+
   group('web formats', () {
     const base = 'https://rr1.googlevideo.com/videoplayback?expire=1&n=abc&clen=100';
 

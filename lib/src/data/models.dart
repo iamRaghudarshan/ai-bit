@@ -396,6 +396,7 @@ class PlaybackSources {
     this.isLive = false,
     this.videoUnavailable = false,
     this.fallbackUrl,
+    this.upgrade,
   });
 
   /// The stream the player opens with.
@@ -441,4 +442,16 @@ class PlaybackSources {
   /// costs the viewer some resolution instead of the whole video. See
   /// `PlaybackController._recoverFromFailure`.
   final String? fallbackUrl;
+
+  /// A better source that may arrive later, or null when nothing is pending.
+  ///
+  /// The HD-unlock route (`attestation_service.dart`) takes seconds — a bot
+  /// check, a player request, a challenge solve — and the first version of
+  /// it ran *before* playback, so every capped video sat on a spinner while
+  /// it worked. YouTube starts low and steps up; so does this now: [url] is
+  /// the stream that plays immediately, and this future completes with the
+  /// HD sources once they exist and have been proved to play to the end, or
+  /// with null when they do not. The controller switches over at the current
+  /// position. Never awaited before playback starts.
+  final Future<PlaybackSources?>? upgrade;
 }
