@@ -826,24 +826,73 @@ int? uploadAgeSeconds(VideoBrief video, DateTime now) {
     final seconds = now.difference(date).inSeconds;
     return seconds < 0 ? 0 : seconds;
   }
-  final raw = video.uploadRaw;
+  return parseRelativeAgeSeconds(video.uploadRaw);
+}
+
+const _perUnitSeconds = {
+  'second': 1,
+  'minute': 60,
+  'hour': 3600,
+  'day': 86400,
+  'week': 604800,
+  'month': 2592000,
+  'year': 31536000,
+};
+
+/// Seconds behind now that a phrase like "3 days ago" describes, or null.
+///
+/// **Two shapes, because YouTube returns two**, and reading only the first is
+/// a bug that hides completely. The browse and `next` endpoints spell the unit
+/// out — "3 days ago", "Streamed 2 hours ago" — but the related lists that
+/// feed the recommender abbreviate it: `17y ago`, `9mo ago`, `5d ago`. A
+/// pattern matching only `year` finds nothing in `17y ago` and returns null,
+/// which the ranker reads as "age unknown" and scores at the generous
+/// midpoint — so **every co-watch candidate, the strongest source there is,
+/// was being treated as though it might be new.** A seventeen-year-old music
+/// video outranked a two-month-old one on freshness. That is how videos from
+/// years ago kept reaching the top of a feed whose ranker was working
+/// correctly on everything it could actually read.
+///
+/// The abbreviated form requires a following "ago" and the spelled-out form
+/// does not. That asymmetry is deliberate: `uploadRaw` is sometimes an ISO
+/// timestamp, and `2026-11-19T05:52:11` is full of digit-then-letter pairs
+/// that a bare abbreviation pattern would happily read as an age. Requiring
+/// "ago" costs nothing — YouTube's relative strings always end with it — and
+/// keeps a timestamp returning null, which is the right answer.
+///
+/// `mo` is tested before `m` for the obvious reason: YouTube writes months as
+/// `mo` and minutes as `m`, so matching `m` first turns nine months into nine
+/// minutes.
+int? parseRelativeAgeSeconds(String? raw) {
   if (raw == null || raw.isEmpty) return null;
-  final match = RegExp(
+  final lower = raw.toLowerCase();
+
+  // Spelled out: "3 days ago", "Streamed 2 hours ago", "1 year ago".
+  final spelled = RegExp(
     r'(\d+)\s*(second|minute|hour|day|week|month|year)',
-  ).firstMatch(raw.toLowerCase());
-  if (match == null) return null;
-  final count = int.tryParse(match.group(1)!);
+  ).firstMatch(lower);
+  if (spelled != null) {
+    final count = int.tryParse(spelled.group(1)!);
+    if (count != null) return count * _perUnitSeconds[spelled.group(2)]!;
+  }
+
+  // Abbreviated: "17y ago", "9mo ago", "5d ago". `mo` first — see above.
+  final short = RegExp(
+    r'(\d+)\s*(mo|[ywdhms])\s+ago',
+  ).firstMatch(lower);
+  if (short == null) return null;
+  final count = int.tryParse(short.group(1)!);
   if (count == null) return null;
-  const perUnit = {
-    'second': 1,
-    'minute': 60,
-    'hour': 3600,
-    'day': 86400,
-    'week': 604800,
-    'month': 2592000,
-    'year': 31536000,
+  const perAbbrev = {
+    's': 'second',
+    'm': 'minute',
+    'h': 'hour',
+    'd': 'day',
+    'w': 'week',
+    'mo': 'month',
+    'y': 'year',
   };
-  return count * perUnit[match.group(2)]!;
+  return count * _perUnitSeconds[perAbbrev[short.group(2)]!]!;
 }
 
 /// Views **per day**, log-scaled to 0..1 across the range a real video

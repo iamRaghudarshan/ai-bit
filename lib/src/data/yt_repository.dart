@@ -459,33 +459,20 @@ class YtRepository {
   /// Parsing that phrase back is coarse — every month counts as 30 days — but
   /// it is enough to put today's upload above last year's, which is the whole
   /// job. Pure and static so it can be unit-tested without a network.
+  /// Delegates to [parseRelativeAgeSeconds] rather than keeping its own copy.
+  ///
+  /// It used to be a second implementation of the same rule, with a comment
+  /// saying the two must agree. They did not: the recommender's copy learnt to
+  /// read YouTube's abbreviated `17y ago` form and this one would have been
+  /// left reading only `17 years ago`, so the Subscriptions tab would have
+  /// sorted by an age the feed disagreed about. One rule, one place.
   static int? uploadAgeSeconds(VideoBrief video) {
     final date = video.uploadDate;
     if (date != null) {
       final seconds = DateTime.now().difference(date).inSeconds;
       return seconds < 0 ? 0 : seconds;
     }
-    final raw = video.uploadRaw;
-    if (raw == null || raw.isEmpty) return null;
-    // Leading text is common ("Streamed 2 days ago"), so search rather than
-    // anchor. An ISO timestamp — which uploadRaw sometimes is — has no unit
-    // word and simply fails to match, which is the right answer.
-    final match = RegExp(
-      r'(\d+)\s*(second|minute|hour|day|week|month|year)',
-    ).firstMatch(raw.toLowerCase());
-    if (match == null) return null;
-    final count = int.tryParse(match.group(1)!);
-    if (count == null) return null;
-    const perUnit = {
-      'second': 1,
-      'minute': 60,
-      'hour': 3600,
-      'day': 86400,
-      'week': 604800,
-      'month': 2592000,
-      'year': 31536000,
-    };
-    return count * perUnit[match.group(2)]!;
+    return parseRelativeAgeSeconds(video.uploadRaw);
   }
 
   /// Orders a merged feed newest-first.
@@ -705,9 +692,15 @@ class YtRepository {
   /// nothing at all. Only an *empty* result widens, so the common case stays
   /// one request.
   Future<List<VideoBrief>> _recentTopicSearch(String query, int index) async {
+    // Month and week only. "This year" was a third slot here and it was the
+    // wrong tool for a primary query: measured with tool/check_home_feed.dart
+    // it returns a median age of three months and puts half its results past
+    // sixty days, which is how a feed that had stopped showing six-year-old
+    // video started showing five-month-old video instead. It stays below as
+    // the widening step, which is what it is actually for — a last resort for
+    // a narrow topic with nothing recent, not a third of every feed.
     const windows = [
       YoutubeSearchClient.uploadedThisMonth,
-      YoutubeSearchClient.uploadedThisYear,
       YoutubeSearchClient.uploadedThisWeek,
     ];
     final window = windows[index.abs() % windows.length];

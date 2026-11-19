@@ -9,6 +9,7 @@ import 'package:ai_bit/src/data/kids_guard.dart';
 import 'package:ai_bit/src/data/custom_feeds.dart';
 import 'package:ai_bit/src/data/interests.dart';
 import 'package:ai_bit/src/data/models.dart';
+import 'package:ai_bit/src/data/player_client.dart';
 import 'package:ai_bit/src/data/recommender.dart';
 import 'package:ai_bit/src/data/search_client.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
@@ -831,12 +832,50 @@ Some blurb about the video.
       expect(age('11 months ago')!, lessThan(age('1 year ago')!));
     });
 
+    test('reads the ABBREVIATED form the related lists use', () {
+      // The bug this group exists to prevent recurring. YouTube's `next`
+      // endpoint — the related list, which is the recommender's strongest
+      // candidate source — writes ages as "17y ago", not "17 years ago". The
+      // spelled-out pattern finds nothing in that, returns null, and the
+      // ranker reads null as "age unknown" and scores it at the generous
+      // midpoint. Every co-watch candidate was therefore treated as possibly
+      // new, and seventeen-year-old videos outranked two-month-old ones.
+      int? age(String raw) => YtRepository.uploadAgeSeconds(video(raw: raw));
+      expect(age('17y ago'), 17 * 31536000);
+      expect(age('5d ago'), const Duration(days: 5).inSeconds);
+      expect(age('2w ago'), const Duration(days: 14).inSeconds);
+      expect(age('4h ago'), const Duration(hours: 4).inSeconds);
+      expect(age('45s ago'), 45);
+    });
+
+    test('abbreviated months are months, not minutes', () {
+      // `mo` must be tested before `m`, or "9mo ago" is read as nine minutes —
+      // which would make an old video the freshest thing in the feed, the
+      // exact opposite of the bug being fixed.
+      int? age(String raw) => YtRepository.uploadAgeSeconds(video(raw: raw));
+      expect(age('9mo ago'), 9 * 2592000);
+      expect(age('30m ago'), const Duration(minutes: 30).inSeconds);
+      expect(age('9mo ago')!, greaterThan(age('30m ago')!));
+    });
+
+    test('abbreviated and spelled-out forms agree', () {
+      int? age(String raw) => YtRepository.uploadAgeSeconds(video(raw: raw));
+      expect(age('3d ago'), age('3 days ago'));
+      expect(age('1y ago'), age('1 year ago'));
+      expect(age('6mo ago'), age('6 months ago'));
+    });
+
     test('gives up on anything with no unit word', () {
       int? age(String raw) => YtRepository.uploadAgeSeconds(video(raw: raw));
       // uploadRaw is sometimes an ISO timestamp. It carries digits but no unit
       // word, so it must fail to match rather than be read as "2026 seconds".
+      // This is why the abbreviated form requires a following "ago": a bare
+      // digit-then-letter rule would read "2026-08-05 15:56:39" as an age.
       expect(age('2026-08-05 15:56:39.000Z'), isNull);
+      expect(age('2026-11-19T05:52:11Z'), isNull);
       expect(age('LIVE'), isNull);
+      expect(age('1,204 views'), isNull);
+      expect(age('17y'), isNull, reason: 'no "ago", so not a relative age');
       expect(age(''), isNull);
       expect(YtRepository.uploadAgeSeconds(video()), isNull);
     });
@@ -3456,6 +3495,108 @@ Some blurb about the video.
       );
       expect(out, hasLength(1));
       expect(out.single.query, 'one');
+    });
+  });
+
+  // ------------------------------------------- combining the player clients
+  //
+  // Why these exist: adding adaptive tracks to `hasVideo` — which the DASH
+  // work had to do — silently broke iOS. The clients return different things,
+  // the old code kept one response and discarded the others, and the response
+  // it started keeping was the one with no stream an iPhone can play. Android
+  // was fine throughout, so nothing here caught it and it shipped.
+  //
+  // Each test below is one of the ways that merge can go wrong.
+
+  group('PlayerStreams.merge', () {
+    AdaptiveFormat fmt(int itag, {bool videoTrack = true}) => AdaptiveFormat(
+          itag: itag,
+          url: 'https://r1.googlevideo.com/v?itag=$itag',
+          mimeType: videoTrack ? 'video/mp4' : 'audio/mp4',
+          codecs: videoTrack ? 'avc1.640028' : 'mp4a.40.2',
+          bitrate: 1000,
+          durationMs: 60000,
+          initStart: 0,
+          initEnd: 700,
+          indexStart: 701,
+          indexEnd: 2000,
+          height: videoTrack ? 1080 : 0,
+        );
+
+    test('a muxed stream survives an adaptive-only response seen first', () {
+      // THE REGRESSION, exactly. The ios client returns adaptive tracks and no
+      // progressive stream; the android client returns the 360p progressive.
+      // Keeping only the first left iOS — which cannot play DASH — with
+      // nothing, and every such video showed "could not find a playable
+      // stream".
+      final iosLike = PlayerStreams(
+        adaptiveFormats: [fmt(137), fmt(140, videoTrack: false)],
+      );
+      final androidLike = PlayerStreams(
+        muxedUrl: 'https://r1.googlevideo.com/v?itag=18',
+        muxedQualities: const {'360p': 'https://r1.googlevideo.com/v?itag=18'},
+        adaptiveFormats: [fmt(137), fmt(140, videoTrack: false)],
+      );
+
+      final merged = PlayerStreams.merge([iosLike, androidLike]);
+      expect(merged.muxedUrl, isNotNull,
+          reason: 'iOS has nothing to play without this');
+      expect(merged.muxedQualities, isNotEmpty);
+      expect(merged.hasAdaptiveVideo, isTrue,
+          reason: 'Android must keep its DASH ladder');
+    });
+
+    test('an HLS ladder is kept wherever it came from', () {
+      final plain = PlayerStreams(adaptiveFormats: [fmt(137)]);
+      final withHls = PlayerStreams(hlsUrl: 'https://m.googlevideo.com/x.m3u8');
+      expect(PlayerStreams.merge([plain, withHls]).hlsUrl, isNotNull);
+    });
+
+    test('the muxed URL and its quality map come from the same response', () {
+      // Pairing one client's chosen URL with another's label map would offer a
+      // picker whose entries point at a different client's streams.
+      final a = PlayerStreams(
+        muxedUrl: 'https://a.example/v',
+        muxedQualities: const {'360p': 'https://a.example/v'},
+      );
+      final b = PlayerStreams(
+        muxedUrl: 'https://b.example/v',
+        muxedQualities: const {'720p': 'https://b.example/v'},
+      );
+      final merged = PlayerStreams.merge([a, b]);
+      expect(merged.muxedQualities.values, contains(merged.muxedUrl));
+    });
+
+    test('adaptive formats are taken whole, never spliced together', () {
+      // A DASH manifest must describe one coherent set of tracks. Concatenating
+      // two clients' views produces duplicate itags and tracks that disagree
+      // about duration.
+      final thin = PlayerStreams(adaptiveFormats: [fmt(137)]);
+      final rich = PlayerStreams(
+        adaptiveFormats: [fmt(137), fmt(248), fmt(140, videoTrack: false)],
+      );
+      final merged = PlayerStreams.merge([thin, rich]);
+      expect(merged.adaptiveFormats.length, 3);
+      expect(
+        merged.adaptiveFormats.map((f) => f.itag).toSet().length,
+        3,
+        reason: 'no duplicate itags, so nothing was concatenated',
+      );
+    });
+
+    test('a single response is returned unchanged', () {
+      final only = PlayerStreams(muxedUrl: 'https://a.example/v');
+      expect(PlayerStreams.merge([only]), same(only));
+    });
+
+    test('live is true if any client says so', () {
+      expect(
+        PlayerStreams.merge([
+          PlayerStreams(),
+          PlayerStreams(hlsUrl: 'https://m.googlevideo.com/x.m3u8', isLive: true),
+        ]).isLive,
+        isTrue,
+      );
     });
   });
 

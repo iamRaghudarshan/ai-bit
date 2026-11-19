@@ -292,7 +292,9 @@ D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/check_dash.dart [videoId]       # can HD play? (ladder + manifest + real byte ranges)
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
+D:/flutter/bin/dart.bat run tool/check_playback.dart         # what FRACTION of videos play, per platform?
 D:/flutter/bin/dart.bat run tool/check_feed_recency.dart      # is the feed's candidate pool actually recent?
+D:/flutter/bin/dart.bat run tool/check_home_feed.dart         # the whole ranked feed, by age and by source
 D:/flutter/bin/dart.bat run tool/check_takeout.dart <playlists dir> # does the Takeout parser match a real export
 D:/flutter/bin/dart.bat run tool/takeout_to_backup.dart <takeout dir> # Takeout -> one importable backup file
 ```
@@ -611,6 +613,46 @@ not done — so on iOS it is still the HLS ladder when YouTube offers one and
 
 `_clientChain` is ordered by which clients actually yield combined streams. Do
 not reorder it from first principles; re-measure with `probe_clients.dart`.
+
+**The player clients return different things, so `fetch()` MERGES them rather
+than picking one** (`PlayerStreams.merge`). Measured on one ordinary video, the
+same day:
+
+```
+ios      formats=0  adaptive=19     <- no progressive stream at all
+android  formats=1  adaptive=26     <- has the 360p progressive
+```
+
+This is where the DASH work broke iOS, and it is worth understanding because
+the shape recurs. `hasVideo` had to start counting adaptive tracks — they are
+what DASH is built from. The moment it did, the `ios` response satisfied
+`hasVideo` on adaptive tracks alone, won the single `partial` slot, and the
+`android` response carrying **the only stream an iPhone can play** was thrown
+away. Android never noticed, because it rebuilds the picture from those
+adaptive tracks. On iOS it left nothing, and every video with no HLS — about
+seven in eight — became "Could not find a playable stream". It shipped in
+2.28.3 and was reported as "no videos are playing properly".
+
+Two lessons, both general: a platform that silently has fewer options will fail
+on a change that looks universal, and `tool/check_playback.dart` exists now to
+answer "what fraction of videos play, **per platform**" — a question neither
+`check_streams` nor `check_dash` asked, which is why both stayed green.
+`adaptiveFormats` is the one field taken whole from a single response rather
+than merged, because a DASH manifest has to describe one coherent set of
+tracks.
+
+**YouTube writes ages two ways and reading only one is invisible.** The browse
+endpoint spells it out — "3 days ago" — but the `next` endpoint's related
+lists abbreviate: `17y ago`, `9mo ago`, `5d ago`. The parser only understood
+the spelled-out form, so every related video returned null, the ranker read
+null as "age unknown" and scored it at the deliberately generous 0.5 midpoint,
+and **the strongest candidate source in the app was entirely exempt from
+freshness** — a seventeen-year-old music video scored fresher than a
+two-month-old one. `parseRelativeAgeSeconds` now reads both, `mo` is tested
+before `m` (or nine months becomes nine minutes), and the abbreviated form
+requires a following "ago" so an ISO timestamp still returns null. There is one
+implementation now; `YtRepository.uploadAgeSeconds` delegates to it instead of
+keeping the second copy that a comment claimed was identical.
 
 **A failed stream retries itself once.** "Sometimes a video just fails" had no
 pattern because it has several causes with one cure: a googlevideo URL carries

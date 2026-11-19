@@ -94,7 +94,7 @@ class YoutubePlayerClient {
   /// Walks the client list and returns the first response that yields
   /// something playable. Returns null when none do.
   Future<PlayerStreams?> fetch(String videoId) async {
-    PlayerStreams? partial;
+    final found = <PlayerStreams>[];
     String? reason;
 
     for (final profile in _clients) {
@@ -107,21 +107,18 @@ class YoutubePlayerClient {
         }
 
         final streams = _parse(json);
-        // An HLS ladder ends the search. Otherwise keep the best thing seen so
-        // far, preferring anything with a picture — taking simply the first
-        // response meant a client that returned audio alone beat a later one
-        // that had video.
+        // An HLS ladder ends the search: it is adaptive, already muxed, and
+        // the one thing that plays on both platforms *and* on a live stream.
+        // Nothing a later client could add would improve on it.
         if (streams.hlsUrl != null) return streams;
-        if (partial == null || (!partial.hasVideo && streams.hasVideo)) {
-          partial = streams;
-        }
+        found.add(streams);
       } catch (_) {
         // Try the next client rather than failing the whole resolve.
         continue;
       }
     }
 
-    if (partial != null) return partial;
+    if (found.isNotEmpty) return PlayerStreams.merge(found);
     if (reason != null) throw PlayerUnavailableException(reason);
     return null;
   }
@@ -297,6 +294,70 @@ class PlayerStreams {
       adaptiveFormats.any((f) => f.isAudio);
 
   bool get hasVideo => hlsUrl != null || muxedUrl != null || hasAdaptiveVideo;
+
+  /// Combines what several clients returned into the best single answer.
+  ///
+  /// **This exists because picking one response broke iOS.** The clients do not
+  /// return the same things, and measurably so — for one ordinary video, asked
+  /// on the same day:
+  ///
+  ///     ios      formats=0  adaptive=19     (no progressive stream at all)
+  ///     android  formats=1  adaptive=26     (has the 360p progressive)
+  ///
+  /// The old code kept the first response that satisfied [hasVideo] and
+  /// discarded the rest. Once [hasAdaptiveVideo] was folded into [hasVideo] —
+  /// which it had to be, since adaptive tracks are what DASH is built from —
+  /// the `ios` response began to satisfy it on adaptive tracks alone, won the
+  /// slot, and the `android` response carrying the *only* stream an iPhone can
+  /// play was thrown away. Android never noticed, because it rebuilds the
+  /// picture from those adaptive tracks; on iOS, where AVPlayer cannot play
+  /// DASH, it left nothing at all and every such video became "could not find
+  /// a playable stream".
+  ///
+  /// So: take the best of each kind rather than the best single response. The
+  /// pieces are independently signed URLs describing the same video, and
+  /// nothing here combines two of them into one stream — each is a separate
+  /// thing the player might be handed.
+  ///
+  /// The one exception is [adaptiveFormats], which is taken whole from the
+  /// single richest response and never merged across responses: a DASH
+  /// manifest has to describe one coherent set of tracks, and splicing two
+  /// clients' views of a video is how you get a manifest whose audio and video
+  /// disagree about duration.
+  static PlayerStreams merge(List<PlayerStreams> all) {
+    if (all.length == 1) return all.first;
+
+    String? hls;
+    String? audio;
+    String? muxed;
+    var muxedQualities = const <String, String>{};
+    var adaptive = const <AdaptiveFormat>[];
+    var isLive = false;
+
+    for (final s in all) {
+      hls ??= s.hlsUrl;
+      audio ??= s.audioUrl;
+      // Kept together: a label-to-URL map from one client must not be paired
+      // with another client's chosen URL.
+      if (muxed == null && s.muxedUrl != null) {
+        muxed = s.muxedUrl;
+        muxedQualities = s.muxedQualities;
+      }
+      if (s.adaptiveFormats.length > adaptive.length) {
+        adaptive = s.adaptiveFormats;
+      }
+      isLive = isLive || s.isLive;
+    }
+
+    return PlayerStreams(
+      hlsUrl: hls,
+      audioUrl: audio,
+      muxedUrl: muxed,
+      muxedQualities: muxedQualities,
+      adaptiveFormats: adaptive,
+      isLive: isLive,
+    );
+  }
 }
 
 class _ClientProfile {
