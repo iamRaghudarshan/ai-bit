@@ -71,6 +71,23 @@ class YoutubeSearchClient {
   static final filterShort = buildParams(duration: 1);
   static final filterByViewCount = buildParams(sortBy: 3);
 
+  /// `uploadDate` field values, for asking a search to stay inside a window.
+  ///
+  /// These exist because [filterByViewCount] on its own means "the most-viewed
+  /// videos of all time matching this query", and the most-viewed video about
+  /// almost any topic is years old. Used unwindowed to build the home feed it
+  /// is a greatest-hits query, which is exactly how a feed fills up with
+  /// six-year-old videos: ranking can only ever order what candidate
+  /// generation found, so no amount of freshness weighting downstream can
+  /// rescue a candidate pool that contains nothing recent.
+  ///
+  /// Combined with [buildParams]'s `sortBy`, `uploadDate: uploadedThisWeek`
+  /// reads as "the most-watched thing about this in the last week", which is
+  /// what a recommendation feed actually wants.
+  static const uploadedThisWeek = 3;
+  static const uploadedThisMonth = 4;
+  static const uploadedThisYear = 5;
+
   /// Single-choice search filters, matching YouTube's own filter panel.
   ///
   /// The values are protobuf field numbers rather than finished `sp` strings.

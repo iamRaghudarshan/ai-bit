@@ -171,10 +171,11 @@ class YtRepository {
     // also why it does not go through the ranker: ranking against a profile
     // built from the adult's viewing is precisely what must not happen here.
     if (kids) {
-      final topics = _rotate(_kidsTopics, refreshToken).take(6);
-      final results = await Future.wait(
-        topics.map((t) => _safe(() => search(t, sortByViews: true))),
-      );
+      final topics = _rotate(_kidsTopics, refreshToken).take(6).toList();
+      final results = await Future.wait([
+        for (var i = 0; i < topics.length; i++)
+          _safe(() => _recentTopicSearch(topics[i], refreshToken + i)),
+      ]);
       return _interleave(results, skip: refreshToken);
     }
 
@@ -187,7 +188,12 @@ class YtRepository {
     // The tag is all the ordering information the ranker needs from this
     // stage; everything else it works out from the videos themselves.
     final tasks = <Future<(CandidateSource, List<VideoBrief>)>>[
-      for (final id in rotatedSubs.take(6))
+      // Subscriptions, widened from six channels to eight. Somebody following
+      // thirty channels had at most thirty-six subscription candidates in a
+      // pool of several hundred, which is a thin showing for the one signal
+      // the user stated outright by pressing Subscribe — and the rotation
+      // meant most of the list simply was not asked about on any given load.
+      for (final id in rotatedSubs.take(8))
         _tagged(CandidateSource.subscription, () => channelUploads(id, limit: 6)),
       // The co-watch graph. Several seeds rather than one because a single
       // recent video biases the whole feed towards one evening's mood, and
@@ -208,8 +214,18 @@ class YtRepository {
         _tagged(CandidateSource.coWatch, () => _relatedTwoHops(videoId)),
       for (final id in rotatedChannels.take(5))
         _tagged(CandidateSource.watchedChannel, () => channelUploads(id, limit: 8)),
-      for (final q in rotatedSearches.take(4))
-        _tagged(CandidateSource.search, () => search(q)),
+      // What the user searched for, kept inside a recent window like the topic
+      // sources below. On the search *screen* an all-time relevance ranking is
+      // right — somebody looking something up wants the best answer, whenever
+      // it was posted. As a feed source it is not: "what's new about the thing
+      // I was looking into" is the useful reading, and the all-time version
+      // simply re-offers the same canonical video every refresh for as long as
+      // the query stays in history.
+      for (final (i, q) in rotatedSearches.take(4).indexed)
+        _tagged(
+          CandidateSource.search,
+          () => _recentTopicSearch(q, refreshToken + i),
+        ),
     ];
 
     // What the user actually said they want, when they have said anything.
@@ -225,10 +241,10 @@ class YtRepository {
       refreshToken,
     );
     tasks.addAll(
-      chosen.take(6).map(
-            (q) => _tagged(
+      chosen.take(6).indexed.map(
+            ((int, String) e) => _tagged(
               CandidateSource.interest,
-              () => search(q, sortByViews: true),
+              () => _recentTopicSearch(e.$2, refreshToken + e.$1),
             ),
           ),
     );
@@ -243,10 +259,10 @@ class YtRepository {
         chosen.isNotEmpty;
     final topics = _rotate(_coldStartTopics, refreshToken);
     tasks.addAll(
-      topics.take(hasSignals ? 1 : 4).map(
-            (t) => _tagged(
+      topics.take(hasSignals ? 1 : 4).indexed.map(
+            ((int, String) e) => _tagged(
               CandidateSource.topic,
-              () => search(t, sortByViews: true),
+              () => _recentTopicSearch(e.$2, refreshToken + e.$1),
             ),
           ),
     );
@@ -497,15 +513,42 @@ class YtRepository {
     return [for (final r in ranked) r.video];
   }
 
-  /// Most-viewed videos across a rotating topic — the closest thing to a
-  /// "Trending" tab available without the official Data API.
+  /// Most-viewed *recent* videos across a rotating topic — the closest thing
+  /// to a "Trending" tab available without the official Data API.
+  ///
+  /// The window is the chip's whole meaning. Sorted by view count with no
+  /// window this asked for the most-watched videos of all time about three
+  /// evergreen topics, which is a fixed list that cannot trend: it returned
+  /// the same decade-old music videos every time and changed only when the
+  /// topic rotation did.
   Future<List<VideoBrief>> trending({int refreshToken = 0}) async {
     if (isPreview) return _previewRows(refreshToken);
-    final topics = _rotate(_coldStartTopics, refreshToken);
-    final results = await Future.wait(
-      topics.take(3).map((t) => _safe(() => search(t, sortByViews: true))),
-    );
-    return _interleave(results);
+    final topics = _rotate(_coldStartTopics, refreshToken).take(3).toList();
+    final results = await Future.wait([
+      for (final t in topics)
+        _safe(
+          () => search(
+            t,
+            sortByViews: true,
+            uploadedWithin: YoutubeSearchClient.uploadedThisWeek,
+          ),
+        ),
+    ]);
+    final pooled = _interleave(results);
+    // A quiet week on a narrow topic can return nothing at all; falling back
+    // to the month keeps the chip from looking broken.
+    if (pooled.isNotEmpty) return pooled;
+    final wider = await Future.wait([
+      for (final t in topics)
+        _safe(
+          () => search(
+            t,
+            sortByViews: true,
+            uploadedWithin: YoutubeSearchClient.uploadedThisMonth,
+          ),
+        ),
+    ]);
+    return _interleave(wider);
   }
 
   /// Vertical-video feed for the Shorts tab.
@@ -606,6 +649,11 @@ class YtRepository {
   Future<List<VideoBrief>> search(
     String query, {
     bool sortByViews = false,
+
+    /// Restrict results to videos uploaded inside a window — one of
+    /// [YoutubeSearchClient.uploadedThisWeek] and friends. Null means any
+    /// time, which is right for the search screen and wrong for the feed.
+    int? uploadedWithin,
     String? params,
   }) async {
     if (isPreview) {
@@ -626,10 +674,60 @@ class YtRepository {
     return _search.search(
       query,
       params: params ??
-          (sortByViews
-              ? YoutubeSearchClient.filterByViewCount
-              : YoutubeSearchClient.filterVideosOnly),
+          (uploadedWithin != null
+              ? YoutubeSearchClient.buildParams(
+                  sortBy: sortByViews ? 3 : null,
+                  uploadDate: uploadedWithin,
+                )
+              : sortByViews
+                  ? YoutubeSearchClient.filterByViewCount
+                  : YoutubeSearchClient.filterVideosOnly),
     );
+  }
+
+  /// Windows a topic search to recent uploads, widening only if it has to.
+  ///
+  /// This is the candidate-generation half of "the feed keeps showing me
+  /// six-year-old videos". A topic query sorted by view count returns the
+  /// all-time most-watched video about that topic, and for most topics that is
+  /// something from years ago with tens of millions of views — which then
+  /// *also* looks like the most popular candidate in the pool, because raw
+  /// view counts accumulate with age. Asking YouTube for a window fixes it at
+  /// source instead of trying to out-weight it in the ranker.
+  ///
+  /// The window rotates with [index] so the feed mixes "biggest this week"
+  /// with "biggest this year" rather than being one or the other, and so a
+  /// pull-to-refresh changes which it asks for.
+  ///
+  /// The widening matters as much as the window: a narrow topic — a declared
+  /// interest like "self-hosting homelab tutorials" — can genuinely have
+  /// nothing from the last week, and a strict window would then contribute
+  /// nothing at all. Only an *empty* result widens, so the common case stays
+  /// one request.
+  Future<List<VideoBrief>> _recentTopicSearch(String query, int index) async {
+    const windows = [
+      YoutubeSearchClient.uploadedThisMonth,
+      YoutubeSearchClient.uploadedThisYear,
+      YoutubeSearchClient.uploadedThisWeek,
+    ];
+    final window = windows[index.abs() % windows.length];
+    final windowed = await search(
+      query,
+      sortByViews: true,
+      uploadedWithin: window,
+    );
+    if (windowed.isNotEmpty) return windowed;
+    if (window != YoutubeSearchClient.uploadedThisYear) {
+      final wider = await search(
+        query,
+        sortByViews: true,
+        uploadedWithin: YoutubeSearchClient.uploadedThisYear,
+      );
+      if (wider.isNotEmpty) return wider;
+    }
+    // Nothing recent exists for this query. An evergreen answer beats an empty
+    // section.
+    return search(query, sortByViews: true);
   }
 
   Future<List<String>> suggestions(String query) async {

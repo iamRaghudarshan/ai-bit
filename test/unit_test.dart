@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/data/app_lock_service.dart';
@@ -8,6 +10,7 @@ import 'package:ai_bit/src/data/custom_feeds.dart';
 import 'package:ai_bit/src/data/interests.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/recommender.dart';
+import 'package:ai_bit/src/data/search_client.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
@@ -1606,6 +1609,97 @@ Some blurb about the video.
         scoreOf(video('a', views: 1000000)),
         greaterThan(scoreOf(video('b', views: 100))),
       );
+    });
+
+    // --- the "recommendations are from six years back" group ---
+    //
+    // Three separate causes, each with its own test, because fixing one and
+    // declaring victory is what happened the first time. The feed was full of
+    // years-old video, and none of these on its own explains it.
+
+    test('months old and years old are not the same thing', () {
+      // The fast decay saturates: with a ten-day half-life alone, anything
+      // past about two months scored zero on freshness, so a three-month-old
+      // video and a six-year-old one were *tied* on the only term that knows
+      // about age. Everything beyond the saturation point was a flat plain,
+      // and the tiebreak then fell to accumulated views — which the older
+      // video wins simply by having been around longer.
+      final months = scoreOf(video('a', age: const Duration(days: 90)));
+      final years = scoreOf(video('b', age: const Duration(days: 2190)));
+      expect(months, greaterThan(years));
+      // And the gap is worth something, not a rounding error.
+      expect(months - years, greaterThan(0.1));
+    });
+
+    test('views are counted per day, so an old blockbuster does not win', () {
+      // The heart of it. A view count only ever grows, so it measures age as
+      // much as appeal. Totalled, the six-year-old video with fifty million
+      // views beat the three-day-old one with two hundred thousand on
+      // popularity *as well as* on the saturated freshness term — it won on
+      // every term that could separate them. Rated, it is 23k views/day
+      // against 67k, and the fresh one wins.
+      final oldHit = video(
+        'old',
+        views: 50000000,
+        age: const Duration(days: 2190),
+      );
+      final newHit = video(
+        'new',
+        views: 200000,
+        age: const Duration(days: 3),
+      );
+      expect(scoreOf(newHit), greaterThan(scoreOf(oldHit)));
+    });
+
+    test('a video posted an hour ago is not credited with a daily rate', () {
+      // Age is floored at a day before dividing, or a video an hour old would
+      // have its views multiplied by twenty-four and lead the feed on a
+      // handful of them.
+      final hourOld = video('a', views: 1000, age: const Duration(hours: 1));
+      final dayOld = video('b', views: 1000, age: const Duration(days: 1));
+      // Same rate, so the only difference left is the freshness term — which
+      // the newer one should win, but not by the 24x popularity would give it.
+      expect(scoreOf(hourOld) - scoreOf(dayOld), lessThan(0.2));
+      expect(scoreOf(hourOld), greaterThan(scoreOf(dayOld)));
+    });
+
+    test('an undated video is not crowned by having no age to divide by', () {
+      // An unknown age is a parsing gap, not a claim about the video. Dividing
+      // by a nominal month keeps every undated row on one scale; dividing by
+      // nothing, or treating the age as zero, would have made undated rows the
+      // most "popular" thing in the pool.
+      final undated = VideoBrief(
+        id: 'u',
+        title: 'a woodworking bench build',
+        author: 'x',
+        channelId: 'x',
+        viewCount: 1000000,
+      );
+      final fresh = video(
+        'f',
+        channel: 'x',
+        views: 1000000,
+        age: const Duration(days: 1),
+      );
+      expect(scoreOf(fresh), greaterThan(scoreOf(undated)));
+    });
+
+    test('a channel the user loves still beats a stranger posted today', () {
+      // The limit on all of the above, and the reason freshness stays below
+      // affinity and topic. "Prefer recent" must not become "prefer whatever
+      // was posted most recently", or the feed stops being personal.
+      final loved = video(
+        'a',
+        channel: 'UC-loved',
+        age: const Duration(days: 20),
+      );
+      final strangerToday = video(
+        'b',
+        channel: 'UC-nobody',
+        title: 'crypto trading signals',
+        age: Duration.zero,
+      );
+      expect(scoreOf(loved), greaterThan(scoreOf(strangerToday)));
     });
 
     test('a video already watched sinks below anything unwatched', () {
@@ -3689,6 +3783,56 @@ Some blurb about the video.
       o.didPop(b, a);
       o.didPop(a, shell);
       expect(notifications, 2);
+    });
+  });
+
+  // --------------------------------------------------- search filter encoding
+
+  group('search params', () {
+    /// Decodes the base64 `sp` message back into bytes, so the assertions can
+    /// talk about which protobuf fields were actually sent.
+    List<int> bytes(String sp) => base64.decode(sp);
+
+    test('a window and a sort order travel together', () {
+      // The feed asks for "the most-viewed thing about this in the last
+      // month", which is two fields in one message. Pre-baked filter strings
+      // each encoded one field and nothing else, so sending one replaced the
+      // rest — which is how choosing "This week" on the search screen used to
+      // drop the videos-only filter. The same trap applies here: a window that
+      // quietly discarded the sort order would return relevance-ranked results
+      // and nobody would notice.
+      final sp = YoutubeSearchClient.buildParams(
+        sortBy: 3,
+        uploadDate: YoutubeSearchClient.uploadedThisMonth,
+      );
+      final message = bytes(sp);
+      // Field 1 (sort), varint 3.
+      expect(message[0], 0x08);
+      expect(message[1], 3);
+      // Field 2, a nested message holding the upload-date filter as field 1
+      // and the type filter as field 2.
+      expect(message[2], 0x12);
+      final nested = message.sublist(4);
+      expect(nested, containsAllInOrder([0x08, 4]));
+      // Videos only is still in there — the thing that used to get lost.
+      expect(nested, containsAllInOrder([0x10, 1]));
+    });
+
+    test('the window values are the ones YouTube uses', () {
+      // Field numbers on someone else's wire format, so they are worth
+      // writing down rather than trusting to memory the next time a window is
+      // added.
+      expect(YoutubeSearchClient.uploadedThisWeek, 3);
+      expect(YoutubeSearchClient.uploadedThisMonth, 4);
+      expect(YoutubeSearchClient.uploadedThisYear, 5);
+    });
+
+    test('no window asked for means no window sent', () {
+      // "Any time" is the search screen's default and must stay absent rather
+      // than being encoded as a value.
+      final nested = bytes(YoutubeSearchClient.buildParams()).sublist(2);
+      expect(nested, containsAllInOrder([0x10, 1]));
+      expect(nested.contains(0x08), isFalse);
     });
   });
 

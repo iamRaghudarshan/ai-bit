@@ -781,12 +781,28 @@ const _maxDislikePenalty = 1.0;
 /// ago is worth offering again.
 const impressionMemory = Duration(days: 14);
 
-/// Half-life of an upload's freshness, for the "example age" term.
+/// Half-life of the fast half of the freshness term — "is this new?".
 ///
-/// Ten days: a video posted today clearly beats one from last month, while a
-/// year-old video and a two-year-old video are both simply "old" and are left
-/// to be separated by the terms that actually describe the user.
+/// Ten days: a video posted today clearly beats one from last month.
 const _freshnessHalfLife = Duration(days: 10);
+
+/// Half-life of the slow half — "is this from roughly now?".
+///
+/// The fast term alone was the bug. Ten days means a video is worth nothing on
+/// freshness after about two months, so a three-month-old video and a
+/// six-year-old video scored *identically* on the only term that knows about
+/// age — and the tiebreak then fell to accumulated view count, which the older
+/// one wins by having existed longer. Everything past the saturation point was
+/// a flat plain the ranker could not see across.
+///
+/// A year, so the curve keeps a gentle slope out to the point where "old"
+/// really does stop mattering.
+const _freshnessSlowHalfLife = Duration(days: 365);
+
+/// How the two halves divide the term. The fast half still dominates, because
+/// the feed should lead with this week; the slow half exists only so that
+/// beyond it there is still a difference between months and years.
+const _freshnessFastShare = 0.65;
 
 double _freshnessScore(VideoBrief video, DateTime now) {
   final age = uploadAgeSeconds(video, now);
@@ -794,7 +810,9 @@ double _freshnessScore(VideoBrief video, DateTime now) {
   // renderers carry no date, and treating that as "ancient" would quietly
   // demote whole sources for a parsing gap.
   if (age == null) return 0.5;
-  return math.pow(0.5, age / _freshnessHalfLife.inSeconds).toDouble();
+  final fast = math.pow(0.5, age / _freshnessHalfLife.inSeconds).toDouble();
+  final slow = math.pow(0.5, age / _freshnessSlowHalfLife.inSeconds).toDouble();
+  return _freshnessFastShare * fast + (1 - _freshnessFastShare) * slow;
 }
 
 /// Rough age of [video] in seconds, or null when nothing usable was returned.
@@ -828,16 +846,42 @@ int? uploadAgeSeconds(VideoBrief video, DateTime now) {
   return count * perUnit[match.group(2)]!;
 }
 
-/// Views, log-scaled to 0..1 across the range a real video occupies.
+/// Views **per day**, log-scaled to 0..1 across the range a real video
+/// occupies.
 ///
-/// Linear would make one viral video worth more than every other term
-/// combined. A million views is roughly 0.6 here and ten million roughly 0.75,
-/// which is the right shape: popularity is a tiebreak, not a verdict.
-double _popularityScore(VideoBrief video) {
+/// Log-scaled because linear would make one viral video worth more than every
+/// other term combined: popularity is a tiebreak, not a verdict.
+///
+/// Per day rather than in total, and that is a correction rather than a
+/// refinement. A view count is an *accumulating* quantity — it only ever grows,
+/// so it measures age at least as much as it measures appeal — while freshness
+/// is a *decaying* one that saturates. Scored against each other, the two do
+/// not cancel: past the point where freshness has decayed to nothing, the only
+/// term still separating two old videos is the one that rewards being old. A
+/// six-year-old video with 50M views beat a three-day-old video with 200k on
+/// every term it could, which is precisely the "recommendations are from six
+/// years back" this answers. Rated instead, the old one is 23k views/day and
+/// the new one is 67k, and the right one wins.
+///
+/// This is the same reasoning as the 2016 paper's "example age" feature, which
+/// exists because a model trained without it learns the average popularity of
+/// its training window and recommends stale video; here the problem is in the
+/// feature itself rather than in a fit, so it is fixed in the feature.
+double _popularityScore(VideoBrief video, DateTime now) {
   final views = video.viewCount ?? 0;
   if (views <= 0) return 0;
-  // log10(1e10) = 10 is comfortably past the most-viewed video ever.
-  return (math.log(views) / math.ln10 / 10).clamp(0.0, 1.0);
+  final age = uploadAgeSeconds(video, now);
+  // An unknown age is a parsing gap, not a claim. Dividing by a nominal month
+  // keeps every undated video on one scale instead of crowning them all.
+  const unknownAgeDays = 30.0;
+  // Floored at a day so a video posted an hour ago is not credited with
+  // twenty-four times its rate.
+  final days =
+      age == null ? unknownAgeDays : math.max(1.0, age / Duration.secondsPerDay);
+  final perDay = views / days;
+  if (perDay <= 0) return 0;
+  // log10(1e8) = 8: a hundred million views in a day is past anything real.
+  return (math.log(perDay) / math.ln10 / 8).clamp(0.0, 1.0);
 }
 
 /// Scales a raw affinity into 0..1 against the strongest channel in the
@@ -941,7 +985,7 @@ ScoredCandidate score({
     affinity: affinity,
     topic: topic,
     freshness: _freshnessScore(video, now),
-    popularity: _popularityScore(video),
+    popularity: _popularityScore(video, now),
     context: contextMatch,
     coVisit: profile.coVisit[video.id] ?? 0,
     satisfaction: profile.satisfactionFor(video.channelId),
@@ -1367,14 +1411,21 @@ class RankerWeights {
   ///
   /// Read it as a statement of priorities: who you watch matters most, what it
   /// is about is close behind, what other people watched next is real evidence,
-  /// whether it is recent matters, and **how popular it is matters least of
-  /// all** — popularity is what a feed falls back on when it knows nothing
-  /// about you, and this one usually knows something.
+  /// **whether it is recent is nearly as important as any of those**, and how
+  /// popular it is matters least of all — popularity is what a feed falls back
+  /// on when it knows nothing about you, and this one usually knows something.
+  ///
+  /// Freshness was 0.6, below every term but popularity, and that under-rated
+  /// it: a home feed is a statement about now. It stays below [topic] and
+  /// [affinity] on purpose — the right recent video from a channel the user
+  /// loves should still beat an irrelevant one posted this morning — but it is
+  /// no longer a rounding error, and combined with the rated popularity above
+  /// it is what keeps years-old video out of the feed.
   static const prior = RankerWeights(
     source: 1.0,
     affinity: 1.4,
     topic: 1.1,
-    freshness: 0.6,
+    freshness: 0.9,
     popularity: 0.25,
     context: 0.9,
     coVisit: 1.0,

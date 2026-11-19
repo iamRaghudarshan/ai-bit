@@ -267,6 +267,7 @@ D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/check_dash.dart [videoId]       # can HD play? (ladder + manifest + real byte ranges)
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
+D:/flutter/bin/dart.bat run tool/check_feed_recency.dart      # is the feed's candidate pool actually recent?
 D:/flutter/bin/dart.bat run tool/check_takeout.dart <playlists dir> # does the Takeout parser match a real export
 D:/flutter/bin/dart.bat run tool/takeout_to_backup.dart <takeout dir> # Takeout -> one importable backup file
 ```
@@ -1019,6 +1020,67 @@ Candidate generation was widened from three co-watch seeds to five. Worth
 remembering why that matters more than it looks: **ranking can only ever order
 what candidate generation found**, so the size of the net is the ceiling on the
 whole system, and it is the cheapest thing to raise.
+
+### Why the feed was full of six-year-old videos
+
+Reported as "recommendations are coming 6 year back", and it is the clearest
+example in this codebase of **ranking can only ever order what candidate
+generation found**. The ranker had a freshness term the whole time, so the
+obvious reading was that the weighting was wrong. It was not the main cause.
+There were three, and fixing any one alone would have left the feed stale.
+
+**1. The queries asked for all-time hits.** Every topic-ish source — declared
+interests, cold-start filler, past searches, Kids, Trending — called
+`search(q, sortByViews: true)`, which is sort-by-view-count with no date
+window: *the most-viewed video about this topic ever*. `tool/check_feed_recency.dart`
+measures it against live YouTube, and the numbers are the whole argument —
+mean result age **2.7 years** across five queries, and for "flutter tutorial"
+**5.0 years** with a seven-year-old video at the top. There was nothing recent
+in the pool for the ranker to promote. `_recentTopicSearch` now windows these
+queries (`uploadDate` in the `sp` protobuf, rotating month/year/week with the
+refresh token so the feed mixes "biggest this week" with "biggest this year"),
+and the same measurement comes back at **17 days**. It widens to the year and
+then to all-time only when a window returns *empty*, because a narrow
+interest genuinely may have nothing from last week and a strict window would
+contribute nothing at all; only empty widens, so the common case stays one
+request. The search *screen* is untouched — there, all-time relevance is
+correct, and it passes its own `params`.
+
+Note the trade this makes: sorting by views inside a one-month window pulls in
+some loosely-matched results (a quilting video came back for "flutter
+tutorial"). That is the ranker's topic term's job, and it does it. A window
+tight enough to be fresh is necessarily looser about relevance.
+
+**2. Popularity was a total, so it was partly a measure of age.** `_popularityScore`
+read `viewCount` directly. A view count only ever accumulates, so a six-year-old
+video has had six years to collect them — the term rewarded being old while
+pretending to measure appeal. It is **views per day** now. The old blockbuster
+with 50M views over six years is 23k/day; a three-day-old video with 200k is
+67k/day, and the right one wins. Age is floored at a day so an hour-old video
+is not credited with 24× its rate, and an unknown age divides by a nominal
+month so undated rows stay on one scale instead of all being crowned.
+
+**3. Freshness saturated, so "old" was a flat plain.** A single ten-day
+half-life is worth nothing past about two months, so a three-month-old video
+and a six-year-old one scored *identically* on the only term that knows about
+age — and the tiebreak then fell to accumulated views, which the older one
+wins. The curve is two components now: the ten-day half-life still dominates
+(65%), plus a one-year half-life underneath it so months and years stay
+distinguishable. The prior weight went 0.6 → 0.9, still below `topic` and
+`affinity` on purpose — the right recent video from a loved channel must still
+beat an irrelevant one posted this morning, and there is a test for exactly
+that.
+
+Each of the three has its own test in the "recommendations are from six years
+back" group, and they assert the *causes* separately rather than the symptom,
+because a single end-to-end assertion would pass with one of three bugs still
+live. Subscriptions also went from six channels per load to eight: with thirty
+subscriptions, thirty-six candidates in a pool of several hundred is a thin
+showing for the one signal the user stated outright.
+
+`trending()` was the worst case and is worth calling out: most-viewed-of-all-time
+across three *fixed* evergreen topics is a list that cannot trend. It asks for
+the week now, falling back to the month.
 
 **What is still not YouTube, and cannot be from here.** No corpus access, so
 candidates come from a few hundred fetched videos rather than billions. No
