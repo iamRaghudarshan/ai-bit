@@ -69,15 +69,30 @@ them, so **the version number skipped ahead without three releases happening**.
 Check `git tag --sort=-creatordate` and the run list rather than trusting this
 line, which ages.
 
-**iOS is stuck at build 131 / 2.25.0, and not for a code reason.** Build 141
-(tag `v2.29.0`) compiled and signed an archive successfully and then failed the
-upload with `FORBIDDEN_ERROR.CONTRACT_NOT_VALID` — "You do not have required
-contracts to perform an operation (403)". That is an **App Store Connect
-agreement awaiting acceptance** by the Account Holder (Business → Agreements);
-Apple blocks every upload until it is accepted, and no change to this app can
-work around it. **Do not re-tag iOS to see if it passes** — it will fail
-identically at the same step, and a macOS runner bills at ten times the Linux
-rate. Confirm the agreement is accepted first, then re-tag.
+**Latest iOS build is 2.29.0, build 141** (tag `v2.29.0`), on TestFlight —
+delivery UUID `8029b8ef-19cd-474e-bc49-157a03f3d32e`.
+
+It took two attempts, and the first failure is worth recognising rather than
+debugging: the archive built and signed perfectly and then `altool` returned
+`FORBIDDEN_ERROR.CONTRACT_NOT_VALID` — "You do not have required contracts to
+perform an operation (403)". Nothing to do with the app. It means an **App
+Store Connect agreement is awaiting acceptance** by the Account Holder
+(Business → Agreements); Apple blocks every upload on the account until it is,
+which takes SafeNest down with it. The fix is a minute in a browser, and the
+build then passes unchanged.
+
+So when iOS fails at the upload step, read the annotation before touching
+code, and **do not re-tag to see what happens** — a macOS runner bills at ten
+times the Linux rate and an account-level refusal fails identically every
+time. Prefer `POST /actions/runs/<id>/rerun-failed-jobs` over a new tag once
+the account side is fixed: it keeps the version name and the build number, so
+the retry does not leave iOS one version ahead of Android for the same code.
+
+**A deadline to plan for, not to react to:** every upload now warns that the
+app is built with the iOS 26.5 SDK and that from **April 2027** Apple will
+require a newer one. That is an SDK/Xcode bump in CI, and it will almost
+certainly arrive bundled with the `material_ui` migration — treat the two as
+one piece of work rather than discovering either mid-release.
 
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
