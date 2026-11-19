@@ -61,13 +61,23 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.28.3, build 140** (tag `android-2.28.3`) — the one
-carrying the DASH fix that got HD playing again. 2.28.0 through 2.28.2 are
+**Latest Android build is 2.29.0, build 142** (tag `android-2.29.0`), published
+to `safenesthub.in` — it carries the feed-recency fix on top of 2.28.3's DASH
+fix, which is the one that got HD playing again. 2.28.0 through 2.28.2 are
 tagged and red or superseded; they exist only because the toolchain broke under
 them, so **the version number skipped ahead without three releases happening**.
-2.25.0 was the last pair published to `safenesthub.in` (iOS build 131, Android
-132). Check `git tag --sort=-creatordate` and the run list rather than trusting
-this line, which ages.
+Check `git tag --sort=-creatordate` and the run list rather than trusting this
+line, which ages.
+
+**iOS is stuck at build 131 / 2.25.0, and not for a code reason.** Build 141
+(tag `v2.29.0`) compiled and signed an archive successfully and then failed the
+upload with `FORBIDDEN_ERROR.CONTRACT_NOT_VALID` — "You do not have required
+contracts to perform an operation (403)". That is an **App Store Connect
+agreement awaiting acceptance** by the Account Holder (Business → Agreements);
+Apple blocks every upload until it is accepted, and no change to this app can
+work around it. **Do not re-tag iOS to see if it passes** — it will fail
+identically at the same step, and a macOS runner bills at ten times the Linux
+rate. Confirm the agreement is accepted first, then re-tag.
 
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
