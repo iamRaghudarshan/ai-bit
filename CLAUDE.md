@@ -705,10 +705,36 @@ instead of the rest of the video.
 **What this means for quality, plainly.** Above 360p now requires either a
 YouTube-issued HLS ladder (about one video in eight) or a clip short enough to
 sit inside the cap. Everything else plays at 360p, full length, on both
-platforms. The only way to lift that is a proof-of-origin token, which means
-running YouTube's BotGuard challenge in a WebView to mint one — a real feature,
-a moving target, and not something to attempt without a device to test it on.
-`tool/check_stream_limits.dart` is the probe that will say whether it worked.
+platforms.
+
+**Every account-less way around it has been measured and none works.** This is
+worth writing down because each one looks promising from the outside:
+
+- **Other clients.** ANDROID_VR is the client yt-dlp falls back to precisely
+  because it has not needed a token, and it refuses this app: "Sign in to
+  confirm you're not a bot". So do ANDROID_MUSIC, IOS_MUSIC, IOS_UNPLUGGED,
+  ANDROID_UNPLUGGED and VISIONOS. TVHTML5, WEB and MWEB answer "The page needs
+  to be reloaded", which is the token demand wearing a friendlier sentence.
+- **Sending a `visitorData`.** The obvious reading of LOGIN_REQUIRED is that
+  the request is missing a session id, and it is not: with a real 452-character
+  visitorData from youtube.com's own page config, every one of the above still
+  refuses. It made TVHTML5 *worse* — from LOGIN_REQUIRED to the token demand —
+  which says the id was accepted and the token was then found missing.
+  `tool/check_visitor_clients.dart` is that experiment, kept so the question
+  can be re-asked in one command rather than re-reasoned.
+- **The `youtube_explode_dart` chain**, whose URLs are capped identically after
+  deciphering.
+
+So the only two routes left both cost something real: a **proof-of-origin
+token**, which means running YouTube's BotGuard challenge in a WebView — and
+note that only *web*-client tokens can be minted that way, so it drags
+signature deciphering in with it — or a **signed-in session**, which puts a
+real Google account behind a ToS-violating client and is the thing this project
+declined on purpose (see Takeout, above). Neither is verified to lift the cap;
+yt-dlp users with working token providers still report 403s on adaptive formats.
+
+Re-run `tool/check_stream_limits.dart` and `tool/check_visitor_clients.dart`
+before building either. They are cheap, and the answer is YouTube's to change.
 
 `_clientChain` is ordered by which clients actually yield combined streams. Do
 not reorder it from first principles; re-measure with `probe_clients.dart`.

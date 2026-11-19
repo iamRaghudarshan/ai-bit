@@ -15,6 +15,20 @@
 // interesting case: it is the client yt-dlp falls back to precisely because it
 // has not required a token.
 //
+// **ANSWERED, 19 November 2026: no. Every client refuses, with the id and
+// without it.** ANDROID_VR and ANDROID_VR_OLD say "Sign in to confirm you're
+// not a bot" even with a valid 452-character visitorData; IOS_UNPLUGGED says
+// "Please sign in"; and TVHTML5, WEB_SAFARI and MWEB say "The page needs to be
+// reloaded", which is YouTube's way of demanding a proof-of-origin token.
+// Sending the id actually made TVHTML5 *worse* — it moved from
+// LOGIN_REQUIRED to the token demand, which says the id was accepted and the
+// token was then found missing.
+//
+// So an account-less client cannot reach HD beyond the ~60s cap today. The
+// only remaining routes are a PO token or a signed-in session, and this probe
+// is the cheap way to find out that has changed: re-run it before building
+// either of them.
+//
 // Each client is tried twice, without and with the id, so the variable is
 // isolated. For any that answers OK, the top plain AVC track's last two bytes
 // are requested: `FULL LENGTH ***` there would mean HD is reachable, and the
