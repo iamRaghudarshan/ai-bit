@@ -112,6 +112,13 @@
 		<true/>
 		<key>NSAllowsArbitraryLoadsForMedia</key>
 		<true/>
+		<!-- The generated HLS playlists are served to AVPlayer from an
+		     HttpServer on 127.0.0.1 (see hls_server.dart), which is a plain
+		     http:// load. Arbitrary loads above already permit it; this
+		     narrower key is declared as well so the requirement survives
+		     anyone tightening the two above it. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
 	</dict>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>

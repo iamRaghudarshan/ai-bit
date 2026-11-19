@@ -10,22 +10,34 @@
 //
 // It mirrors YtRepository.resolve()'s decision order exactly:
 //
-//   1. the player endpoint's hlsManifestUrl           -> plays everywhere
-//   2. a DASH manifest built from adaptiveFormats     -> ANDROID ONLY
+//   1. the player endpoint's hlsManifestUrl           -> plays everywhere, HD
+//   2. a generated manifest from adaptiveFormats      -> DASH on Android,
+//      but ONLY when those tracks serve the whole        HLS on iOS
+//      video (see the cap below)
 //   3. the progressive muxed stream (360p)            -> plays everywhere
 //   4. the youtube_explode client chain's combined    -> plays everywhere
 //   5. audio only                                     -> video unavailable
 //   6. nothing                                        -> the red error screen
 //
-// The platform split is the point. `canUseDash` is Android-only because
-// AVPlayer cannot play DASH, so on iOS step 2 does not exist — and a video
-// with no HLS and no muxed stream, which resolves perfectly on Android, is the
-// red error screen on iOS. Reporting a single pass rate would hide that
-// completely.
+// **"Plays" is not one question but two, and this probe used to ask only the
+// easier one.** YouTube serves a byte-range adaptive URL for about the first
+// 60 seconds unless the request carries a proof-of-origin token; past that
+// every range is refused. Everything cheap to verify — the manifest, the
+// ladder, the init and index ranges — sits in the first few kilobytes and is
+// served perfectly, so a generated manifest looks completely fine here and
+// then stops a minute in on a real device. This probe therefore asks for two
+// bytes from the END of the top rendition, which is the only question whose
+// answer cannot be faked by a working start.
+//
+// So each video is reported as the route it takes AND whether that route runs
+// to the end. A capped video is counted as *360p*, not as HD — because that is
+// what the app will correctly fall back to.
 import 'dart:io';
 
 import 'package:ai_bit/src/data/dash_manifest.dart';
+import 'package:ai_bit/src/data/hls_manifest.dart';
 import 'package:ai_bit/src/data/player_client.dart';
+import 'package:http/http.dart' as http;
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 /// The same chain, in the same order, as YtRepository._clientChain.
@@ -50,7 +62,43 @@ const _defaultIds = [
   '9bZkp7q19f0', // music, old and huge
 ];
 
-enum Outcome { hls, dash, muxed, chain, audioOnly, failed }
+enum Outcome { hls, dash, genHls, muxed, chain, audioOnly, failed }
+
+/// Routes that give more than the legacy 360p stream.
+const _hdRoutes = {Outcome.hls, Outcome.dash, Outcome.genHls};
+
+/// Mirrors `YtRepository._definitelyUncappedMs`.
+const _definitelyUncappedMs = 40 * 1000;
+
+/// Mirrors `YtRepository._adaptiveTracksPlayThroughout`: do these tracks serve
+/// to the end of the file, or only the first minute?
+Future<bool> _playsThroughout(
+  http.Client client,
+  List<AdaptiveFormat> formats,
+) async {
+  final videos = [
+    for (final f in formats)
+      if (f.isVideo && f.isUsable) f,
+  ]..sort((a, b) => b.height.compareTo(a.height));
+  if (videos.isEmpty) return false;
+  final probe = videos.first;
+  if (probe.durationMs > 0 && probe.durationMs <= _definitelyUncappedMs) {
+    return true;
+  }
+  final clen = int.tryParse(Uri.parse(probe.url).queryParameters['clen'] ?? '');
+  if (clen == null || clen < 4) return false;
+  try {
+    final r = await client
+        .get(
+          Uri.parse(probe.url),
+          headers: {'Range': 'bytes=${clen - 2}-${clen - 1}'},
+        )
+        .timeout(const Duration(seconds: 15));
+    return r.statusCode == 200 || r.statusCode == 206;
+  } catch (_) {
+    return false;
+  }
+}
 
 void main(List<String> args) async {
   // --region=IN / --lang=hi. These are NOT cosmetic: `gl` decides what is
@@ -74,6 +122,7 @@ void main(List<String> args) async {
 
   final player = YoutubePlayerClient()..setLocale(language: lang, region: region);
   final explode = yt.YoutubeExplode();
+  final ranges = http.Client();
 
   final android = <String, Outcome>{};
   final ios = <String, Outcome>{};
@@ -84,17 +133,29 @@ void main(List<String> args) async {
     // ---- stage 1-3: the app's own player endpoint
     var hls = false;
     var dashable = false;
+    var genHlsable = false;
     var muxed = false;
+    var throughout = false;
     try {
       final streams = await player.fetch(id);
       if (streams != null) {
         hls = streams.hlsUrl != null;
         muxed = streams.muxedUrl != null;
         dashable = buildDashManifest(streams.adaptiveFormats) != null;
+        genHlsable = hlsCandidates(streams.adaptiveFormats).isNotEmpty;
+        // Only worth asking when a generated manifest is on the table.
+        throughout = (dashable || genHlsable) &&
+            await _playsThroughout(ranges, streams.adaptiveFormats);
         stdout.writeln(
-          '  player endpoint: hls=$hls  dash-able=$dashable  muxed=$muxed  '
+          '  player endpoint: hls=$hls  dash-able=$dashable  '
+          'ios-hls-able=$genHlsable  muxed=$muxed  '
           '(${streams.adaptiveFormats.length} adaptive)',
         );
+        if (dashable || genHlsable) {
+          stdout.writeln(
+            '  adaptive tracks: ${throughout ? 'serve the WHOLE video' : 'CAPPED — only the first minute'}',
+          );
+        }
       } else {
         stdout.writeln('  player endpoint: returned nothing');
       }
@@ -130,16 +191,16 @@ void main(List<String> args) async {
 
     android[id] = _decide(
       hls: hls,
-      dash: dashable,
-      canDash: true,
+      // A generated manifest is only taken when it plays to the end.
+      generated: dashable && throughout ? Outcome.dash : null,
       muxed: muxed,
       chain: chainCombined,
       audio: chainAudio,
     );
     ios[id] = _decide(
       hls: hls,
-      dash: dashable,
-      canDash: false, // AVPlayer cannot play DASH. This is the whole point.
+      // AVPlayer cannot play DASH, so iOS builds HLS from the same tracks.
+      generated: genHlsable && throughout ? Outcome.genHls : null,
       muxed: muxed,
       chain: chainCombined,
       audio: chainAudio,
@@ -152,6 +213,7 @@ void main(List<String> args) async {
 
   player.close();
   explode.close();
+  ranges.close();
 
   stdout.writeln('\n================ SUMMARY ================');
   _report('ANDROID', android);
@@ -173,21 +235,30 @@ void main(List<String> args) async {
     stdout.writeln('      source is adaptive tracks is a red error screen.');
   }
   if (androidBroken == 0 && iosBroken == 0) {
-    stdout.writeln('OK: every video resolves to real video on both platforms.');
+    stdout.writeln(
+      'OK: every video resolves to video that plays to the END, on both platforms.',
+    );
+    final capped = android.values.where((o) => o == Outcome.muxed).length;
+    if (capped > 0) {
+      stdout.writeln(
+        '     $capped/${ids.length} fall back to 360p because YouTube caps their'
+        ' adaptive\n     tracks at ~60s without a proof-of-origin token. That is'
+        ' the ceiling\n     on quality right now, not a bug in the app.',
+      );
+    }
   }
   exit(androidBroken > 0 || iosBroken > 0 ? 1 : 0);
 }
 
 Outcome _decide({
   required bool hls,
-  required bool dash,
-  required bool canDash,
+  required Outcome? generated,
   required bool muxed,
   required bool chain,
   required bool audio,
 }) {
   if (hls) return Outcome.hls;
-  if (canDash && dash) return Outcome.dash;
+  if (generated != null) return generated;
   if (muxed) return Outcome.muxed;
   if (chain) return Outcome.chain;
   if (audio) return Outcome.audioOnly;
@@ -202,8 +273,10 @@ void _report(String label, Map<String, Outcome> results) {
   final playable = results.values
       .where((o) => o != Outcome.failed && o != Outcome.audioOnly)
       .length;
+  final hd = results.values.where(_hdRoutes.contains).length;
   stdout.writeln(
     '$label  plays with video: $playable/${results.length}   '
+    'above 360p: $hd/${results.length}   '
     '${counts.entries.map((e) => '${e.key.name}=${e.value}').join('  ')}',
   );
   for (final e in results.entries) {

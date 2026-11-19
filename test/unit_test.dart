@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:ai_bit/src/core/format.dart';
@@ -20,6 +21,7 @@ import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:ai_bit/src/core/settings_rules.dart';
 import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
 import 'package:ai_bit/src/data/dash_manifest.dart';
+import 'package:ai_bit/src/data/hls_manifest.dart';
 import 'package:ai_bit/src/data/browse_client.dart';
 import 'package:ai_bit/src/ui/widgets/now_playing_overlay.dart';
 import 'package:flutter/widgets.dart';
@@ -4005,6 +4007,377 @@ Some blurb about the video.
 
     test('a bare number is not a count either', () {
       expect(videoCountFromBadge('12'), isNull);
+    });
+  });
+
+  // ------------------------------------------------------- generated HLS
+  // How an iPhone plays anything above 360p. AVPlayer cannot play the DASH
+  // manifest Android gets, but it has played fragmented MP4 over HLS with
+  // byte-range segments since iOS 10 — and YouTube's adaptive tracks already
+  // have that shape, with a `sidx` box listing every fragment. These tests pin
+  // the parser and the playlists; see lib/src/data/hls_manifest.dart.
+
+  group('parseSegmentIndex', () {
+    /// Builds a real `sidx` box. Hand-assembled rather than captured from a
+    /// response, so each field's width and position is stated explicitly —
+    /// which is the whole risk in this parser.
+    Uint8List sidx({
+      int version = 0,
+      int timescale = 1000,
+      int firstOffset = 0,
+      List<(int size, int duration)> entries = const [
+        (1000, 5000),
+        (2000, 5000),
+        (1500, 2500),
+      ],
+      String type = 'sidx',
+      bool hierarchical = false,
+      int leadingBoxBytes = 0,
+    }) {
+      final body = BytesBuilder();
+      void u32(int v) => body.add([
+        (v >> 24) & 0xFF,
+        (v >> 16) & 0xFF,
+        (v >> 8) & 0xFF,
+        v & 0xFF,
+      ]);
+      void u16(int v) => body.add([(v >> 8) & 0xFF, v & 0xFF]);
+
+      body.addByte(version);
+      body.add([0, 0, 0]); // flags
+      u32(1); // reference_ID
+      u32(timescale);
+      if (version == 0) {
+        u32(0); // earliest_presentation_time
+        u32(firstOffset);
+      } else {
+        u32(0);
+        u32(0); // 64-bit earliest_presentation_time
+        u32(0);
+        u32(firstOffset); // 64-bit first_offset
+      }
+      u16(0); // reserved
+      u16(entries.length);
+      for (final e in entries) {
+        // reference_type in the top bit, then 31 bits of size.
+        u32(hierarchical ? (e.$1 | 0x80000000) : e.$1);
+        u32(e.$2);
+        u32(0x90000000); // starts_with_SAP = 1, SAP_type = 1
+      }
+
+      final payload = body.toBytes();
+      final out = BytesBuilder();
+      // An unrelated box in front, to prove the scan does not assume the
+      // index starts at byte zero — real responses sometimes lead with `ssix`.
+      if (leadingBoxBytes > 0) {
+        final size = leadingBoxBytes;
+        out.add([
+          (size >> 24) & 0xFF,
+          (size >> 16) & 0xFF,
+          (size >> 8) & 0xFF,
+          size & 0xFF,
+        ]);
+        out.add('ssix'.codeUnits);
+        out.add(List.filled(size - 8, 0));
+      }
+      final total = payload.length + 8;
+      out.add([
+        (total >> 24) & 0xFF,
+        (total >> 16) & 0xFF,
+        (total >> 8) & 0xFF,
+        total & 0xFF,
+      ]);
+      out.add(type.codeUnits);
+      out.add(payload);
+      return out.toBytes();
+    }
+
+    test('fragment offsets are cumulative from the end of the box', () {
+      // The anchor is the whole game. `sidx` offsets are relative to the first
+      // byte AFTER the box, so the first fragment starts at
+      // indexStart + boxLength + first_offset. Getting this wrong does not
+      // fail loudly — it produces byte ranges that are valid requests for the
+      // wrong bytes, and the only symptom is a video that will not start.
+      final bytes = sidx();
+      final index = parseSegmentIndex(bytes, indexStart: 701)!;
+      expect(index.segments.length, 3);
+      final base = 701 + bytes.length;
+      expect(index.segments[0].offset, base);
+      expect(index.segments[0].size, 1000);
+      expect(index.segments[1].offset, base + 1000);
+      expect(index.segments[2].offset, base + 3000);
+    });
+
+    test('first_offset shifts the whole run', () {
+      final bytes = sidx(firstOffset: 64);
+      final index = parseSegmentIndex(bytes, indexStart: 0)!;
+      expect(index.segments.first.offset, bytes.length + 64);
+    });
+
+    test('durations are converted out of the timescale', () {
+      // A misread timescale is the bug that shows up as a seek bar that lies
+      // rather than as a video that fails, so it gets its own test.
+      final index = parseSegmentIndex(sidx(timescale: 90000), indexStart: 0)!;
+      // 5000 ticks at 90kHz is 55.5ms, not 5s.
+      expect(index.segments.first.durationUs, 55555);
+      final normal = parseSegmentIndex(sidx(timescale: 1000), indexStart: 0)!;
+      expect(normal.segments.first.durationSeconds, 5.0);
+      expect(normal.longestSegmentSeconds, 5.0);
+    });
+
+    test('a 64-bit sidx is read with the wider fields', () {
+      final index = parseSegmentIndex(sidx(version: 1), indexStart: 0)!;
+      expect(index.segments.length, 3);
+      expect(index.segments[1].size, 2000);
+    });
+
+    test('a box in front of the sidx is skipped', () {
+      final bytes = sidx(leadingBoxBytes: 24);
+      final index = parseSegmentIndex(bytes, indexStart: 10)!;
+      // The anchor is still the end of the sidx box, which is the end of the
+      // whole buffer here — not the end of the leading box.
+      expect(index.segments.first.offset, 10 + bytes.length);
+    });
+
+    test('a hierarchical index is declined rather than half-read', () {
+      // An entry pointing at another `sidx` would need a further fetch per
+      // level. Returning the sizes as though they were media would produce a
+      // playlist of plausible nonsense.
+      expect(parseSegmentIndex(sidx(hierarchical: true), indexStart: 0), isNull);
+    });
+
+    test('no sidx, truncated bytes and junk all return null', () {
+      expect(parseSegmentIndex(sidx(type: 'moof'), indexStart: 0), isNull);
+      expect(parseSegmentIndex(Uint8List(0), indexStart: 0), isNull);
+      expect(parseSegmentIndex(Uint8List.fromList([0, 0, 1]), indexStart: 0),
+          isNull);
+      final truncated = sidx().sublist(0, 20);
+      expect(parseSegmentIndex(truncated, indexStart: 0), isNull);
+      expect(
+        parseSegmentIndex(sidx(entries: const []), indexStart: 0),
+        isNull,
+        reason: 'a sidx claiming zero fragments describes nothing playable',
+      );
+    });
+
+    test('a zero timescale cannot be divided by', () {
+      expect(parseSegmentIndex(sidx(timescale: 0), indexStart: 0), isNull);
+    });
+  });
+
+  group('buildHls', () {
+    AdaptiveFormat vid(int height, {String codecs = 'avc1.640028', int itag = 0}) =>
+        AdaptiveFormat(
+          itag: itag == 0 ? height : itag,
+          url: 'https://r1.googlevideo.com/v?a=1&b=2&itag=$height',
+          mimeType: 'video/mp4',
+          codecs: codecs,
+          bitrate: height * 3000,
+          durationMs: 60000,
+          initStart: 0,
+          initEnd: 700,
+          indexStart: 701,
+          indexEnd: 1500,
+          width: height * 16 ~/ 9,
+          height: height,
+          fps: 30,
+        );
+
+    AdaptiveFormat aud({
+      String codecs = 'mp4a.40.2',
+      String mimeType = 'audio/mp4',
+      int bitrate = 128000,
+      String? trackId,
+      bool isDefault = false,
+    }) => AdaptiveFormat(
+      itag: 140,
+      url: 'https://r1.googlevideo.com/a?x=1&y=2',
+      mimeType: mimeType,
+      codecs: codecs,
+      bitrate: bitrate,
+      durationMs: 60100,
+      initStart: 0,
+      initEnd: 731,
+      indexStart: 732,
+      indexEnd: 1147,
+      audioSampleRate: 44100,
+      audioChannels: 2,
+      audioTrackId: trackId,
+      audioIsDefault: isDefault,
+    );
+
+    SegmentIndex index([int count = 3]) => SegmentIndex([
+      for (var i = 0; i < count; i++)
+        MediaSegment(offset: 2000 + i * 1000, size: 1000, durationUs: 5000000),
+    ]);
+
+    test('AVC and AAC only — VP9 and Opus are unplayable, not just lesser', () {
+      // The difference from the DASH manifest, and the reason this is a
+      // separate file. ExoPlayer decodes VP9 in hardware on essentially every
+      // Android device; AVPlayer decodes it nowhere. A VP9 variant in an iOS
+      // playlist is not a lower rung, it is a broken one.
+      final candidates = hlsCandidates([
+        vid(2160, codecs: 'vp09.00.51.08'),
+        vid(1440, codecs: 'av01.0.12M.08'),
+        vid(1080),
+        aud(codecs: 'opus', mimeType: 'audio/webm'),
+        aud(),
+      ]);
+      expect(
+        candidates.where((f) => f.isVideo).map((f) => f.height),
+        [1080],
+      );
+      expect(candidates.last.codecs, 'mp4a.40.2');
+    });
+
+    test('one rendition per height, the highest bitrate of each', () {
+      final tall = vid(1080, itag: 137);
+      final tallerBitrate = AdaptiveFormat(
+        itag: 299,
+        url: tall.url,
+        mimeType: tall.mimeType,
+        codecs: tall.codecs,
+        bitrate: tall.bitrate * 2,
+        durationMs: tall.durationMs,
+        initStart: 0,
+        initEnd: 700,
+        indexStart: 701,
+        indexEnd: 1500,
+        width: tall.width,
+        height: 1080,
+        fps: 60,
+      );
+      final picked = hlsCandidates([tall, tallerBitrate, vid(720), aud()]);
+      final thousandEighty =
+          picked.where((f) => f.isVideo && f.height == 1080).toList();
+      expect(thousandEighty, hasLength(1));
+      expect(thousandEighty.single.itag, 299);
+    });
+
+    test('candidates lead with the tallest rung and end with the audio', () {
+      final picked = hlsCandidates([vid(360), vid(1080), vid(720), aud()]);
+      expect(picked.where((f) => f.isVideo).map((f) => f.height),
+          [1080, 720, 360]);
+      expect(picked.last.isAudio, isTrue);
+    });
+
+    test('no audio or no video yields nothing at all', () {
+      // Same judgement as buildDashManifest: a silent 1080p stream is worse
+      // than the 360p one it would have replaced, so the caller falls back.
+      expect(hlsCandidates([vid(1080)]), isEmpty);
+      expect(hlsCandidates([aud()]), isEmpty);
+      expect(buildHls([HlsTrack(vid(1080), index())]), isNull);
+      expect(buildHls([HlsTrack(aud(), index())]), isNull);
+      expect(buildHls(const []), isNull);
+    });
+
+    test('a rendition whose index could not be read is left out', () {
+      final built = buildHls([
+        HlsTrack(vid(1080), SegmentIndex(const [])),
+        HlsTrack(vid(720), index()),
+        HlsTrack(aud(), index()),
+      ])!;
+      expect(built.ladder, ['720p']);
+      expect(built.master, isNot(contains('1920x1080')));
+    });
+
+    test('the master declares v7, an audio group and every variant', () {
+      final built = buildHls([
+        HlsTrack(vid(1080), index()),
+        HlsTrack(vid(720), index()),
+        HlsTrack(aud(), index()),
+      ])!;
+      expect(built.master, startsWith('#EXTM3U'));
+      // Version 7 is what EXT-X-MAP with a BYTERANGE requires.
+      expect(built.master, contains('#EXT-X-VERSION:7'));
+      expect(built.master, contains('TYPE=AUDIO'));
+      expect(built.master, contains('URI="a.m3u8"'));
+      expect(built.master, contains('RESOLUTION=1920x1080'));
+      expect(built.master, contains('AUDIO="aud"'));
+      expect(built.ladder, ['1080p', '720p']);
+      // Every playlist the master names has to exist, or AVPlayer fails on a
+      // variant switch rather than at load time.
+      for (final name in RegExp(r'[\w.]+\.m3u8').allMatches(built.master)) {
+        expect(built.media.keys, contains(name.group(0)));
+      }
+      expect(built.media.keys, hasLength(3));
+    });
+
+    test('a variant bandwidth covers its audio as well as its video', () {
+      // Understating this is how an adaptive player talks itself into a rung
+      // the connection cannot carry.
+      final built = buildHls([
+        HlsTrack(vid(1080), index()),
+        HlsTrack(aud(bitrate: 128000), index()),
+      ])!;
+      expect(built.master, contains('BANDWIDTH=${1080 * 3000 + 128000}'));
+    });
+
+    test('segments carry explicit offsets and the init map', () {
+      final built = buildHls([
+        HlsTrack(vid(720), index()),
+        HlsTrack(aud(), index()),
+      ])!;
+      final playlist = built.media['v720.m3u8']!;
+      expect(playlist, contains('#EXT-X-PLAYLIST-TYPE:VOD'));
+      expect(playlist, contains('#EXT-X-ENDLIST'));
+      // The moov box, without which the fragments cannot be decoded.
+      expect(playlist, contains('#EXT-X-MAP:URI="'));
+      expect(playlist, contains('BYTERANGE="701@0"'));
+      // Explicit `length@offset` on every segment rather than the shorthand
+      // that continues from the previous one: contiguous fragments make the
+      // shorthand correct, but then one wrong length slides the whole rest of
+      // the playlist instead of breaking a single segment.
+      expect(playlist, contains('#EXT-X-BYTERANGE:1000@2000'));
+      expect(playlist, contains('#EXT-X-BYTERANGE:1000@3000'));
+      expect(playlist, contains('#EXT-X-BYTERANGE:1000@4000'));
+      expect(RegExp('#EXTINF:').allMatches(playlist).length, 3);
+    });
+
+    test('the target duration is never below the longest segment', () {
+      // A target duration below the real maximum is a spec violation AVPlayer
+      // is entitled to reject the whole playlist over, so it rounds up.
+      final built = buildHls([
+        HlsTrack(
+          vid(720),
+          SegmentIndex(const [
+            MediaSegment(offset: 0, size: 10, durationUs: 7400000),
+          ]),
+        ),
+        HlsTrack(aud(), index()),
+      ])!;
+      expect(built.media['v720.m3u8']!, contains('#EXT-X-TARGETDURATION:8'));
+    });
+
+    test('stream URLs are written raw — m3u8 is not XML', () {
+      // The mirror image of the DASH manifest's most important rule. There,
+      // an unescaped `&` makes the document malformed; here, escaping one
+      // would corrupt the URL.
+      final built = buildHls([
+        HlsTrack(vid(720), index()),
+        HlsTrack(aud(), index()),
+      ])!;
+      expect(built.media['v720.m3u8']!, contains('a=1&b=2'));
+      expect(built.media['v720.m3u8']!, isNot(contains('&amp;')));
+    });
+
+    test('variant files are keyed by itag, so two rungs cannot collide', () {
+      final built = buildHls([
+        HlsTrack(vid(1080, itag: 137), index()),
+        HlsTrack(vid(1080, itag: 299), index()),
+        HlsTrack(aud(), index()),
+      ])!;
+      expect(built.media.keys, contains('v137.m3u8'));
+      expect(built.media.keys, contains('v299.m3u8'));
+    });
+
+    test('the default dub wins over a louder alternate', () {
+      final picked = hlsCandidates([
+        vid(720),
+        aud(bitrate: 256000, trackId: 'es.4'),
+        aud(bitrate: 128000, trackId: 'en.4', isDefault: true),
+      ]);
+      expect(picked.last.audioTrackId, 'en.4');
     });
   });
 }

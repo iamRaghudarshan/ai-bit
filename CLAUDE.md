@@ -291,6 +291,8 @@ D:/flutter/bin/dart.bat run tool/check_streams.dart [videoId]    # is extraction
 D:/flutter/bin/dart.bat run tool/check_download.dart [videoId] [--audio]
 D:/flutter/bin/dart.bat run tool/check_chunked.dart [videoId]    # does the ranged chunked download complete?
 D:/flutter/bin/dart.bat run tool/check_dash.dart [videoId]       # can HD play? (ladder + manifest + real byte ranges)
+D:/flutter/bin/dart.bat run tool/check_stream_limits.dart        # does a stream serve the WHOLE video, or just 60s?
+D:/flutter/bin/dart.bat run tool/check_hls.dart [videoId] [--ffmpeg=<path>]  # the iOS ladder: sidx, playlists, real decode
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
 D:/flutter/bin/dart.bat run tool/check_playback.dart         # what FRACTION of videos play, per platform?
 D:/flutter/bin/dart.bat run tool/check_feed_recency.dart      # is the feed's candidate pool actually recent?
@@ -301,6 +303,14 @@ D:/flutter/bin/dart.bat run tool/takeout_to_backup.dart <takeout dir> # Takeout 
 
 If `check_streams.dart` fails, the fix is usually
 `flutter pub upgrade youtube_explode_dart`, not a code change.
+
+**When the report is "it plays and then stops", run `check_stream_limits.dart`
+first.** "Does a stream resolve" and "does a stream play to the end" are two
+different questions, and for a long time only the first was being asked —
+every probe fetched the start of a file, which is exactly the part YouTube
+still serves when it has capped the rest. A green `check_streams`,
+`check_dash` and `check_playback` were all compatible with a video that died
+after sixty seconds.
 
 ### Running it
 
@@ -322,12 +332,19 @@ and Captions inline, the rest (Sleep, Audio only, Autoplay, Repeat, Queue, PiP,
 Cast, Stats, Save, Share) in the sheet — rather than a sideways-scrolling chip
 row.
 
-Quality on Android is a full 144p–2160p ladder: YouTube's HLS manifest where it
-still offers one, and otherwise a DASH manifest the app builds from the
-separate video and audio tracks — see "Stream resolution is the fragile core",
-which is where the "HD never plays, it is always 360p" report was answered. iOS
-gets the HLS ladder or 360p, because AVPlayer cannot play DASH. Settings offers
-the full ladder as a saved default.
+Quality comes from whichever route can serve a whole video, and **both
+platforms now reach the same ceiling**: YouTube's own HLS ladder to 2160p where
+it still offers one (about one video in eight), a manifest the app builds
+itself from the separate tracks where those tracks are not capped — DASH for
+ExoPlayer, HLS for AVPlayer — and 360p otherwise. Settings offers the full
+ladder as a saved default.
+
+Read "Stream resolution is the fragile core" before touching any of it. That
+is where the "HD never plays, it is always 360p" report was answered, and also
+where the follow-up — a generated manifest that played for sixty seconds and
+then died — is explained. The 360p floor is YouTube's serving cap, not a
+missing feature, and offering HD that stops partway through is worse than not
+offering it.
 
 Browsing: home feed (ranked against local watch history, searches and
 subscriptions — see "Recommendations are two-stage" below — or curated in Kids
@@ -554,10 +571,12 @@ above 360p therefore has to arrive as a **manifest**, and `resolve()` tries
 them in this order:
 
 1. **`hlsManifestUrl`** from the player endpoint (`player_client.dart`).
-   Adaptive, already muxed, up to 2160p, and the only thing that plays a live
-   stream at all.
-2. **A DASH manifest the app builds itself** (`dash_manifest.dart`), Android
-   only. See below.
+   Adaptive, already muxed, up to 2160p, the only thing that plays a live
+   stream at all — and, crucially, the only route above 360p that serves a
+   whole video. See the serving cap below.
+2. **A manifest the app builds itself** from `adaptiveFormats` — DASH for
+   ExoPlayer (`dash_manifest.dart`), HLS for AVPlayer (`hls_manifest.dart`) —
+   but **only when those tracks are not capped**.
 3. **The 360p progressive MP4.**
 4. **Audio only**, flagged via `PlaybackSources.videoUnavailable` so the UI can
    say so. An earlier version returned audio on the first client that had it,
@@ -605,11 +624,84 @@ Things in there worth not undoing:
   switching still works because `setTrack` is only `setMaxVideoSize` on
   ExoPlayer's track selector and never looks at the manifest.
 
-**iOS keeps the old behaviour, and that is a platform fact.** AVPlayer has
-never supported DASH. Generating HLS from these formats instead would mean
-parsing each track's `sidx` box to emit byte-range segment lists — possible,
-not done — so on iOS it is still the HLS ladder when YouTube offers one and
-360p when it does not. `canUseDash` is Android-only for that reason.
+**A generated manifest is only ever handed to the player when the tracks
+behind it serve the WHOLE video, and that check is the most important thing in
+`resolve()`.**
+
+YouTube serves a byte-range `adaptiveFormats` URL for only the **first ~60
+seconds** unless the request carries a proof-of-origin token. Past that offset
+every range comes back `403`. Measured with `tool/check_stream_limits.dart` on
+19 November 2026: the cut lands at 60s of media on a 5-minute video, 60s on a
+10-minute one and 62s on a 16-minute one — so it is keyed to **playback
+position**, not to bytes, not to elapsed time, and not to this machine's
+address. It applies to the `IOS` and `ANDROID` clients alike and to the URLs
+`youtube_explode_dart` produces after deciphering. The progressive 360p stream
+is **not** capped, and neither are the segments of a YouTube-issued HLS ladder
+(verified on the same machine in the same minute, which is what rules out IP
+reputation as the cause).
+
+This is the defect behind "no videos are playing properly", and it is worth
+understanding because of how thoroughly it hid. A generated manifest made the
+whole ladder available and playback *looked* fixed: everything cheap to check —
+the manifest, the ladder, the init range, the index range — lives in the first
+few kilobytes of the file and is served perfectly. `check_dash` passed.
+`check_playback` passed. The video then stops about a minute in, which on a
+phone reads as a buffering fault or a bad connection rather than as a
+resolution bug. **The HD route was strictly worse than the 360p one it
+replaced**, because 360p plays to the end.
+
+So `_adaptiveTracksPlayThroughout` asks for **two bytes from the end of the
+file** before choosing a generated manifest, and anything it cannot establish —
+no `clen`, a timeout, a network error — counts as capped. Measured rather than
+hardcoded on purpose: a constant would have to be revisited every time YouTube
+moves, whereas this keeps HD working for the videos that genuinely serve in
+full, and starts using the full ladder again the moment a token exists or the
+policy changes. A clip under 40 seconds skips the probe, since it cannot reach
+the cap — which is what keeps HD on Shorts, where it is both safe and most
+worth having.
+
+**iOS now generates HLS, and the old note here was too pessimistic.** It said
+that generating HLS "would mean parsing each track's `sidx` box to emit
+byte-range segment lists — possible, not done". It is done:
+`hls_manifest.dart` parses the `sidx` and writes the fragment offsets out as
+`#EXT-X-BYTERANGE` segments, which AVPlayer has played since iOS 10. So the
+ceiling on iOS is no longer a platform fact; it is the same serving cap Android
+faces. Three things about that file:
+
+- **AVC and AAC only**, which is narrower than the DASH manifest on purpose.
+  ExoPlayer decodes VP9 in hardware essentially everywhere; AVPlayer decodes it
+  nowhere, so a VP9 variant in an iOS playlist is not a lower rung but a broken
+  one. YouTube offers `avc1` to 1080p, so that is the iOS ceiling.
+- **The `sidx` anchor is the one thing that cannot fail loudly.** Offsets are
+  relative to the byte *after* the box, so the absolute position is
+  `indexStart + box length + first_offset`. Get it wrong and the ranges are
+  still valid HTTP requests — googlevideo answers `206` with bytes that simply
+  are not a fragment, and the only symptom is a video that will not start.
+  `tool/check_hls.dart` pins it by arithmetic rather than by eye: every URL
+  carries `clen`, so the last fragment must end *exactly* there.
+- **Playlists are served over loopback** (`hls_server.dart`), not from a
+  `file://` URL. ExoPlayer reads a local DASH manifest happily; AVPlayer's
+  handling of a local `.m3u8` is inconsistent across iOS versions, and an
+  in-app HTTP server is what apps doing this settle on. No media passes through
+  it — the playlists name googlevideo directly, so AVPlayer fetches every byte
+  itself. A VOD playlist is read once at open, so the server is not in the path
+  of background playback.
+
+**`PlaybackSources.fallbackUrl` is the safety net under both generated
+manifests.** Re-resolving is the wrong recovery for a manifest this app wrote:
+it would rebuild the same document from the same tracks and fail identically.
+`fallbackUrl` carries the progressive stream from the same response — a
+genuinely different route, and one the cap does not apply to — so a manifest
+that turns out to be unplayable on a device costs the viewer some resolution
+instead of the rest of the video.
+
+**What this means for quality, plainly.** Above 360p now requires either a
+YouTube-issued HLS ladder (about one video in eight) or a clip short enough to
+sit inside the cap. Everything else plays at 360p, full length, on both
+platforms. The only way to lift that is a proof-of-origin token, which means
+running YouTube's BotGuard challenge in a WebView to mint one — a real feature,
+a moving target, and not something to attempt without a device to test it on.
+`tool/check_stream_limits.dart` is the probe that will say whether it worked.
 
 `_clientChain` is ordered by which clients actually yield combined streams. Do
 not reorder it from first principles; re-measure with `probe_clients.dart`.
@@ -1399,6 +1491,17 @@ silently the next time a setting is added beside it.
 ## Working on this codebase
 
 Things learned the hard way here, most of them more than once:
+
+**Check the end, not just the start.** The costliest bug in this project's
+history was invisible to every probe because they all fetched the *beginning*
+of a stream — the manifest, the init range, the index range, the first
+fragment. YouTube serves those perfectly for a video it has capped at sixty
+seconds, so "resolves correctly" and "plays to the end" came apart completely,
+and three green probes shipped a build where HD died after a minute. When a
+resource is addressed in pieces, test the **last** piece, and prefer a check
+whose arithmetic closes: every googlevideo URL carries `clen`, so the final
+byte range either ends exactly at the declared length or the whole index is
+wrong. That assertion cannot pass for the wrong reason.
 
 **Probe before building.** `youtube_explode_dart` has failed in at least seven
 distinct ways — search, suggestions, channel uploads, channel playlists — and

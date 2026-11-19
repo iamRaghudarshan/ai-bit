@@ -10,6 +10,8 @@ import '../core/format.dart';
 import 'browse_client.dart';
 import 'comments_client.dart';
 import 'dash_manifest.dart';
+import 'hls_manifest.dart';
+import 'hls_server.dart';
 import 'interests.dart';
 import 'models.dart';
 import 'player_client.dart';
@@ -120,6 +122,9 @@ class YtRepository {
     _player.close();
     _browse.close();
     _comments.close();
+    // Unawaited on purpose: dispose is synchronous for every other dependency
+    // and the socket closing a moment later harms nothing.
+    unawaited(_hlsServer.dispose());
   }
 
   // ------------------------------------------------------------------ feed
@@ -945,9 +950,167 @@ class YtRepository {
   /// Android's ExoPlayer has first-class DASH support and the vendored plugin
   /// already wires `DashMediaSource` to the `dash` format hint, so this costs
   /// no native code. AVPlayer has never supported DASH and Apple is not adding
-  /// it, so iOS keeps the HLS-or-360p behaviour — see the note at the top of
-  /// `dash_manifest.dart`. Web has no native player at all.
+  /// it. Web has no native player at all.
   static bool get canUseDash => !kIsWeb && Platform.isAndroid;
+
+  /// Whether this platform can play a generated HLS manifest instead.
+  ///
+  /// The iOS answer to the same problem: AVPlayer will not take DASH, but it
+  /// has played fragmented MP4 over HLS with byte-range segments since iOS 10,
+  /// and that is a shape the adaptive tracks can be described in. See
+  /// `hls_manifest.dart`.
+  static bool get canUseGeneratedHls => !kIsWeb && Platform.isIOS;
+
+  /// Playlists for generated HLS, served to AVPlayer over loopback.
+  ///
+  /// Created eagerly but bound lazily — nothing listens on a port until the
+  /// first video actually needs one.
+  final _hlsServer = GeneratedHlsServer();
+
+  /// A clip no longer than this cannot run past the cap described in
+  /// [_adaptiveTracksPlayThroughout], so it needs no probe.
+  ///
+  /// Well under the measured 60 seconds, because the boundary is approximate
+  /// and the penalty for being wrong is a video that dies mid-play, while the
+  /// penalty for being conservative is one extra ranged request.
+  static const _definitelyUncappedMs = 40 * 1000;
+
+  /// Does googlevideo serve the WHOLE of these tracks, or only the start?
+  ///
+  /// This is the question that decides between HD and 360p, and it has to be
+  /// asked rather than assumed. YouTube now serves a byte-range adaptive URL
+  /// for only the **first ~60 seconds** of a video unless the request carries
+  /// a proof-of-origin token, which an app with no sign-in has no way to mint.
+  /// Past that offset every range comes back `403`. Measured with
+  /// `tool/check_stream_limits.dart`, on both the iOS and Android clients, and
+  /// on the URLs `youtube_explode_dart` produces too — the cut lands at 60s of
+  /// media on a 5-minute video and at 62s on a 16-minute one, so it is keyed
+  /// to playback position rather than to bytes or to elapsed time.
+  ///
+  /// This is the defect behind "no videos are playing properly". A generated
+  /// manifest made the whole 144p–2160p ladder available and playback *looked*
+  /// fixed, because everything that is easy to check — the manifest, the
+  /// ladder, the init and index ranges — lives in the first few kilobytes of
+  /// the file and is served perfectly. The video then stops about a minute in,
+  /// which reads as a buffering fault rather than as a resolution bug. A
+  /// progressive 360p stream, which is *not* capped, would have played to the
+  /// end: the HD route was strictly worse than the one it replaced.
+  ///
+  /// So the choice is measured per video, by asking for two bytes from the end
+  /// of the file, rather than hardcoding YouTube's current policy. That costs
+  /// one small request on the videos where it matters and buys two things a
+  /// constant could not: HD keeps working for the videos that genuinely serve
+  /// in full, and the day a token arrives — or YouTube changes its mind — the
+  /// app uses the full ladder again with no code change.
+  ///
+  /// Unknowns resolve to "capped". A missing `clen`, a timeout or a network
+  /// error all mean the app cannot show that HD will work, and 360p that plays
+  /// to the end beats HD that might not.
+  Future<bool> _adaptiveTracksPlayThroughout(
+    List<AdaptiveFormat> formats,
+  ) async {
+    final videos = [
+      for (final f in formats)
+        if (f.isVideo && f.isUsable) f,
+    ]..sort((a, b) => b.height.compareTo(a.height));
+    if (videos.isEmpty) return false;
+    final probe = videos.first;
+
+    // A short clip cannot reach the cap. This is what keeps HD working on
+    // Shorts, where it is both safe and most worth having.
+    if (probe.durationMs > 0 && probe.durationMs <= _definitelyUncappedMs) {
+      return true;
+    }
+
+    final clen = int.tryParse(
+      Uri.parse(probe.url).queryParameters['clen'] ?? '',
+    );
+    if (clen == null || clen < 4) return false;
+
+    final client = http.Client();
+    try {
+      final response = await client
+          .get(
+            Uri.parse(probe.url),
+            headers: {'Range': 'bytes=${clen - 2}-${clen - 1}'},
+          )
+          .timeout(const Duration(seconds: 8));
+      final served = response.statusCode == 200 || response.statusCode == 206;
+      if (!served) {
+        debugPrint(
+          'AI BIT: adaptive tracks are capped (HTTP ${response.statusCode} '
+          'at the end of the file) — using the progressive stream',
+        );
+      }
+      return served;
+    } catch (e) {
+      debugPrint('AI BIT: could not test the adaptive tracks — $e');
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Builds and publishes a generated HLS manifest for iOS, or null.
+  ///
+  /// The index ranges are fetched in parallel, so this costs one round trip
+  /// rather than one per rendition. A rendition whose `sidx` cannot be read is
+  /// dropped rather than failing the set — a ladder missing its 144p rung is
+  /// still a working ladder.
+  Future<String?> _publishGeneratedHls(
+    String videoId,
+    List<AdaptiveFormat> formats,
+  ) async {
+    final candidates = hlsCandidates(formats);
+    if (candidates.isEmpty) return null;
+
+    final client = http.Client();
+    try {
+      final indexes = await Future.wait([
+        for (final f in candidates) _segmentIndex(client, f),
+      ]);
+      final tracks = <HlsTrack>[];
+      for (var i = 0; i < candidates.length; i++) {
+        final index = indexes[i];
+        if (index != null) tracks.add(HlsTrack(candidates[i], index));
+      }
+      final built = buildHls(tracks);
+      if (built == null) return null;
+      _generatedLadder = built.ladder;
+      return await _hlsServer.publish(videoId, built);
+    } catch (e) {
+      debugPrint('AI BIT: could not generate HLS for $videoId — $e');
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// The ladder of the last generated HLS set, so [resolve] can report it.
+  List<String> _generatedLadder = const [];
+
+  Future<SegmentIndex?> _segmentIndex(
+    http.Client client,
+    AdaptiveFormat format,
+  ) async {
+    try {
+      final response = await client
+          .get(
+            Uri.parse(format.url),
+            headers: {'Range': 'bytes=${format.indexStart}-${format.indexEnd}'},
+          )
+          .timeout(const Duration(seconds: 12));
+      if (response.statusCode != 200 && response.statusCode != 206) return null;
+      return parseSegmentIndex(
+        response.bodyBytes,
+        indexStart: format.indexStart,
+      );
+    } catch (_) {
+      // Logged by the caller if the whole set fails; one missing rung is not
+      // worth a line of its own.
+      return null;
+    }
+  }
 
   /// Writes a generated DASH manifest to the cache directory and returns its
   /// `file://` URL, or null when these formats cannot make one.
@@ -1029,19 +1192,47 @@ class YtRepository {
             isLive: streams.isLive,
           ));
         }
-        // No ladder from YouTube, but the separate tracks are there. Build our
-        // own manifest so the player can put them back together — this is what
-        // lifts playback off the 360p floor on Android. See dash_manifest.dart.
-        if (canUseDash) {
-          final dashUrl = await _writeDashManifest(videoId, streams.adaptiveFormats);
-          if (dashUrl != null) {
-            return _cache(key, PlaybackSources(
-              url: dashUrl,
-              qualities: const {},
-              ladder: dashLadder(streams.adaptiveFormats),
-              audioOnlyUrl: streams.audioUrl,
-              isDash: true,
-            ));
+        // No ladder from YouTube, but the separate tracks are there. They can
+        // be put back together into one URL — a DASH manifest for ExoPlayer,
+        // an HLS one for AVPlayer — which is what lifts playback off the 360p
+        // floor.
+        //
+        // Only when the tracks really serve to the end of the file, though.
+        // See _adaptiveTracksPlayThroughout: a generated manifest over capped
+        // tracks plays about a minute and then dies, which is worse than the
+        // progressive stream below. The check is skipped entirely when neither
+        // platform could use the result.
+        if ((canUseDash || canUseGeneratedHls) &&
+            streams.adaptiveFormats.isNotEmpty &&
+            await _adaptiveTracksPlayThroughout(streams.adaptiveFormats)) {
+          if (canUseDash) {
+            final dashUrl =
+                await _writeDashManifest(videoId, streams.adaptiveFormats);
+            if (dashUrl != null) {
+              return _cache(key, PlaybackSources(
+                url: dashUrl,
+                qualities: const {},
+                ladder: dashLadder(streams.adaptiveFormats),
+                audioOnlyUrl: streams.audioUrl,
+                isDash: true,
+                // The one certain alternative if the manifest will not play.
+                fallbackUrl: streams.muxedUrl,
+              ));
+            }
+          }
+          if (canUseGeneratedHls) {
+            final hlsUrl =
+                await _publishGeneratedHls(videoId, streams.adaptiveFormats);
+            if (hlsUrl != null) {
+              return _cache(key, PlaybackSources(
+                url: hlsUrl,
+                qualities: const {},
+                ladder: _generatedLadder,
+                audioOnlyUrl: streams.audioUrl,
+                isHls: true,
+                fallbackUrl: streams.muxedUrl,
+              ));
+            }
           }
         }
         if (streams.muxedUrl != null) {

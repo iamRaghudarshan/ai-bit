@@ -1027,6 +1027,39 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _recoveredVideoId = video.id;
 
     final resumeAt = _position;
+
+    // A manifest this app generated is the one case where re-resolving is the
+    // wrong move: it would rebuild the same document from the same tracks and
+    // fail in the same way. `fallbackUrl` is the progressive stream from the
+    // same response — lower resolution, but a genuinely different route, and
+    // one that is not subject to the serving cap that makes HD stop partway
+    // through. Taking it costs the viewer some sharpness instead of the rest
+    // of the video.
+    final fallback = _sources?.fallbackUrl;
+    if (fallback != null && fallback.isNotEmpty) {
+      debugPrint(
+        'AI BIT: generated manifest failed ($detail) — '
+        'falling back to the progressive stream for ${video.id}',
+      );
+      final sources = PlaybackSources(
+        url: fallback,
+        qualities: const {},
+        audioOnlyUrl: _sources?.audioOnlyUrl,
+      );
+      try {
+        _sources = sources;
+        _error = null;
+        notifyListeners();
+        await _attach(video, sources, startAt: resumeAt);
+        return;
+      } catch (e) {
+        if (_current?.id != video.id) return;
+        _error = message;
+        notifyListeners();
+        return;
+      }
+    }
+
     debugPrint('AI BIT: playback failed ($detail) — re-resolving ${video.id}');
     try {
       final sources = await _repo.resolve(video.id, force: true);

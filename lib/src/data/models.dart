@@ -395,6 +395,7 @@ class PlaybackSources {
     this.ladder = const [],
     this.isLive = false,
     this.videoUnavailable = false,
+    this.fallbackUrl,
   });
 
   /// The stream the player opens with.
@@ -429,4 +430,15 @@ class PlaybackSources {
   /// video+audio stream for this video at all. The UI surfaces this rather
   /// than leaving the user staring at a black frame.
   final bool videoUnavailable;
+
+  /// A different stream to try if [url] will not play — the progressive 360p
+  /// one, set only when [url] is a manifest this app generated.
+  ///
+  /// Re-resolving is the wrong recovery for a generated manifest: it would
+  /// rebuild the same manifest from the same tracks and fail the same way.
+  /// This is a route that is *known* to differ, and known to serve to the end
+  /// of the video, so a manifest that turns out to be unplayable on a device
+  /// costs the viewer some resolution instead of the whole video. See
+  /// `PlaybackController._recoverFromFailure`.
+  final String? fallbackUrl;
 }
