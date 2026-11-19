@@ -153,6 +153,25 @@ Future<void> main(List<String> args) async {
       // than failed — what would be a real failure is a *playable* video whose
       // fragments do not fetch.
       final top = tracks.firstWhere((t) => t.format.isVideo);
+
+      // The init segment the playlist points EXT-X-MAP at. Without a valid
+      // `moov` every fragment is undecodable, and the codec string has to
+      // agree with what is inside it.
+      final init = await _range(
+        client,
+        top.format.url,
+        top.format.initStart,
+        top.format.initEnd,
+      );
+      if (init == null) {
+        stdout.writeln('  init segment: FAIL could not fetch');
+        ok = false;
+      } else {
+        final verdict = _checkInit(init, top.format);
+        stdout.writeln('  init segment: ${init.length} bytes, $verdict');
+        if (verdict.startsWith('FAIL')) ok = false;
+      }
+
       final clen = int.tryParse(
         Uri.parse(top.format.url).queryParameters['clen'] ?? '',
       );
@@ -344,6 +363,74 @@ Future<SegmentIndex?> _index(http.Client client, AdaptiveFormat f) async {
   final bytes = await _range(client, f.url, f.indexStart, f.indexEnd);
   if (bytes == null) return null;
   return parseSegmentIndex(bytes, indexStart: f.indexStart);
+}
+
+/// Does the init segment really hold a `moov`, and does the codec string the
+/// playlist declares match the bitstream inside it?
+///
+/// A `CODECS` attribute that disagrees with the actual profile and level is a
+/// classic reason for a player to refuse a variant outright — and it fails
+/// quietly, by simply not selecting that rung. The three hex bytes of an
+/// `avc1.PPCCLL` string are AVCProfileIndication, profile_compatibility and
+/// AVCLevelIndication, which are bytes 1 to 3 of the `avcC` box, so the two
+/// can be compared directly rather than taken on trust.
+String _checkInit(Uint8List bytes, AdaptiveFormat format) {
+  final boxes = <String>[];
+  Uint8List? avcC;
+
+  void walk(int start, int end, int depth) {
+    var p = start;
+    while (p + 8 <= end) {
+      final size = ByteData.sublistView(bytes).getUint32(p);
+      final type = String.fromCharCodes(bytes, p + 4, p + 8);
+      if (depth == 0) boxes.add(type);
+      var boxSize = size;
+      var header = 8;
+      if (size == 1) {
+        if (p + 16 > end) return;
+        boxSize = ByteData.sublistView(bytes).getUint64(p + 8);
+        header = 16;
+      } else if (size == 0) {
+        boxSize = end - p;
+      }
+      if (boxSize < header || p + boxSize > end) return;
+      if (type == 'avcC') {
+        avcC = Uint8List.sublistView(bytes, p + header, p + boxSize);
+      }
+      // Only containers are descended into; a sample entry carries its config
+      // boxes after a fixed-size header, hence the offsets.
+      const containers = {
+        'moov', 'trak', 'mdia', 'minf', 'stbl', 'mvex', 'edts',
+      };
+      if (containers.contains(type)) {
+        walk(p + header, p + boxSize, depth + 1);
+      } else if (type == 'stsd') {
+        walk(p + header + 8, p + boxSize, depth + 1);
+      } else if (type == 'avc1' || type == 'avc3') {
+        walk(p + header + 78, p + boxSize, depth + 1);
+      }
+      p += boxSize;
+    }
+  }
+
+  walk(0, bytes.length, 0);
+  if (!boxes.contains('moov')) {
+    return 'FAIL no moov box (boxes: ${boxes.join(',')})';
+  }
+  if (!format.isVideo) return 'moov present (${boxes.join(',')})';
+
+  final config = avcC;
+  if (config == null || config.length < 4) {
+    return 'moov present, but no avcC to compare the codec string against';
+  }
+  final actual = config
+      .sublist(1, 4)
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+  final declared = format.codecs.split('.').last.toLowerCase();
+  return actual == declared
+      ? 'moov + avcC, codec string avc1.$actual matches the bitstream'
+      : 'FAIL declares avc1.$declared but the bitstream is avc1.$actual';
 }
 
 /// Will googlevideo serve the last two bytes of the file? Mirrors
