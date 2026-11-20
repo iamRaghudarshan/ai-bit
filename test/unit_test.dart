@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:ai_bit/src/core/chapters.dart';
+import 'package:better_player_plus/better_player_plus.dart' show BetterPlayerAsmsAudioTrack;
 import 'package:ai_bit/src/core/format.dart';
 import 'package:ai_bit/src/core/incoming_links.dart';
 import 'package:ai_bit/src/data/attestation/web_formats.dart';
@@ -202,6 +203,30 @@ Some blurb about the video.
 
     test('is empty for a missing date', () {
       expect(formatDateTime(null), '');
+    });
+  });
+
+  group('PlaybackController.distinctAudioTracks', () {
+    BetterPlayerAsmsAudioTrack track(int id, String? label, [String? lang]) =>
+        BetterPlayerAsmsAudioTrack(id: id, label: label, language: lang);
+
+    test('one audio listed per bitrate group is one track, not two', () {
+      // Seen on an emulator: a video with no dubs offered an "Audio track"
+      // picker with two rows both reading "Default".
+      final out = PlaybackController.distinctAudioTracks(
+        [track(0, 'Default'), track(1, 'Default')],
+      );
+      expect(out, hasLength(1));
+    });
+
+    test('real dubs survive, in order', () {
+      final out = PlaybackController.distinctAudioTracks([
+        track(0, 'English original'),
+        track(1, 'Hindi'),
+        track(2, 'English original'),
+        track(3, null, 'es'),
+      ]);
+      expect(out.map((t) => t.id), [0, 1, 3]);
     });
   });
 

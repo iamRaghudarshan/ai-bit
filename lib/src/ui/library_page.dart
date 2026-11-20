@@ -317,7 +317,7 @@ class _PlaylistTile extends StatelessWidget {
         ),
       ),
       title: Text(playlist.name),
-      subtitle: Text('${playlist.itemCount} videos'),
+      subtitle: Text(playlist.itemCount == 1 ? '1 video' : '${playlist.itemCount} videos'),
       trailing: playlist.isWatchLater
           ? null
           : IconButton(

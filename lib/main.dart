@@ -505,12 +505,23 @@ class _AppLockGateState extends State<_AppLockGate>
       return;
     }
 
-    _prompting = true;
+    // A state change, not just a flag: the shield is drawn above the
+    // Navigator, so it has to come down for the PIN pad — pushed onto that
+    // Navigator — to be seen and tapped. Before this the pad opened
+    // invisibly under the shield, Unlock then did nothing because a prompt
+    // was "already open", and the owner was locked out of the app. Found on
+    // an emulator. The pad route is opaque and has no transition, so nothing
+    // behind it shows while the shield is down.
+    setState(() => _prompting = true);
     bool unlocked;
     try {
       unlocked = await AppLockPage.unlock(navigatorContext);
     } finally {
-      _prompting = false;
+      if (mounted) {
+        setState(() => _prompting = false);
+      } else {
+        _prompting = false;
+      }
     }
     if (!mounted) return;
     // unlock() only resolves false when the route was popped programmatically
@@ -520,12 +531,35 @@ class _AppLockGateState extends State<_AppLockGate>
     if (unlocked) setState(() => _locked = false);
   }
 
+  /// The window-security state last sent to Android, so it is sent on change
+  /// only.
+  bool? _secureSent;
+  static const _window = MethodChannel('ai.bit/window');
+
+  /// Keeps the task-switcher thumbnail blank while the lock is armed. The
+  /// shield below goes up at `paused`, which is after Android has already
+  /// taken the thumbnail — seen on an emulator showing Settings in recents
+  /// with the lock on — so the window itself has to be marked secure.
+  void _syncWindowSecurity(bool armed) {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    if (_secureSent == armed) return;
+    _secureSent = armed;
+    _window.invokeMethod<void>('setSecure', armed).catchError((Object e) {
+      _secureSent = null;
+      debugPrint('AI BIT: window security not applied - $e');
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
+    final armed = context.select<SettingsService, bool>(
+      (s) => s.appLockEnabled && s.appLockPinHash.isNotEmpty,
+    );
+    _syncWindowSecurity(armed);
     return Stack(
       children: [
         widget.child,
-        if (_locked)
+        if (_locked && !_prompting)
           Positioned.fill(
             child: GestureDetector(
               // Opaque, so the hit test stops at the shield. Without it a tap

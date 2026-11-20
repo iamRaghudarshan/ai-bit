@@ -111,11 +111,50 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// better_player already parses these — `useAsmsSubtitles` is on for every
   /// ladder source — but nothing ever offered them, so a video with subtitles
   /// played without any way to turn them on.
-  List<BetterPlayerSubtitlesSource> get captionTracks =>
-      _player?.betterPlayerSubtitlesSourceList
-          .where((s) => s.type != BetterPlayerSubtitlesSourceType.none)
-          .toList() ??
-      const [];
+  ///
+  /// When the manifest has none — most videos, since few get a YouTube HLS
+  /// ladder now — the tracks fetched by [loadCaptions] are offered instead.
+  List<BetterPlayerSubtitlesSource> get captionTracks {
+    final fromManifest = _player?.betterPlayerSubtitlesSourceList
+            .where((s) => s.type != BetterPlayerSubtitlesSourceType.none)
+            .toList() ??
+        const <BetterPlayerSubtitlesSource>[];
+    if (fromManifest.isNotEmpty) return fromManifest;
+    return _fetchedCaptionsFor == _current?.id ? _fetchedCaptions : const [];
+  }
+
+  List<BetterPlayerSubtitlesSource> _fetchedCaptions = const [];
+  String? _fetchedCaptionsFor;
+  bool _captionsLoading = false;
+
+  /// True while [loadCaptions] is asking YouTube for the track list.
+  bool get captionsLoading => _captionsLoading;
+
+  /// Fetches the current video's caption tracks, once, when the captions
+  /// sheet is opened — not for every video, since most are never asked.
+  Future<void> loadCaptions() async {
+    final video = _current;
+    if (video == null || _isOffline) return;
+    if (_fetchedCaptionsFor == video.id || _captionsLoading) return;
+    _captionsLoading = true;
+    notifyListeners();
+    try {
+      final tracks = await _repo.captionTracks(video.id);
+      if (_current?.id != video.id) return;
+      _fetchedCaptions = [
+        for (final t in tracks)
+          BetterPlayerSubtitlesSource(
+            type: BetterPlayerSubtitlesSourceType.network,
+            name: t.name,
+            urls: [t.url],
+          ),
+      ];
+      _fetchedCaptionsFor = video.id;
+    } finally {
+      _captionsLoading = false;
+      notifyListeners();
+    }
+  }
 
   /// The caption track showing now, or null when they are off.
   BetterPlayerSubtitlesSource? get activeCaptions {
@@ -140,9 +179,26 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// Alternate audio tracks (dubs), when the HLS manifest carries them.
+  /// Alternate audio tracks (dubs), when the HLS manifest carries them — one
+  /// per distinct name.
+  ///
+  /// YouTube's ladder lists the same audio once per bitrate group, so a video
+  /// with no dubs at all reported two tracks both called "Default" and the
+  /// More sheet offered a picker with two identical rows. Only tracks that a
+  /// person could tell apart are kept.
   List<BetterPlayerAsmsAudioTrack> get audioTracks =>
-      _player?.betterPlayerAsmsAudioTracks ?? const [];
+      distinctAudioTracks(_player?.betterPlayerAsmsAudioTracks ?? const []);
+
+  /// The first track for each distinct label (or language), in order.
+  static List<BetterPlayerAsmsAudioTrack> distinctAudioTracks(
+    List<BetterPlayerAsmsAudioTrack> tracks,
+  ) {
+    final seen = <String>{};
+    return [
+      for (final t in tracks)
+        if (seen.add((t.label ?? t.language ?? '').trim().toLowerCase())) t,
+    ];
+  }
 
   BetterPlayerAsmsAudioTrack? get activeAudioTrack =>
       _player?.betterPlayerAsmsAudioTrack;
@@ -342,6 +398,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Wall-clock remaining on the sleep timer, or null when it is off.
   Duration? get sleepRemaining {
+    if (_sleepAtEnd) {
+      final left = _duration - _position;
+      return left.isNegative ? Duration.zero : left;
+    }
     final deadline = _sleepDeadline;
     if (deadline == null) return null;
     final left = deadline.difference(DateTime.now());
@@ -1503,6 +1563,15 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // handles the rest", but repeat is a user setting that defaults to off,
     // so every Short played once and then sat paused on its last frame —
     // seen on an emulator as a Short "stuck" at 11 and 21 seconds.
+    // "End of video" on the sleep timer: this finish is the stopping point.
+    // The end screen shows, with nothing counting down after it.
+    if (_sleepAtEnd) {
+      _sleepAtEnd = false;
+      _endScreen = true;
+      _cancelCountdown();
+      notifyListeners();
+      return;
+    }
     if (_current?.isShort ?? false) {
       await seek(Duration.zero);
       await _player?.play();
@@ -2044,6 +2113,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Stops once the current video finishes, instead of after a fixed time —
+  /// YouTube's "End of video". Nothing autoplays after it.
+  void startSleepAtEndOfVideo() {
+    _cancelSleepTimer();
+    _sleepAtEnd = true;
+    notifyListeners();
+  }
+
+  bool _sleepAtEnd = false;
+  bool get sleepsAtEndOfVideo => _sleepAtEnd;
+
   void cancelSleepTimer() {
     _cancelSleepTimer();
     notifyListeners();
@@ -2053,6 +2133,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _sleepTimer?.cancel();
     _sleepTimer = null;
     _sleepDeadline = null;
+    _sleepAtEnd = false;
   }
 
   // -------------------------------------------------------------- events

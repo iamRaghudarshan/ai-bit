@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../data/app_lock_service.dart';
 import '../data/settings.dart';
+import 'widgets/now_playing_overlay.dart' show RouteStackObserver;
 
 /// Which stored PIN this screen is working with.
 ///
@@ -52,9 +53,20 @@ class AppLockPage extends StatefulWidget {
     // would be no way past this screen at all — treat it as already unlocked
     // and let Settings offer the setup.
     if (settings.appLockPinHash.isEmpty) return true;
+    // No transition. The lock shield is lowered while this pad is up — it
+    // sits above the Navigator, so a pad pushed under it was invisible and
+    // the app could not be unlocked at all — and an animated route would
+    // let the app behind show through for the length of the slide.
     final unlocked = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
-        builder: (_) => const AppLockPage._(_PinTarget.app, _PinMode.verify),
+      PageRouteBuilder<bool>(
+        settings: const RouteSettings(
+          name: RouteStackObserver.appLockRouteName,
+        ),
+        opaque: true,
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (_, _, _) =>
+            const AppLockPage._(_PinTarget.app, _PinMode.verify),
       ),
     );
     return unlocked ?? false;

@@ -127,10 +127,17 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
   ///     Asking about the whole stack covers fullscreen, picture-in-picture
   ///     and anything else the watch page opens, without having to name them.
   bool get wantsNowPlayingBar =>
-      _stack.isNotEmpty && !_stack.contains(watchRouteName);
+      _stack.isNotEmpty &&
+      !_stack.contains(watchRouteName) &&
+      // Nor over the app-lock PIN pad: a bar with the playing video's title
+      // and artwork on the lock screen gives away exactly what the lock hides.
+      _stack.last != appLockRouteName;
 
   /// Route name given to the watch page, so it can be recognised here.
   static const watchRouteName = 'watch';
+
+  /// Route name given to the app-lock PIN pad.
+  static const appLockRouteName = 'app-lock';
 
   void _update(void Function() change) {
     final before = wantsNowPlayingBar;

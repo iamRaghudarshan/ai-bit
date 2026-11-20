@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -30,6 +31,9 @@ class MainActivity : FlutterActivity() {
 
         /** Dart-side method name for a link that arrived while running. */
         const val ON_LINK = "onLink"
+
+        /** App lock asks the window to hide itself from the task switcher. */
+        const val WINDOW_CHANNEL = "ai.bit/window"
     }
 
     private var channel: MethodChannel? = null
@@ -100,6 +104,36 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // App lock's privacy half. The task switcher captures its thumbnail
+        // before Flutter can repaint a shield, so with the lock on the
+        // switcher still showed whatever was on screen — watch history
+        // included. FLAG_SECURE blanks that thumbnail on every Android
+        // version (and blocks screenshots while the lock is on, which is the
+        // same trade every banking app makes). On 13+ the thumbnail alone is
+        // also switched off, the narrower tool, in case FLAG_SECURE is ever
+        // relaxed here.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, WINDOW_CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "setSecure" -> {
+                        val secure = call.arguments == true
+                        runOnUiThread {
+                            if (secure) {
+                                window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                            } else {
+                                window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                setRecentsScreenshotEnabled(!secure)
+                            }
+                        }
+                        result.success(null)
+                    }
+
+                    else -> result.notImplemented()
+                }
+            }
 
         val methodChannel =
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)

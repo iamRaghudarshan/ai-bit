@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -66,12 +68,29 @@ Future<void> showSleepTimerSheet(BuildContext context) {
             ListTile(
               leading: const Icon(Icons.timer_off_outlined),
               title: const Text('Turn off'),
-              subtitle: Text('${clockLabel(playback.sleepRemaining)} remaining'),
+              subtitle: Text(
+                playback.sleepsAtEndOfVideo
+                    ? 'Stopping at the end of this video'
+                    : '${clockLabel(playback.sleepRemaining)} remaining',
+              ),
               onTap: () {
                 playback.cancelSleepTimer();
                 Navigator.pop(context);
               },
             ),
+          ListTile(
+            leading: const Icon(Icons.stop_circle_outlined),
+            title: const Text('End of video'),
+            onTap: () {
+              playback.startSleepAtEndOfVideo();
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Playback stops when this video ends'),
+                ),
+              );
+            },
+          ),
           for (final option in _sleepOptions)
             ListTile(
               leading: const Icon(Icons.bedtime_outlined),
@@ -171,6 +190,8 @@ Future<void> showQualitySheet(BuildContext context) {
 /// does: the tracks come off the manifest a moment after playback starts.
 Future<void> showCaptionsSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
+  // The manifest rarely carries captions now; ask YouTube for the tracks.
+  unawaited(playback.loadCaptions());
 
   return showModalBottomSheet<void>(
     context: context,
@@ -191,7 +212,7 @@ Future<void> showCaptionsSheet(BuildContext context) {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
                   child: Text(
-                    playback.isLoading
+                    playback.isLoading || playback.captionsLoading
                         ? 'Looking for caption tracks…'
                         : 'This video has no captions.',
                   ),
@@ -309,7 +330,7 @@ class _SaveToPlaylistSheetState extends State<_SaveToPlaylistSheet> {
                         CheckboxListTile(
                           value: data.containing.contains(playlist.id),
                           title: Text(playlist.name),
-                          subtitle: Text('${playlist.itemCount} videos'),
+                          subtitle: Text(playlist.itemCount == 1 ? '1 video' : '${playlist.itemCount} videos'),
                           onChanged: (_) => _toggle(
                             playlist,
                             data.containing.contains(playlist.id),

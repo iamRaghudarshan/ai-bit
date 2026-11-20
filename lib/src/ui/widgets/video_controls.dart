@@ -101,6 +101,15 @@ class _VideoControlsState extends State<VideoControls> {
 
   Widget _buildControls(BuildContext context, PlaybackController playback) {
     final VideoPlayerValue? value = _video?.value as VideoPlayerValue?;
+    // Nothing over the picture in Picture in Picture. The plugin turns its
+    // controls off before entering PiP, but these are custom controls and
+    // never read that flag — so the floating window was crowded with a
+    // shrunken seek bar, quality, speed and fullscreen buttons that are too
+    // small to hit. Android draws its own play/pause and skip over a PiP
+    // window, as it does for YouTube.
+    if (!widget.controller.controlsEnabled || (value?.isPip ?? false)) {
+      return const SizedBox.shrink();
+    }
     // The player reports no duration until the manifest has been read, and on
     // some sources never — which showed a total of 0:00 next to a running
     // position. The controller already knows the length from the feed
