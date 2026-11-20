@@ -762,6 +762,11 @@ void _confirmDismissal(
       content: Text(message),
       behavior: SnackBarBehavior.floating,
       duration: const Duration(seconds: 6),
+      // The SDK now keeps any snackbar with an action on screen until it is
+      // dismissed (persist defaults to `action != null`), so this "Undo"
+      // never left: still showing minutes later on the watch page, and
+      // covering the video in Picture in Picture. Found on an emulator.
+      persist: false,
       action: SnackBarAction(
         label: 'Undo',
         onPressed: () => db.removeNotInterested(id: id, kind: kind),
