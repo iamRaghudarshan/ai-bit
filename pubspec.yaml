@@ -42,6 +42,10 @@ dependencies:
   cached_network_image: ^3.4.1
   intl: any
   wakelock_plus: ^1.7.0
+  # Asks Android for the panel's highest refresh rate. Xiaomi, OnePlus and
+  # Samsung keep Flutter apps at 60Hz on a 90/120Hz screen unless the app
+  # asks; YouTube asks, so every scroll here looked half as smooth beside it.
+  flutter_displaymode: ^0.6.0
   # Vendored, not from pub.
   #
   # The published plugin hard-disables the lock-screen and notification skip

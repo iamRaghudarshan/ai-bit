@@ -1942,6 +1942,62 @@ Some blurb about the video.
       expect(out.where((v) => v.id == 'dup'), hasLength(1));
     });
 
+    test('one source cannot take the whole top of the feed', () {
+      // Eight uploads from eight followed, well-watched channels against
+      // eight co-watch rows from strangers. Subscription prior plus affinity
+      // put every upload above every stranger, so the feed opened with a
+      // block of subscriptions and the co-watch rows — the discovery source
+      // — started at row nine. Measured live as 17 of the top 20. YouTube's
+      // home is a mixture, and the cap keeps it one.
+      final followed = {for (var i = 0; i < 8; i++) 'UC-sub$i'};
+      final mixed = TasteProfile.from(
+        history: [
+          for (final channel in followed)
+            WatchSignal(
+              videoId: 'seen-$channel',
+              channelId: channel,
+              title: 'bench build',
+              watchedAt: now.subtract(const Duration(days: 1)),
+              completion: 0.9,
+            ),
+        ],
+        searches: const [],
+        subscribed: followed,
+        now: now,
+      );
+      final out = rankFeed(
+        candidates: [
+          for (var i = 0; i < 8; i++)
+            candidate(
+              'sub$i',
+              channel: 'UC-sub$i',
+              source: CandidateSource.subscription,
+              title: 'upload number $i',
+            ),
+          for (var i = 0; i < 8; i++)
+            candidate(
+              'cw$i',
+              channel: 'UC-stranger$i',
+              source: CandidateSource.coWatch,
+              title: 'something else entirely $i',
+            ),
+        ],
+        profile: mixed,
+        now: now,
+        explore: false,
+      );
+      expect(out, hasLength(16));
+      // The single best row is still first, whatever its source.
+      expect(out.first.id, startsWith('sub'));
+      final topEight = out.take(8).toList();
+      final subsInTop = topEight.where((v) => v.id.startsWith('sub')).length;
+      expect(subsInTop, lessThanOrEqualTo(5));
+      expect(subsInTop, greaterThanOrEqualTo(3));
+      // And the cap yields rather than truncating: once the co-watch rows run
+      // out, the remaining subscriptions still appear.
+      expect(out.where((v) => v.id.startsWith('sub')), hasLength(8));
+    });
+
     test('one prolific channel cannot take the whole top of the feed', () {
       // Six videos from the channel the user loves against three from
       // strangers. Without the diversity pass the loved channel sweeps the

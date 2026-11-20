@@ -252,8 +252,13 @@ class SettingsService extends ChangeNotifier {
   static const _kCustomFeeds = 'custom_feeds';
 
   /// Feeds the user described themselves, as JSON. See `custom_feeds.dart`.
-  List<CustomFeed> get customFeeds =>
-      decodeCustomFeeds(_prefs.getString(_kCustomFeeds) ?? '');
+  List<CustomFeed> get customFeeds => decodeCustomFeeds(customFeedsRaw);
+
+  /// The stored JSON itself. A `String` compares by value, so a widget can
+  /// `select` this and rebuild only when the feeds actually change — the
+  /// decoded list is a fresh object on every read and would never compare
+  /// equal.
+  String get customFeedsRaw => _prefs.getString(_kCustomFeeds) ?? '';
 
   set customFeeds(List<CustomFeed> value) =>
       _write(_kCustomFeeds, encodeCustomFeeds(value));

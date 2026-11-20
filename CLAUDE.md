@@ -931,6 +931,33 @@ its own try so a ranking or database fault costs the ordering rather than the
 rows, and every swallowed error is logged. `tool/check_related.dart` runs
 both steps and names the one that failed.
 
+**Autoplay with the screen off needs the player to hold the device awake.**
+The vendored ExoPlayer was built with no wake mode, so between one video
+ending and the next one's first buffered frame — a resolve, a manifest, a few
+segments of silence — a phone with its display dark was free to sleep, and
+the next request never went out. PATCHES.md #25 sets `WAKE_MODE_NETWORK`
+(partial wake lock plus Wi-Fi lock, held only while playing). The ten-second
+end-screen countdown is also skipped while the app is backgrounded: it is a
+UI affordance, and nothing held the device awake across it.
+
+**Smoothness, the cheap half.** `main()` asks for the panel's highest refresh
+rate (`flutter_displaymode`): Xiaomi and other skins keep a Flutter app at
+60Hz on a 90/120Hz screen unless it asks, and YouTube asks. The watch page's
+drag-to-minimise moves a prebuilt sheet through a `ValueNotifier` instead of
+`setState` on the whole page per pointer move, and the `Opacity` fade over the
+video texture is gone (a saveLayer per frame). Home `select`s the two
+settings it reads instead of watching every setter; the audio-mode blur is
+its own layer on a small source; the Shorts source swap waits 250ms so it
+lands after the page snap. The remaining gap — YouTube pre-buffers the next
+Short in a second player — is architectural and not attempted.
+
+**The home feed caps any one source at half of every prefix.** The
+subscription prior, channel affinity and the watched-channel source all
+reward the same known channels, so `check_home_feed.dart` showed 17 of the
+top 20 as subscription uploads in one block with co-watch discovery after it.
+`_maxSourceShare` (tested) keeps the mix — measured after: 10 subscription, 9
+co-watch, 1 interest, interleaved — and yields when other sources run dry.
+
 **A failed stream retries itself once.** "Sometimes a video just fails" had no
 pattern because it has several causes with one cure: a googlevideo URL carries
 an expiry stamp, can be refused after a network change, and the generated DASH

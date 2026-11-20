@@ -752,8 +752,11 @@ class HomePageState extends State<HomePage>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final settings = context.watch<SettingsService>();
-    final kids = settings.kidsMode;
+    // `select`, not `watch`: SettingsService notifies on every setter — a
+    // quality change or a remembered speed on the watch page — and watching
+    // it rebuilt the whole Home scaffold and feed under the player each time.
+    final settings = context.read<SettingsService>();
+    final kids = context.select<SettingsService, bool>((s) => s.kidsMode);
     final guard = _kidsGuard(context);
     // A spent allowance replaces the feed rather than the whole screen, so the
     // mode switch stays reachable for a grown-up with the PIN.
@@ -818,7 +821,11 @@ class HomePageState extends State<HomePage>
           if (!kids) ...[
             _CategoryChips(
               selected: _category,
-              customFeeds: context.watch<SettingsService>().customFeeds,
+              customFeeds: decodeCustomFeeds(
+                context.select<SettingsService, String>(
+                  (s) => s.customFeedsRaw,
+                ),
+              ),
               onCreateFeed: _createCustomFeed,
               onEditFeed: _editCustomFeed,
               onSelected: (value) {

@@ -1,6 +1,8 @@
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugPrint, defaultTargetPlatform, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:provider/provider.dart';
 
 import 'dart:async';
@@ -44,6 +46,18 @@ final _routeStack = RouteStackObserver();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // The single largest difference in perceived smoothness against YouTube on
+  // the phones this app is used on: a 90/120Hz panel runs a Flutter app at
+  // 60Hz unless the app asks for more, and OEM skins (Xiaomi above all) never
+  // volunteer it. Not awaited — the first frame must not wait on a display
+  // mode negotiation — and any failure is logged, since some skins refuse.
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    unawaited(
+      FlutterDisplayMode.setHighRefreshRate().catchError((Object e) {
+        debugPrint('AI BIT: high refresh rate not available - $e');
+      }),
+    );
+  }
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.landscapeLeft,

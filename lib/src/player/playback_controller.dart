@@ -1529,6 +1529,18 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   void _startEndScreen() {
     _endScreen = true;
     _cancelCountdown();
+    // Backgrounded — screen off, or another app in front — there is no screen
+    // to count down on, and nothing holds the device awake across ten silent
+    // seconds: the player's own wake lock drops the moment it reports ended,
+    // so on a phone with the display dark the timer routinely never fired and
+    // the night's listening stopped after one video. Go straight on, which is
+    // also what YouTube does when it is not being looked at.
+    if (!_foreground && _config.autoplayNext && hasNext) {
+      _endScreen = false;
+      notifyListeners();
+      unawaited(playNext());
+      return;
+    }
     if (_config.autoplayNext && hasNext) {
       _countdown = 10;
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {

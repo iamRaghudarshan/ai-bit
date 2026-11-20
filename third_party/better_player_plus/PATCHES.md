@@ -264,6 +264,21 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    No behaviour change for local media playback or for ordinary network
    streams, both of which keep the factory they already had.
 
+25. The ExoPlayer was built without a wake mode, so it held no CPU wake lock
+   and no Wi-Fi lock while playing. Reported as "autoplay to the next video
+   does not work while the screen is off": with the display dark, the audio
+   HAL keeps the device alive only while audio is actually flowing, so the
+   silence between one video ending and the next one's first buffered frame
+   - a network resolve, a manifest, a few segments - is exactly where the SoC
+   is allowed to sleep, and the request that would have started the next
+   video never went out. `setWakeMode(C.WAKE_MODE_NETWORK)` is media3's own
+   answer: a partial wake lock plus a Wi-Fi lock, held only while
+   `playWhenReady` is true and the player is not idle or ended, so it costs
+   nothing while paused. The host app already declares `WAKE_LOCK`. The Dart
+   side pairs this with skipping the ten-second end-screen countdown when the
+   app is backgrounded, because the countdown is a UI affordance and nothing
+   holds the device awake across it.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

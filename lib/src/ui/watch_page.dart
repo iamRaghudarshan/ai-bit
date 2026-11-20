@@ -102,7 +102,13 @@ class _WatchPageState extends State<WatchPage>
     duration: const Duration(milliseconds: 220),
   );
 
-  double _drag = 0;
+  /// How far the sheet has been dragged down, in pixels.
+  ///
+  /// A notifier rather than a field under `setState`: the drag fires on every
+  /// pointer move, and rebuilding the whole page — header, pill row, comments
+  /// preview, twenty up-next rows — per move was the stutter in the one
+  /// gesture made after nearly every tap. Only the translate listens now.
+  final ValueNotifier<double> _drag = ValueNotifier(0);
 
   late VideoBrief _video = widget.video;
   yt.Video? _details;
@@ -111,9 +117,18 @@ class _WatchPageState extends State<WatchPage>
 
   PlaybackController? _playback;
 
+  /// Where the spring-back started, read by the settle listener.
+  double _settleFrom = 0;
+
   @override
   void initState() {
     super.initState();
+    // Attached once. It used to be added inside _onDragEnd, which stacked a
+    // fresh listener on every spring-back and never removed any of them.
+    _settle.addListener(() {
+      _drag.value =
+          _settleFrom * (1 - Curves.easeOutCubic.transform(_settle.value));
+    });
     _start();
     // Follow the player when it moves on by itself.
     _playback = context.read<PlaybackController>()..addListener(_followPlayer);
@@ -324,29 +339,27 @@ class _WatchPageState extends State<WatchPage>
   void dispose() {
     _playback?.removeListener(_followPlayer);
     _settle.dispose();
+    _drag.dispose();
     super.dispose();
   }
 
   void _onDragUpdate(DragUpdateDetails details) {
     // Downward only — dragging up should not lift the sheet off the top.
-    setState(() => _drag = (_drag + details.delta.dy).clamp(0.0, 2000.0));
+    _drag.value = (_drag.value + details.delta.dy).clamp(0.0, 2000.0);
   }
 
   void _onDragEnd(DragEndDetails details) {
     final velocity = details.velocity.pixelsPerSecond.dy;
-    if (_drag > _dismissDistance || velocity > _dismissVelocity) {
+    if (_drag.value > _dismissDistance || velocity > _dismissVelocity) {
       // Playback deliberately continues — popping only hides the surface, and
       // the mini player takes over.
       Navigator.of(context).maybePop();
       return;
     }
     // Spring back to rest.
-    final from = _drag;
+    _settleFrom = _drag.value;
     _settle
       ..reset()
-      ..addListener(() {
-        setState(() => _drag = from * (1 - Curves.easeOutCubic.transform(_settle.value)));
-      })
       ..forward();
   }
 
@@ -370,15 +383,18 @@ class _WatchPageState extends State<WatchPage>
       (playback) => playback.current?.id == _video.id,
     );
 
-    // Fades the page out slightly as it is dragged away, so minimising reads
-    // as a transition rather than a stutter.
-    final dismissProgress = (_drag / (_dismissDistance * 2)).clamp(0.0, 1.0);
-
-    return Transform.translate(
-      offset: Offset(0, _drag),
-      child: Opacity(
-        opacity: 1 - dismissProgress * 0.35,
-        child: _buildSheet(isCurrent),
+    // The sheet is built once per real change and handed in as `child`; the
+    // drag only moves it. No opacity fade any more: an Opacity below 1 over a
+    // subtree holding the platform video texture forces a saveLayer of the
+    // whole page on every frame of the gesture, which is the most expensive
+    // thing the compositor can be asked for on a mid-range phone. The
+    // translation alone reads as minimising.
+    return ValueListenableBuilder<double>(
+      valueListenable: _drag,
+      child: _buildSheet(isCurrent),
+      builder: (context, drag, child) => Transform.translate(
+        offset: Offset(0, drag),
+        child: child,
       ),
     );
   }
@@ -691,16 +707,31 @@ class _AudioArtwork extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
+    // Only the play/pause state is needed here. Watching the whole controller
+    // rebuilt this subtree — and re-ran the blur below — on every position or
+    // duration notification.
+    final isPlaying =
+        context.select<PlaybackController, bool>((p) => p.isPlaying);
+    final playback = context.read<PlaybackController>();
     final url = video?.thumbUrl;
 
     return Stack(
       fit: StackFit.expand,
       children: [
         if (url != null)
-          ImageFiltered(
-            imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-            child: CachedNetworkImage(memCacheWidth: 720, imageUrl: url, fit: BoxFit.cover),
+          // Its own layer, so a rebuild of the controls over it does not
+          // repaint the blur; and a small source — at sigma 24 a 120-pixel
+          // image blurred looks the same as a 720-pixel one and costs a
+          // fraction of the pixels.
+          RepaintBoundary(
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+              child: CachedNetworkImage(
+                memCacheWidth: 120,
+                imageUrl: url,
+                fit: BoxFit.cover,
+              ),
+            ),
           ),
         const ColoredBox(color: Colors.black54),
         Center(
@@ -736,9 +767,7 @@ class _AudioArtwork extends StatelessWidget {
                   ),
                   const SizedBox(height: 8),
                   IconButton.filled(
-                    icon: Icon(
-                      playback.isPlaying ? Icons.pause : Icons.play_arrow,
-                    ),
+                    icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
                     iconSize: 30,
                     onPressed: playback.togglePlayPause,
                   ),

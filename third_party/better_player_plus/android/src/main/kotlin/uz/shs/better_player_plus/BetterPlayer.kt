@@ -122,6 +122,13 @@ internal class BetterPlayer(
         exoPlayer = ExoPlayer.Builder(context)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
+            // PATCH: hold a CPU wake lock and a Wi-Fi lock while playing. With
+            // the screen off nothing else keeps the device awake between the
+            // audio HAL's bursts, and a stream that buffered or a video that
+            // ended and was about to be followed by the next one simply
+            // stopped - the next request never went out. WAKE_LOCK is already
+            // in the host manifest. See PATCHES.md #25.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
         workManager = WorkManager.getInstance(context)
         workerObserverMap = HashMap()

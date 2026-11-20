@@ -145,7 +145,12 @@ class ShortsPageState extends State<ShortsPage> {
     // second; waiting until playback begins meant every swipe paid for it in
     // full.
     _prefetchAhead();
-    _settle = Timer(const Duration(milliseconds: 120), () {
+    // Long enough for the PageView's snap (about 300ms) to be nearly over.
+    // The source swap is a decoder release and reconfigure on the platform
+    // thread, and at 120ms it landed in the middle of the fling, which read
+    // as the swipe catching; the resolve is already in flight from the
+    // prefetch above, so the later start costs almost nothing.
+    _settle = Timer(const Duration(milliseconds: 250), () {
       if (_shorts.isEmpty || !mounted) return;
       // Shorts loop, so the queue is left empty and repeat handles the rest.
       context.read<PlaybackController>().play(_shorts[_index]);

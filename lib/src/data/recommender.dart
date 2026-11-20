@@ -1063,6 +1063,25 @@ const _channelRepeatCost = 0.55;
 /// tokens, which are the only description of a video available here.
 const _topicRepeatCost = 0.7;
 
+/// The most of any prefix of the feed that one candidate source may hold.
+///
+/// A prior ranks sources; it does not mix them, and that was visible. The
+/// subscription prior, channel affinity and the watched-channel source all
+/// reward the same channels — the ones the user already knows — so the top of
+/// the feed was seventeen subscription uploads in a block and then the
+/// co-watch rows in another block (`tool/check_home_feed.dart`, 17 of the top
+/// 20). YouTube's home is a mixture: what you follow, what people watched
+/// after what you watched, what you searched for. This keeps every prefix of
+/// the feed under half from any one source while another source still has
+/// something to offer; it is a cap on domination, not a quota — ordering
+/// within and between sources is still decided by score, and a source with
+/// nothing left simply yields its turns.
+const _maxSourceShare = 0.5;
+
+/// Rows at the top that the source cap leaves alone, so the single best
+/// candidate is always first whatever its source.
+const _sourceCapGrace = 2;
+
 /// Fraction of the feed reserved for videos from channels the profile has
 /// never seen.
 ///
@@ -1158,9 +1177,19 @@ List<VideoBrief> rankFeed({
   final random = math.Random(seed);
   final out = <VideoBrief>[];
   final perChannel = <String, int>{};
+  final perSource = <CandidateSource, int>{};
   final pickedTokens = <String, int>{};
   final taken = List<bool>.filled(pool.length, false);
   final wanted = math.min(limit, pool.length);
+
+  // Whether picking pool[i] next would hand its source more than its share of
+  // the feed so far. See _maxSourceShare.
+  bool withinShare(int i) {
+    final picked = out.length;
+    if (picked < _sourceCapGrace) return true;
+    final have = perSource[pool[i].source] ?? 0;
+    return have < (picked * _maxSourceShare).ceil();
+  }
   // Every nth slot goes to something from a channel the profile has never
   // seen, when there is one to give it to.
   final exploreEvery =
@@ -1200,6 +1229,7 @@ List<VideoBrief> rankFeed({
         if (channel.isEmpty) continue;
         if (profile.channelAffinity.containsKey(channel)) continue;
         if (perChannel.containsKey(channel)) continue;
+        if (!withinShare(i)) continue;
         final value = adjusted(i);
         if (value > bestValue) {
           bestValue = value;
@@ -1215,6 +1245,18 @@ List<VideoBrief> rankFeed({
         adjusted,
         random,
         deterministic: !explore,
+        eligible: withinShare,
+      );
+    }
+    if (chosenIndex < 0) {
+      // Every remaining candidate is from a source already at its share: the
+      // cap yields rather than cutting the feed short.
+      chosenIndex = _sampleBest(
+        pool,
+        taken,
+        adjusted,
+        random,
+        deterministic: !explore,
       );
     }
     if (chosenIndex < 0) break;
@@ -1223,6 +1265,8 @@ List<VideoBrief> rankFeed({
     final chosen = pool[chosenIndex].video;
     out.add(chosen);
     featuresOut?[chosen.id] = pool[chosenIndex].features;
+    perSource[pool[chosenIndex].source] =
+        (perSource[pool[chosenIndex].source] ?? 0) + 1;
     if (chosen.channelId.isNotEmpty) {
       perChannel[chosen.channelId] = (perChannel[chosen.channelId] ?? 0) + 1;
     }
@@ -1247,11 +1291,13 @@ int _sampleBest(
   double Function(int) adjusted,
   math.Random random, {
   bool deterministic = false,
+  bool Function(int)? eligible,
 }) {
   const headSize = 5;
   final head = <({int index, double value})>[];
   for (var i = 0; i < pool.length; i++) {
     if (taken[i]) continue;
+    if (eligible != null && !eligible(i)) continue;
     final value = adjusted(i);
     if (head.length < headSize) {
       head.add((index: i, value: value));
