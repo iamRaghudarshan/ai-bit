@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:ai_bit/src/core/captions.dart';
 import 'package:ai_bit/src/core/chapters.dart';
 import 'package:better_player_plus/better_player_plus.dart' show BetterPlayerAsmsAudioTrack;
 import 'package:ai_bit/src/core/format.dart';
@@ -203,6 +204,104 @@ Some blurb about the video.
 
     test('is empty for a missing date', () {
       expect(formatDateTime(null), '');
+    });
+  });
+
+  group('localised ages and counts', () {
+    // Every string below is one YouTube actually sent (tool/check_age_locales
+    // .dart). With the language set to anything but English, ages and view
+    // counts all came back null or wrong, silently switching off the ranker's
+    // freshness and popularity terms.
+    const day = 86400;
+    const ages = {
+      '6 दिन पहले': 6 * day, // Hindi
+      '19 घंटे पहले': 19 * 3600,
+      '1 वर्ष पहले': 365 * day,
+      '2 সপ্তাহ আগে': 14 * day, // Bengali
+      '4 মাস আগে': 120 * day,
+      '8 రోజుల క్రితం': 8 * day, // Telugu
+      '16 సం. క్రితం': 16 * 365 * day,
+      '1 वर्षापूर्वी': 365 * day, // Marathi
+      '19 तासांपूर्वी': 19 * 3600,
+      '8 நாட்களுக்கு முன்': 8 * day, // Tamil
+      '1 ஆண்டிற்கு முன்': 365 * day,
+      'ஸ்ட்ரீம் செய்யப்பட்டது: 12 ம. முன்': 12 * 3600,
+      '17 કલાક પહેલાં': 17 * 3600, // Gujarati
+      '1 ದಿನದ ಹಿಂದೆ': day, // Kannada
+      '19 മണിക്കൂർ മുമ്പ്': 19 * 3600, // Malayalam
+      '4 ਮਹੀਨੇ ਪਹਿਲਾਂ': 120 * day, // Punjabi
+      '5 ماہ قبل': 150 * day, // Urdu
+      'سلسلہ بندی کا وقت 1 دن پہلے': day,
+    };
+    for (final entry in ages.entries) {
+      test('reads "${entry.key}"', () {
+        expect(parseRelativeAgeSeconds(entry.key), entry.value);
+      });
+    }
+
+    test('a title is not an age', () {
+      expect(parseRelativeAgeSeconds('Best Soft Rock Oldies 90s'), isNull);
+    });
+
+    test('compact counts in lakh, crore and arab', () {
+      expect(parseCompactCount('6 लाख'), 600000);
+      expect(parseCompactCount('2.1 क॰'), 21000000);
+      expect(parseCompactCount('1.1 अ॰'), 1100000000);
+      expect(parseCompactCount('50 লা'), 5000000);
+      expect(parseCompactCount('141 কো'), 1410000000);
+      expect(parseCompactCount('138 కోట్లు'), 1380000000);
+      expect(parseCompactCount('2.3 अब्ज'), 2300000000);
+      expect(parseCompactCount('74 ਹਜ਼ਾਰ'), 74000);
+      expect(parseCompactCount('55 لاکھ'), 5500000);
+      expect(parseCompactCount('29,184'), 29184);
+      expect(parseCompactCount('733K views'), 733000);
+      expect(parseCompactCount('1.2M'), 1200000);
+    });
+  });
+
+  group('normaliseYoutubeVtt', () {
+    const youtube = 'WEBVTT\n'
+        'Kind: captions\n'
+        'Language: en\n'
+        '\n'
+        '00:00:01.000 --> 00:00:03.500 align:start position:0%\n'
+        "We're no strangers\n"
+        '\n'
+        '00:00:03.500 --> 00:00:05.000 align:start position:0%\n'
+        '<00:00:03.600><c> to</c><00:00:04.000><c> love</c>\n';
+
+    test('drops the header block the player parser threw on', () {
+      final out = normaliseYoutubeVtt(youtube);
+      expect(out, startsWith('WEBVTT\n\n00:00:01.000 --> 00:00:03.500\n'));
+      expect(out, isNot(contains('Kind:')));
+    });
+
+    test('strips cue settings after the end time', () {
+      expect(normaliseYoutubeVtt(youtube), isNot(contains('align:')));
+    });
+
+    test('strips inline timing and style tags', () {
+      final out = normaliseYoutubeVtt(youtube);
+      expect(out, contains('00:00:03.500 --> 00:00:05.000\nto love'));
+      expect(out, isNot(contains('<')));
+    });
+
+    test('drops a cue that only repeats the one before it', () {
+      final out = normaliseYoutubeVtt(
+        'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhello\n\n'
+        '00:00:02.000 --> 00:00:03.000\nhello\n\n'
+        '00:00:03.000 --> 00:00:04.000\nworld\n',
+      );
+      expect('-->'.allMatches(out).length, 2);
+    });
+
+    test('CRLF files and empty cues are handled', () {
+      final out = normaliseYoutubeVtt(
+        'WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\n\r\n'
+        '00:00:02.000 --> 00:00:03.000\r\nok\r\n',
+      );
+      expect('-->'.allMatches(out).length, 1);
+      expect(out, contains('ok'));
     });
   });
 
@@ -4020,6 +4119,26 @@ Some blurb about the video.
       expect(o.wantsNowPlayingBar, isFalse);
     });
 
+    test('a menu or dialog is drawn over the bar, not under it', () {
+      // The bar covered the last rows of every bottom sheet opened from a
+      // tab — "Not interested" could not be reached. A sheet over a pushed
+      // page hides the bar while it is open, and the bar comes back after.
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final sheetOverTab = _FakePopup();
+      o.didPush(sheetOverTab, shell);
+      expect(o.wantsNowPlayingBar, isFalse);
+      o.didPop(sheetOverTab, shell);
+      final channel = route('channel');
+      o.didPush(channel, shell);
+      expect(o.wantsNowPlayingBar, isTrue);
+      final sheetOverPage = _FakePopup();
+      o.didPush(sheetOverPage, channel);
+      expect(o.wantsNowPlayingBar, isFalse);
+      o.didPop(sheetOverPage, channel);
+      expect(o.wantsNowPlayingBar, isTrue);
+    });
+
     test('a replacement keeps the depth', () {
       final o = RouteStackObserver();
       o.didPush(shell, null);
@@ -4668,4 +4787,19 @@ Some blurb about the video.
 /// SDK.
 class _FakeRoute extends Route<void> {
   _FakeRoute(String? name) : super(settings: RouteSettings(name: name));
+}
+
+/// A bottom sheet or dialog, as far as the route observer is concerned.
+class _FakePopup extends PopupRoute<void> {
+  @override
+  Color? get barrierColor => null;
+  @override
+  bool get barrierDismissible => true;
+  @override
+  String? get barrierLabel => null;
+  @override
+  Duration get transitionDuration => Duration.zero;
+  @override
+  Widget buildPage(BuildContext context, Animation<double> a, Animation<double> b) =>
+      const SizedBox();
 }

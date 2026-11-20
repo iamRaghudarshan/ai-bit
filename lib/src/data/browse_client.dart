@@ -13,6 +13,56 @@ import 'models.dart';
 /// Parsing recurses for the renderer types rather than following fixed paths.
 /// YouTube reshuffles wrappers constantly and has been migrating playlist grids
 /// from `gridPlaylistRenderer` to `lockupViewModel`; both are handled.
+/// A compact view count — "733K views", "1.2M", "57 लाख व्यूज़" — as a number.
+///
+/// Indian languages count in lakh (100,000) and crore (10,000,000), written
+/// in each script, and YouTube uses them for compact counts in those
+/// languages; read as a bare number they made a 5.7-million-view video worth
+/// 57 views. Thousand words are covered for the same reason. Pure and tested.
+int? parseCompactCount(String label) {
+  final match = RegExp(r'([\d.,]+)\s*([^\s\d.,]*)').firstMatch(label.trim());
+  if (match == null) return null;
+  final number = double.tryParse(match.group(1)!.replaceAll(',', ''));
+  if (number == null) return null;
+  final unit = match.group(2)!.toLowerCase();
+  int multiplier = 1;
+  if (unit.startsWith('k')) {
+    multiplier = 1000;
+  } else if (unit.startsWith('m')) {
+    multiplier = 1000000;
+  } else if (unit.startsWith('b')) {
+    multiplier = 1000000000;
+  } else if (_billion.any(unit.startsWith)) {
+    multiplier = 1000000000;
+  } else if (_lakh.any(unit.startsWith)) {
+    multiplier = 100000;
+  } else if (_crore.any(unit.startsWith)) {
+    multiplier = 10000000;
+  } else if (_thousand.any(unit.startsWith)) {
+    multiplier = 1000;
+  }
+  return (number * multiplier).round();
+}
+
+// Abbreviated forms too: YouTube writes "2.1 क॰" (crore) and "ला॰" (lakh)
+// in Hindi compact counts.
+// Every form below was seen in a real related list (hl=hi…ur, gl=IN), down
+// to the abbreviations: Bengali writes "50 লা" and "141 কো", Telugu
+// "138 కోట్లు". Billions ("arab") appear on the biggest videos.
+const _lakh = [
+  'लाख', 'ला॰', 'লাখ', 'লা', 'లక్ష', 'லட்ச', 'લાખ', 'ಲಕ್ಷ', 'ലക്ഷ', 'ਲੱਖ',
+  'لاکھ',
+];
+const _crore = [
+  'करोड़', 'करोड', 'क॰', 'কোটি', 'কো', 'కోట', 'कोटी', 'கோடி', 'કરોડ',
+  'ಕೋಟಿ', 'കോടി', 'ਕਰੋੜ', 'کروڑ',
+];
+const _thousand = [
+  'हज़ार', 'हजार', 'হাজার', 'হা', 'వేల', 'ஆயிர', 'હજાર', 'ಸಾವಿರ', 'ആയിര',
+  'ਹਜ਼ਾਰ', 'ہزار',
+];
+const _billion = ['अ॰', 'अरब', 'अब्ज', 'અબજ', 'ਅਰਬ', 'ارب'];
+
 class YoutubeBrowseClient {
   YoutubeBrowseClient({http.Client? client}) : _http = client ?? http.Client();
 
@@ -228,14 +278,19 @@ class YoutubeBrowseClient {
       _collectStrings(l['metadata'], 'content', parts);
       if (parts.isEmpty) continue;
 
-      final views = parts.firstWhere(
+      var views = parts.firstWhere(
         (p) => p.toLowerCase().contains('view'),
         orElse: () => '',
       );
-      final age = parts.firstWhere(
+      var age = parts.firstWhere(
         (p) => p.toLowerCase().contains('ago') || p.toLowerCase().contains('stream'),
         orElse: () => '',
       );
+      // Not English: read the stats row by structure. See related().
+      if (views.isEmpty && age.isEmpty) {
+        final stats = _statsRow(l);
+        if (stats != null) (views, age) = stats;
+      }
 
       out.add(VideoBrief(
         id: id,
@@ -280,16 +335,29 @@ class YoutubeBrowseClient {
       _collectStrings(l['metadata'], 'content', parts);
       if (parts.isEmpty) continue;
 
-      final views = parts.firstWhere(
+      var views = parts.firstWhere(
         (p) => p.toLowerCase().contains('view'),
         orElse: () => '',
       );
-      final age = parts.firstWhere(
+      var age = parts.firstWhere(
         (p) =>
             p.toLowerCase().contains('ago') ||
             p.toLowerCase().contains('stream'),
         orElse: () => '',
       );
+      // Not English: the keywords above never match, and with the language
+      // set to Hindi or any other every related video lost its age and view
+      // count — the ranker's freshness and popularity terms with them. The
+      // rows are always [title, channel, views, age], so position is the
+      // language-free reading. Found on an emulator, measured by
+      // tool/check_age_locales.dart.
+      if (views.isEmpty && age.isEmpty) {
+        // The metadata rows, not the flat string list: that also holds the
+        // menu's labels ("Share", "Save to playlist"), so taking the last
+        // two strings read "Share" as the upload age.
+        final stats = _statsRow(l);
+        if (stats != null) (views, age) = stats;
+      }
       // The channel name is the metadata line that is neither the title nor the
       // views/age stats.
       final author = parts.skip(1).firstWhere(
@@ -345,21 +413,51 @@ class YoutubeBrowseClient {
 
   /// `733K views` -> 733000. The channel page abbreviates where search does
   /// not, so the raw digits alone would be off by a factor of a thousand.
-  static int? _parseCompact(String label) {
-    final match = RegExp(
-      r'([\d.,]+)\s*([KMB])?',
-      caseSensitive: false,
-    ).firstMatch(label.trim());
-    if (match == null) return null;
-    final number = double.tryParse(match.group(1)!.replaceAll(',', ''));
-    if (number == null) return null;
-    final multiplier = switch (match.group(2)?.toUpperCase()) {
-      'K' => 1000,
-      'M' => 1000000,
-      'B' => 1000000000,
-      _ => 1,
-    };
-    return (number * multiplier).round();
+  static int? _parseCompact(String label) => parseCompactCount(label);
+
+  /// `(views, age)` from the last metadata row with at least two parts — the
+  /// stats row in every lockup shape seen: `[[channel], [views, age]]` in a
+  /// related list, `[[views, age]]` on a channel's Videos tab.
+  static (String, String)? _statsRow(Map<String, dynamic> lockup) {
+    final rows = _metadataRows(lockup);
+    for (final row in rows.reversed) {
+      if (row.length >= 2) return (row[0], row[1]);
+    }
+    return null;
+  }
+
+  /// A lockup's metadata rows as text — `[[channel], [views, age]]` — read
+  /// from `contentMetadataViewModel.metadataRows[].metadataParts[].text`.
+  static List<List<String>> _metadataRows(Map<String, dynamic> lockup) {
+    Map? model;
+    void find(dynamic node) {
+      if (model != null) return;
+      if (node is Map) {
+        final m = node['contentMetadataViewModel'];
+        if (m is Map) {
+          model = m;
+          return;
+        }
+        node.values.forEach(find);
+      } else if (node is List) {
+        node.forEach(find);
+      }
+    }
+
+    find(lockup['metadata']);
+    final rows = model?['metadataRows'];
+    if (rows is! List) return const [];
+    return [
+      for (final row in rows)
+        if (row is Map && row['metadataParts'] is List)
+          [
+            for (final part in row['metadataParts'] as List)
+              if (part is Map &&
+                  part['text'] is Map &&
+                  (part['text'] as Map)['content'] is String)
+                (part['text'] as Map)['content'] as String,
+          ],
+    ];
   }
 
   /// Videos inside a playlist.

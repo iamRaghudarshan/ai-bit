@@ -12,7 +12,10 @@ class BetterPlayerSubtitle {
           return _handle3LinesAndMoreSubtitles(scanner, isWebVTT);
         }
       }
-    } on Exception catch (_) {
+    // PATCH: catch everything. A malformed block raised a RangeError (an
+    // Error, not an Exception), which escaped and discarded the whole file
+    // instead of skipping one block. See PATCHES.md #28.
+    } catch (_) {
       BetterPlayerUtils.log('Failed to parse subtitle line: $value');
     }
     return BetterPlayerSubtitle._();
@@ -38,7 +41,10 @@ class BetterPlayerSubtitle {
           return BetterPlayerSubtitle._(index: -1, start: start, end: end, texts: texts);
         }
       }
-    } on Exception catch (_) {
+    // PATCH: catch everything. A malformed block raised a RangeError (an
+    // Error, not an Exception), which escaped and discarded the whole file
+    // instead of skipping one block. See PATCHES.md #28.
+    } catch (_) {
       BetterPlayerUtils.log('Failed to parse subtitle line: $scanner');
     }
     return BetterPlayerSubtitle._();
@@ -64,7 +70,10 @@ class BetterPlayerSubtitle {
         final texts = scanner.sublist(firstLineOfText, scanner.length);
         return BetterPlayerSubtitle._(index: index, start: start, end: end, texts: texts);
       }
-    } on Exception catch (_) {
+    // PATCH: catch everything. A malformed block raised a RangeError (an
+    // Error, not an Exception), which escaped and discarded the whole file
+    // instead of skipping one block. See PATCHES.md #28.
+    } catch (_) {
       BetterPlayerUtils.log('Failed to parse subtitle line: $scanner');
     }
     return BetterPlayerSubtitle._();
@@ -102,7 +111,10 @@ class BetterPlayerSubtitle {
         milliseconds: int.tryParse(secsAndMillsSplit[1])!,
       );
       return result;
-    } on Exception catch (_) {
+    // PATCH: catch everything. A malformed block raised a RangeError (an
+    // Error, not an Exception), which escaped and discarded the whole file
+    // instead of skipping one block. See PATCHES.md #28.
+    } catch (_) {
       BetterPlayerUtils.log('Failed to process value: $value');
       return Duration.zero;
     }

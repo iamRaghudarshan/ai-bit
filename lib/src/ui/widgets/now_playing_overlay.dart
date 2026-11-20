@@ -127,6 +127,7 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
   ///     Asking about the whole stack covers fullscreen, picture-in-picture
   ///     and anything else the watch page opens, without having to name them.
   bool get wantsNowPlayingBar =>
+      _popups == 0 &&
       _stack.isNotEmpty &&
       !_stack.contains(watchRouteName) &&
       // Nor over the app-lock PIN pad: a bar with the playing video's title
@@ -145,8 +146,21 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
     if (wantsNowPlayingBar != before) notifyListeners();
   }
 
+  /// Bottom sheets, menus and dialogs open right now.
+  ///
+  /// They are routes too, and counting them as pushed pages painted the bar
+  /// over every sheet opened from a tab — on an emulator it covered the last
+  /// two rows of a video's menu, "Not interested" and "Don't recommend
+  /// channel", so they could not be reached. A popup is drawn over the bar
+  /// rather than under it, as on YouTube.
+  int _popups = 0;
+
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (route is PopupRoute) {
+      _update(() => _popups++);
+      return;
+    }
     // The first route is the shell itself and is not "pushed" for this
     // purpose; everything above it is.
     if (previousRoute == null) return;
@@ -155,11 +169,19 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (route is PopupRoute) {
+      _update(() => _popups = _popups > 0 ? _popups - 1 : 0);
+      return;
+    }
     _update(() => _removeLast(route.settings.name));
   }
 
   @override
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
+    if (route is PopupRoute) {
+      _update(() => _popups = _popups > 0 ? _popups - 1 : 0);
+      return;
+    }
     _update(() => _removeLast(route.settings.name));
   }
 

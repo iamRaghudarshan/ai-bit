@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -6,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
+import '../core/captions.dart';
 import '../core/format.dart';
 import 'attestation/attestation_service.dart';
 import 'attestation/web_formats.dart';
@@ -1825,6 +1827,23 @@ class YtRepository {
   }
 
   final _captionCache = <String, List<({String name, String url})>>{};
+
+  /// Downloads one caption track and returns it as WebVTT the player can
+  /// parse, or null.
+  Future<String?> captionVtt(String url) async {
+    try {
+      final response =
+          await http.get(Uri.parse(url)).timeout(const Duration(seconds: 15));
+      if (response.statusCode != 200) {
+        debugPrint('AI BIT: caption file HTTP ${response.statusCode}');
+        return null;
+      }
+      return normaliseYoutubeVtt(utf8.decode(response.bodyBytes));
+    } catch (e) {
+      debugPrint('AI BIT: caption file not fetched — $e');
+      return null;
+    }
+  }
 
   /// Whether this video's separate audio and video tracks stop partway.
   ///

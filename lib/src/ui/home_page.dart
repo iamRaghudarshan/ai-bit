@@ -1217,15 +1217,61 @@ class _CategoryChips extends StatelessWidget {
           );
 
           final custom = entry.custom;
-          if (custom == null || onEditFeed == null) return chip;
+          final shown = _RevealWhenSelected(selected: isSelected, child: chip);
+          if (custom == null || onEditFeed == null) return shown;
           return GestureDetector(
             onLongPress: () => onEditFeed!(custom),
-            child: chip,
+            child: shown,
           );
         },
       ),
     );
   }
+}
+
+/// Scrolls the chip row so the selected chip is on screen.
+///
+/// Creating a feed from the "+" at the far end of the row selected its new
+/// chip, which sits near the start — so the row stayed scrolled to the end
+/// with the active feed out of sight, and nothing said which feed was
+/// showing. Seen on an emulator.
+class _RevealWhenSelected extends StatefulWidget {
+  const _RevealWhenSelected({required this.selected, required this.child});
+
+  final bool selected;
+  final Widget child;
+
+  @override
+  State<_RevealWhenSelected> createState() => _RevealWhenSelectedState();
+}
+
+class _RevealWhenSelectedState extends State<_RevealWhenSelected> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.selected) _reveal();
+  }
+
+  @override
+  void didUpdateWidget(_RevealWhenSelected old) {
+    super.didUpdateWidget(old);
+    if (widget.selected && !old.selected) _reveal();
+  }
+
+  void _reveal() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 250),
+        alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
+        alignment: 0.3,
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// Only ever shown in a browser build.

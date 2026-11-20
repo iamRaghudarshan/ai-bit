@@ -880,7 +880,7 @@ int? parseRelativeAgeSeconds(String? raw) {
   final short = RegExp(
     r'(\d+)\s*(mo|[ywdhms])\s+ago',
   ).firstMatch(lower);
-  if (short == null) return null;
+  if (short == null) return _parseLocalisedAge(raw);
   final count = int.tryParse(short.group(1)!);
   if (count == null) return null;
   const perAbbrev = {
@@ -894,6 +894,69 @@ int? parseRelativeAgeSeconds(String? raw) {
   };
   return count * _perUnitSeconds[perAbbrev[short.group(2)]!]!;
 }
+
+/// Reads an upload age in the other languages Settings → Language offers.
+///
+/// With the language set to anything but English, YouTube writes the age in
+/// that language — "6 दिन पहले", "8 రోజుల క్రితం" — and the English-only
+/// parser returned null for every row, which quietly switched off the
+/// freshness term for the whole feed. Found on an emulator; the stems below
+/// come from the strings YouTube actually sent in each language, collected by
+/// `tool/check_age_locales.dart`, and every language has a test. A number
+/// followed by a word starting with one of these stems is the age; anything
+/// else stays null, as an unknown age always has.
+int? _parseLocalisedAge(String raw) {
+  for (final match in RegExp(r'(\d+)\s*([^\s\d]+)').allMatches(raw)) {
+    final count = int.tryParse(match.group(1)!);
+    if (count == null) continue;
+    final word = match.group(2)!;
+    for (final entry in _localisedAgeStems.entries) {
+      if (word.startsWith(entry.key)) {
+        return count * _perUnitSeconds[entry.value]!;
+      }
+    }
+  }
+  return null;
+}
+
+/// Unit-word stems per language, mapped to the English unit. Stems rather
+/// than whole words, because each language inflects the unit for the count
+/// ("1 దినం" / "8 రోజుల").
+const _localisedAgeStems = {
+  // Hindi
+  'सेकंड': 'second', 'मिनट': 'minute', 'घंट': 'hour', 'दिन': 'day',
+  'सप्ताह': 'week', 'हफ़्त': 'week', 'हफ्त': 'week', 'महीन': 'month',
+  'वर्ष': 'year', 'साल': 'year',
+  // Bengali
+  'সেকেন্ড': 'second', 'মিনিট': 'minute', 'ঘণ্টা': 'hour', 'দিন': 'day',
+  'সপ্তাহ': 'week', 'মাস': 'month', 'বছর': 'year',
+  // Telugu
+  'సెకను': 'second', 'సెకన్ల': 'second', 'నిమిష': 'minute', 'గంట': 'hour',
+  'రోజు': 'day', 'రోజుల': 'day', 'వారం': 'week', 'వారాల': 'week',
+  'నెల': 'month', 'సంవత్సర': 'year', 'సం.': 'year',
+  // Marathi
+  'सेकंद': 'second', 'मिनिट': 'minute', 'तास': 'hour', 'दिवस': 'day',
+  'आठवड': 'week', 'महिन': 'month',
+  // Tamil
+  'வினாடி': 'second', 'நிமிட': 'minute', 'மணிநேர': 'hour', 'நாள்': 'day',
+  'நாட்க': 'day', 'நாளு': 'day', 'வார': 'week', 'மாத': 'month',
+  'ஆண்ட': 'year', 'வருட': 'year', 'ம.': 'hour',
+  // Gujarati
+  'સેકન્ડ': 'second', 'મિનિટ': 'minute', 'કલાક': 'hour', 'દિવસ': 'day',
+  'અઠવાડિ': 'week', 'મહિન': 'month', 'વર્ષ': 'year',
+  // Kannada
+  'ಸೆಕೆಂಡ': 'second', 'ನಿಮಿಷ': 'minute', 'ಗಂಟೆ': 'hour', 'ದಿನ': 'day',
+  'ವಾರ': 'week', 'ತಿಂಗಳ': 'month', 'ವರ್ಷ': 'year',
+  // Malayalam
+  'സെക്കൻഡ': 'second', 'മിനിറ്റ': 'minute', 'മണിക്കൂ': 'hour', 'ദിവസ': 'day',
+  'ആഴ്': 'week', 'മാസ': 'month', 'വർഷ': 'year',
+  // Punjabi
+  'ਸਕਿੰਟ': 'second', 'ਮਿੰਟ': 'minute', 'ਘੰਟ': 'hour', 'ਦਿਨ': 'day',
+  'ਹਫ਼ਤ': 'week', 'ਹਫਤ': 'week', 'ਮਹੀਨ': 'month', 'ਸਾਲ': 'year',
+  // Urdu
+  'سیکنڈ': 'second', 'منٹ': 'minute', 'گھنٹ': 'hour', 'دن': 'day',
+  'ہفت': 'week', 'مہین': 'month', 'ماہ': 'month', 'سال': 'year',
+};
 
 /// Views **per day**, log-scaled to 0..1 across the range a real video
 /// occupies.

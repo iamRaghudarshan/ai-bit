@@ -170,12 +170,28 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> setCaptions(BetterPlayerSubtitlesSource? track) async {
     final player = _player;
     if (player == null) return;
-    await player.setupSubtitleSource(
-      track ??
-          BetterPlayerSubtitlesSource(
-            type: BetterPlayerSubtitlesSourceType.none,
-          ),
-    );
+    var source = track ??
+        BetterPlayerSubtitlesSource(
+          type: BetterPlayerSubtitlesSourceType.none,
+        );
+    // A track fetched from YouTube's caption manifest is downloaded and
+    // cleaned here rather than handed to the player as a URL: the player's
+    // parser cannot read YouTube's WebVTT as served (see captions.dart), and
+    // failing on it silently showed no captions at all.
+    if (track != null && _fetchedCaptions.contains(track)) {
+      final url = track.urls?.firstOrNull;
+      final content = url == null ? null : await _repo.captionVtt(url);
+      if (content == null) {
+        debugPrint('AI BIT: caption track "${track.name}" could not be read');
+        return;
+      }
+      source = BetterPlayerSubtitlesSource(
+        type: BetterPlayerSubtitlesSourceType.memory,
+        name: track.name,
+        content: content,
+      );
+    }
+    await player.setupSubtitleSource(source);
     notifyListeners();
   }
 

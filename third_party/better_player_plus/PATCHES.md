@@ -299,6 +299,15 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    own notification on its own channel. Found on an emulator through logcat.
    The channel is now created, if missing, for whichever name is in use.
 
+28. `BetterPlayerSubtitle` caught only `Exception`. YouTube's WebVTT starts
+   with a `Kind:` / `Language:` header block that `_handle3LinesAndMore`
+   indexes past the end of, raising a `RangeError` — an `Error` — which
+   escaped every catch and lost the whole file: captions selected, none
+   shown. The catches are widened so one bad block is skipped, not the
+   file. The host also normalises YouTube's files before handing them over
+   (`lib/src/core/captions.dart`), which is the actual fix; this is the
+   guard behind it.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a
