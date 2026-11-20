@@ -128,6 +128,9 @@ class VideoBrief {
     'is_live': isLive ? 1 : 0,
     'is_short': isShort ? 1 : 0,
     'is_kids': isKids ? 1 : 0,
+    // Stored with every saved video (schema v13) so history, downloads and
+    // playlists show the channel's picture rather than a letter.
+    'avatar_url': avatarUrl ?? '',
   };
 
   factory VideoBrief.fromMap(Map<String, Object?> m) => VideoBrief(
@@ -149,6 +152,9 @@ class VideoBrief {
     isLive: (m['is_live'] as int? ?? 0) == 1,
     isShort: (m['is_short'] as int? ?? 0) == 1,
     isKids: (m['is_kids'] as int? ?? 0) == 1,
+    avatarUrl: (m['avatar_url'] as String?)?.isNotEmpty == true
+        ? m['avatar_url']! as String
+        : null,
   );
 
   @override

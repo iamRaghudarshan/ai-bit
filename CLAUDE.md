@@ -1667,7 +1667,7 @@ corrected within a tick instead of lasting the rest of the video.
 
 ### Persistence
 
-`lib/src/data/db.dart` — SQLite at schema **version 11**. Bumping the version
+`lib/src/data/db.dart` — SQLite at schema **version 13**. Bumping the version
 means extending BOTH `onCreate` (new installs) and `onUpgrade` (existing ones),
 or the change is missing on one path: `downloads` (v2), `searches` (v3),
 `subscriptions` (v4) added whole tables; `history.is_short` (v5) and
@@ -1676,7 +1676,7 @@ survives; `downloads`/`playlist_items` got `is_short`/`is_kids` (v7);
 `data_usage` and `kids_usage` arrived as whole tables in v8, and
 `feed_impressions` in v9; v10 added `not_interested` and gave
 `feed_impressions` its positional `attention` column; v11 added `covisit` and
-`ranking_examples`.
+`ranking_examples`; v12 the `video_cache`; v13 an `avatar_url` column on every table that stores a video (history, downloads, playlist_items, video_cache), so saved lists show channel pictures — added only to tables that exist.
 `data_usage` and `kids_usage` are keyed by a *day
 index*, not a timestamp — one row per day, so the tables stay tiny and
 yesterday's total can never leak into today's allowance — and that index comes

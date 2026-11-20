@@ -38,7 +38,7 @@ class AppDatabase {
         (kIsWeb ? 'ai_bit.db' : '${await getDatabasesPath()}/ai_bit.db');
     final db = await openDatabase(
       resolved,
-      version: 12,
+      version: 13,
       onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
       onCreate: (db, version) async {
         await _createSchema(db, version);
@@ -52,6 +52,7 @@ class AppDatabase {
         await _createCoVisit(db);
         await _createRankingExamples(db);
         await _createVideoCache(db);
+        await _addAvatarColumns(db);
       },
       onUpgrade: (db, from, to) async {
         if (from < 2) await _createDownloads(db);
@@ -114,6 +115,7 @@ class AppDatabase {
           await _createRankingExamples(db);
         }
         if (from < 12) await _createVideoCache(db);
+        if (from < 13) await _addAvatarColumns(db);
       },
     );
     return AppDatabase._(db);
@@ -122,6 +124,36 @@ class AppDatabase {
   /// Closes the underlying database. Only a test needs this — the app's one
   /// instance lives as long as the process.
   Future<void> close() => _db.close();
+
+  /// v13: every table that stores a video through `VideoBrief.toMap()` keeps
+  /// the channel picture too. Without it watch history, Continue watching,
+  /// downloads, playlists and the video cache feeding Home always showed a
+  /// letter where the same video elsewhere showed the channel's picture —
+  /// reported as "channel images sometimes do not display".
+  static Future<void> _addAvatarColumns(Database db) async {
+    for (final table in [
+      'history',
+      'downloads',
+      'playlist_items',
+      'video_cache',
+    ]) {
+      // A missing table is skipped, never ALTERed: a throw here fails the open
+      // and the app does not start. Every real install has all four, but a
+      // migration should not be the thing that finds out otherwise.
+      final exists = await db.rawQuery(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+      );
+      if (exists.isEmpty) continue;
+      await _addColumnIfMissing(
+        db,
+        table,
+        'avatar_url',
+        type: 'TEXT',
+        defaultValue: "''",
+      );
+    }
+  }
 
   /// Adds [column] to [table] unless it is already there.
   ///

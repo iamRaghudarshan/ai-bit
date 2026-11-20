@@ -135,6 +135,43 @@ void main() {
     });
   });
 
+  group('channel pictures are stored with saved videos', skip: unavailable, () {
+    test('history, downloads and playlists keep the avatar', () async {
+      final v = VideoBrief(
+        id: 'pic',
+        title: 't',
+        author: 'A',
+        channelId: 'UC-a',
+        avatarUrl: 'https://yt3.example/avatar.jpg',
+      );
+      await db.recordWatch(v);
+      await db.addToPlaylist(LocalPlaylist.watchLaterId, v);
+      await db.saveDownload(
+        DownloadRecord(
+          video: v,
+          filePath: '/tmp/pic.mp4',
+          quality: '360p',
+          audioOnly: false,
+          totalBytes: 1,
+          receivedBytes: 1,
+          status: DownloadStatus.completed,
+        ),
+      );
+      expect((await db.history()).single.video.avatarUrl, v.avatarUrl);
+      expect(
+        (await db.playlistItems(LocalPlaylist.watchLaterId)).single.avatarUrl,
+        v.avatarUrl,
+      );
+      expect((await db.downloads()).single.video.avatarUrl, v.avatarUrl);
+    });
+
+    test('a video with no picture reads back as none, not an empty URL',
+        () async {
+      await db.recordWatch(video('plain'));
+      expect((await db.history()).single.video.avatarUrl, isNull);
+    });
+  });
+
   group('downloads', skip: unavailable, () {
     DownloadRecord record(String id, {required bool audio, DownloadStatus? s}) =>
         DownloadRecord(
