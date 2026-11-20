@@ -1498,6 +1498,16 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// Decides what follows a finished video: repeat it, advance the queue, or
   /// wrap the queue around.
   Future<void> _onFinished() async {
+    // A Short loops, as it does on YouTube, whatever the repeat setting. The
+    // Shorts tab left its queue empty on the understanding that "repeat
+    // handles the rest", but repeat is a user setting that defaults to off,
+    // so every Short played once and then sat paused on its last frame —
+    // seen on an emulator as a Short "stuck" at 11 and 21 seconds.
+    if (_current?.isShort ?? false) {
+      await seek(Duration.zero);
+      await _player?.play();
+      return;
+    }
     switch (_config.repeatMode) {
       case PlaybackRepeat.one:
         await seek(Duration.zero);

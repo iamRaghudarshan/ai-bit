@@ -49,10 +49,28 @@ all three tables that store one, and a v1-to-current migration. It skips itself
 with a reason if sqlite3 cannot be loaded, so a missing system package cannot
 block a release.
 
-**Neither platform can be built here.** iOS needs Xcode on macOS; the Android
-SDK is not installed. Native code — `ios/Runner/*.swift`, the vendored plugin's
-Swift and Kotlin — is therefore written blind and first compiles in CI. Expect
-that, and read the CI log rather than guessing when it fails.
+**Android CAN now be built and run here; iOS cannot.** Corrected 20 November
+2026 — an earlier version of this line said the Android SDK was missing. It is
+at `C:\Users\Pro-TEAM\AppData\Local\Android\Sdk` (adb, emulator, an
+`android-35` x86_64 image), and there is an emulator made for this app,
+`AIBitPhone` (leave `SafeNestPhone` to SafeNest):
+
+```bash
+C:/Users/Pro-TEAM/AppData/Local/Android/Sdk/emulator/emulator.exe -avd AIBitPhone -no-snapshot -no-boot-anim -gpu swiftshader_indirect
+D:/flutter/bin/flutter.bat build apk --release --target-platform android-x64 --build-name 2.33.1-local --build-number 9999
+```
+
+The first local build takes ~20 minutes, later ones 2–3. It is signed with the
+local debug key, so installing over a CI build needs an uninstall first, which
+wipes the emulator's app data. Release keeps `debugPrint`, so `adb logcat |
+grep flutter` shows the app's own log lines. Drive it with `adb shell input`
+and read `adb exec-out screencap`. **This is a real end-to-end test and it
+found eight defects in one sitting that every unit test and every probe had
+missed** — the media notification never posting, Shorts not looping, the
+download picker offering capped tracks, a one-tap delete, among them. Run it
+before a release. Do not start the emulator with `-no-audio`: the broken audio
+HAL then stalls playback and looks like an app bug. iOS still needs Xcode on
+macOS and first compiles in CI.
 
 ### Releasing
 
@@ -849,7 +867,18 @@ which the viewer simply stays at 360p. Everything about it is optional — no
 session, no WebView, the switch off, any failure — and resolution then stops
 where it did before.
 
-**None of the browser half can run on this machine.** The HTTP half can:
+**RESULT, measured on the emulator on 20 November 2026: the browser half
+works and the route still yields no HD.** The hidden WebView mints a token in
+about four seconds and the solver loads, but with that accepted token WEB and
+MWEB answer with **server-side streaming only — formats and no URLs** — and
+TVHTML5 with "The page needs to be reloaded". With no URL there is nothing to
+probe or build a manifest from. The route now pauses for six hours when every
+client answers that way, rather than spending three player requests on each
+video. HD from here means implementing YouTube's server-side streaming
+protocol (SABR/UMP), which is a separate project, not a fix. Every step logs
+as `AI BIT HD:` / `AI BIT runtime:` in logcat, so re-checking takes one video.
+
+The original note, kept for the method: The HTTP half can run on this machine:
 `tool/check_hd_unlock.dart` checks the player-build discovery, the visitor
 id, that the web clients accept the request *shape* (expected answer: a token
 demand, not a 400), and the solver modules' hashes. The rest is verified on
