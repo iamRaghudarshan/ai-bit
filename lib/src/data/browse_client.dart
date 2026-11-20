@@ -315,6 +315,12 @@ class YoutubeBrowseClient {
   /// response here — with the same lockup and duration-badge reading the channel
   /// tabs use — gives real suggestions that carry their **duration**, which the
   /// package's broken path dropped.
+  /// Why the last [related] call came back empty, for the log — or null when
+  /// it returned rows. Reported on a phone as "No suggestions available" on
+  /// every video while the same request from a desktop returned twenty rows,
+  /// so an empty answer has to be able to say what YouTube actually sent.
+  String? lastRelatedEmptyReason;
+
   Future<List<VideoBrief>> related(String videoId) async {
     final json = await _post({'videoId': videoId}, endpoint: _nextUri);
 
@@ -323,6 +329,17 @@ class YoutubeBrowseClient {
 
     final out = <VideoBrief>[];
     final seen = <String>{};
+    // The older row shape. YouTube serves it to some clients and networks in
+    // place of lockupViewModel — an A/B choice made on its side, invisible
+    // from here — and a parser that read only the newer shape returned
+    // nothing at all for them.
+    final compact = <Map<String, dynamic>>[];
+    _collect(json, 'compactVideoRenderer', compact);
+    for (final c in compact) {
+      final row = compactRendererRow(c);
+      if (row == null || row.id == videoId || !seen.add(row.id)) continue;
+      out.add(row);
+    }
     for (final l in lockups) {
       if (l['contentType'] != 'LOCKUP_CONTENT_TYPE_VIDEO') continue;
       final id = l['contentId'];
@@ -387,7 +404,72 @@ class YoutubeBrowseClient {
         isLive: views.toLowerCase().contains('watching'),
       ));
     }
+    lastRelatedEmptyReason = out.isNotEmpty
+        ? null
+        : 'next endpoint answered with ${lockups.length} lockups '
+            '(${lockups.where((l) => l['contentType'] == 'LOCKUP_CONTENT_TYPE_VIDEO').length} videos), '
+            '${compact.length} compact rows; top-level keys: '
+            '${json.keys.take(8).join(', ')}';
     return out;
+  }
+
+  /// One related row in the older `compactVideoRenderer` shape, or null.
+  static VideoBrief? compactRendererRow(Map<String, dynamic> c) {
+    final id = c['videoId'];
+    if (id is! String || id.isEmpty) return null;
+    String? text(dynamic node) {
+      if (node is! Map) return null;
+      final simple = node['simpleText'];
+      if (simple is String) return simple;
+      final runs = node['runs'];
+      if (runs is List && runs.isNotEmpty && runs.first is Map) {
+        return runs.map((r) => (r as Map)['text'] ?? '').join();
+      }
+      return null;
+    }
+
+    final title = text(c['title']);
+    if (title == null || title.isEmpty) return null;
+    final byline = c['longBylineText'] ?? c['shortBylineText'];
+    var channelId = '';
+    if (byline is Map && byline['runs'] is List) {
+      for (final run in byline['runs'] as List) {
+        if (run is! Map) continue;
+        final endpoint = run['navigationEndpoint'];
+        final browse = endpoint is Map ? endpoint['browseEndpoint'] : null;
+        final id = browse is Map ? browse['browseId'] : null;
+        if (id is String && id.startsWith('UC')) {
+          channelId = id;
+          break;
+        }
+      }
+    }
+    final views = text(c['viewCountText']) ?? text(c['shortViewCountText']) ?? '';
+    final age = text(c['publishedTimeText']);
+    final length = text(c['lengthText']);
+    return VideoBrief(
+      id: id,
+      title: title,
+      author: text(byline) ?? '',
+      channelId: channelId,
+      duration: length == null ? null : _parseClock(length),
+      viewCount: _parseCompact(views),
+      uploadRaw: age,
+      isLive: views.toLowerCase().contains('watching'),
+    );
+  }
+
+  /// `1:02:03` or `4:23` as a Duration, or null.
+  static Duration? _parseClock(String label) {
+    final parts = label.trim().split(':');
+    if (parts.length < 2 || parts.length > 3) return null;
+    final numbers = parts.map(int.tryParse).toList();
+    if (numbers.any((n) => n == null)) return null;
+    var seconds = 0;
+    for (final n in numbers) {
+      seconds = seconds * 60 + n!;
+    }
+    return Duration(seconds: seconds);
   }
 
   /// Reads `12:34` out of the thumbnail's duration badge.

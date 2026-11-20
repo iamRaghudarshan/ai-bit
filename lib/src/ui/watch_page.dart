@@ -219,7 +219,12 @@ class _WatchPageState extends State<WatchPage>
     final detailsFuture = repo
         .videoDetails(videoId)
         .timeout(const Duration(seconds: 15));
-    final relatedFuture = repo.related(videoId, channelId: _video.channelId);
+    final relatedFuture = repo.related(
+      videoId,
+      channelId: _video.channelId,
+      title: _video.title,
+      channelTitle: _video.author,
+    );
 
     yt.Video? details;
     try {

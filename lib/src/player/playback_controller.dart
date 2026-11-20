@@ -1645,7 +1645,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     if (running != null && _queueFillFor == video.id) return running;
     final fill = () async {
       try {
-        final raw = await _repo.related(video.id, channelId: video.channelId);
+        final raw = await _repo.related(
+          video.id,
+          channelId: video.channelId,
+          title: video.title,
+          channelTitle: video.author,
+        );
         final played = {for (final v in _sessionPlayed) v.id};
         var next = raw
             .where((v) => v.id != video.id && !played.contains(v.id))

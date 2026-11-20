@@ -775,28 +775,67 @@ class YtRepository {
   /// nothing else, and requiring the details first chained the rail to the
   /// watch-page scrape that a bot-check interstitial breaks. [details], when
   /// the caller has them, only feed the package fallback.
+  ///
+  /// Never empty while any route answers. Reported on a phone as "No
+  /// suggestions available" on every video — so autoplay had nothing either —
+  /// while the same request from a desktop returned twenty rows: YouTube
+  /// answers different networks differently. Each route below is tried in
+  /// turn and every empty one is logged with why, so the next report names
+  /// the cause instead of a blank rail.
   Future<List<VideoBrief>> related(
     String videoId, {
     yt.Video? details,
     String channelId = '',
+    String title = '',
+    String channelTitle = '',
   }) async {
-    // Own `next`-endpoint parser first: the package's getRelatedVideos throws
-    // on YouTube's current lockup format, and even when it worked it dropped
-    // the duration. This keeps the duration badge on every suggestion.
-    final viaNext = await _safe(() => _browse.related(videoId));
-    if (viaNext.isNotEmpty) return viaNext;
-
+    // 1. Our own `next`-endpoint parser: keeps the duration badge on every
+    //    suggestion, and reads both row shapes YouTube serves.
     try {
-      if (details == null) throw StateError('no details for the fallback');
-      final list = await _yt.videos.getRelatedVideos(details);
-      if (list == null || list.isEmpty) return const [];
-      return list.map(VideoBrief.fromYt).toList();
-    } catch (_) {
-      // Last resort: same-channel uploads (which also carry their duration).
-      final channel = details?.channelId.value ?? channelId;
-      if (channel.isEmpty) return const [];
-      return _safe(() => channelUploads(channel, limit: 12));
+      final viaNext = await _browse.related(videoId);
+      if (viaNext.isNotEmpty) return viaNext;
+      debugPrint('AI BIT: up next empty for $videoId — '
+          '${_browse.lastRelatedEmptyReason ?? 'no reason recorded'}');
+    } catch (e) {
+      debugPrint('AI BIT: up next request failed for $videoId — $e');
     }
+
+    // 2. The package's own related call, when the details are to hand.
+    if (details != null) {
+      try {
+        final list = await _yt.videos.getRelatedVideos(details);
+        if (list != null && list.isNotEmpty) {
+          return list.map(VideoBrief.fromYt).toList();
+        }
+        debugPrint('AI BIT: package related empty for $videoId');
+      } catch (e) {
+        debugPrint('AI BIT: package related failed for $videoId — $e');
+      }
+    }
+
+    // 3. A search built from the video itself. Not YouTube's co-watch list,
+    //    but videos about the same thing — which is what an empty rail and a
+    //    dead autoplay most need. The video is dropped from its own results.
+    final query = (details?.title ?? title).trim();
+    if (query.isNotEmpty) {
+      try {
+        final found = (await search(query))
+            .where((v) => v.id != videoId)
+            .toList();
+        if (found.isNotEmpty) return found;
+        debugPrint('AI BIT: search fallback empty for $videoId');
+      } catch (e) {
+        debugPrint('AI BIT: search fallback failed for $videoId — $e');
+      }
+    }
+
+    // 4. Last resort: the channel's other uploads.
+    final channel = details?.channelId.value ?? channelId;
+    if (channel.isEmpty) return const [];
+    final uploads = await _safe(
+      () => channelUploads(channel, limit: 12, channelTitle: channelTitle),
+    );
+    return uploads.where((v) => v.id != videoId).toList();
   }
 
   /// A channel's uploads.

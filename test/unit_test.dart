@@ -207,6 +207,54 @@ Some blurb about the video.
     });
   });
 
+  group('related rows in the older compactVideoRenderer shape', () {
+    // YouTube serves this shape to some networks instead of lockupViewModel;
+    // read only the newer one, the Up next rail was empty on a phone.
+    test('reads id, title, channel, views, age and length', () {
+      final row = YoutubeBrowseClient.compactRendererRow({
+        'videoId': 'abcdefghijk',
+        'title': {'simpleText': 'A related video'},
+        'longBylineText': {
+          'runs': [
+            {
+              'text': 'Some Channel',
+              'navigationEndpoint': {
+                'browseEndpoint': {'browseId': 'UC1234567890'},
+              },
+            },
+          ],
+        },
+        'viewCountText': {'simpleText': '1,234,567 views'},
+        'publishedTimeText': {'simpleText': '3 days ago'},
+        'lengthText': {'simpleText': '1:02:03'},
+      });
+      expect(row, isNotNull);
+      expect(row!.id, 'abcdefghijk');
+      expect(row.title, 'A related video');
+      expect(row.author, 'Some Channel');
+      expect(row.channelId, 'UC1234567890');
+      expect(row.viewCount, 1234567);
+      expect(row.uploadRaw, '3 days ago');
+      expect(row.duration, const Duration(hours: 1, minutes: 2, seconds: 3));
+    });
+
+    test('title from runs, and a row with no title is skipped', () {
+      expect(
+        YoutubeBrowseClient.compactRendererRow({
+          'videoId': 'x1',
+          'title': {
+            'runs': [
+              {'text': 'Part '},
+              {'text': 'two'},
+            ],
+          },
+        })!.title,
+        'Part two',
+      );
+      expect(YoutubeBrowseClient.compactRendererRow({'videoId': 'x2'}), isNull);
+    });
+  });
+
   group('localised ages and counts', () {
     // Every string below is one YouTube actually sent (tool/check_age_locales
     // .dart). With the language set to anything but English, ages and view
