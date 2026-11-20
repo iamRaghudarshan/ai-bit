@@ -297,7 +297,11 @@ class _UsageBar extends StatelessWidget {
           borderRadius: BorderRadius.circular(4),
           child: SizedBox(
             height: 8,
+            // Stretch, or each segment — a ColoredBox with no child — is laid
+            // out at zero height and the bar never appears, only its legend.
+            // Measured in a widget test: widths right, heights 0.0.
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 for (var i = 0; i < usage.all.length; i++)
                   if (usage.all[i].bytes > 0)
