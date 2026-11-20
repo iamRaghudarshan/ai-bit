@@ -79,11 +79,17 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.0, build 151** (tag `android-2.33.0`), published
-to `safenesthub.in` (`26036804…8924`, 77,761,105 bytes; the compiled manifest
-was checked for the label, `launchMode` = 2 (singleTask), `WAKE_LOCK`, the
-link filters and the deep-linking opt-out). **Latest iOS build is 2.33.0,
-build 149** (tag `v2.33.0`). 2.33.0 fixes mid-video starts, lost finishes, the
+**Latest Android build is 2.33.1, build 152** (tag `android-2.33.1`), published
+to `safenesthub.in` (`dbae8dc9…68aa`, 77,761,133 bytes; manifest checked for
+the label, `WAKE_LOCK`, link filters and deep-linking opt-out). **Latest iOS
+build is 2.33.1, build 153** (tag `v2.33.1`). 2.33.1 is the first release
+tested end to end on the `AIBitPhone` emulator before shipping; it carries
+the fixes that testing found — player-filled autoplay queue, media
+notification channel, Shorts looping, capped-download picker, app-lock
+lockout, captions, menus under the mini player, non-English metadata,
+Up next fidelity, preview scrolling — and each was retested on screen.
+
+2.33.0 (Android 151, iOS 149) fixes mid-video starts, lost finishes, the
 empty Up-next rail, autoplay (including with the screen off), the duplicate
 activity from Share, mixes the home feed, and asks for the high refresh rate.
 Android build 150 of the same version failed: `flutter_displaymode` pins
