@@ -1,39 +1,33 @@
-// How many feed rows actually carry a channel name and avatar.
+// Do the rows the app shows carry a channel picture?
 //
-// The cards were falling back to a coloured initial, which means avatarUrl
-// arrived null. This reports the hit rate per source so the gap is visible
-// rather than guessed at.
+//   dart run tool/check_avatars.dart
+//
+// Reported: "channel images sometimes do not display". Up next rows and the
+// co-watch half of Home come from the `next` endpoint's related list, which
+// was parsed without the avatar every row carries, while search results had
+// one — so the picture appeared on some rows and a letter on others. This
+// counts avatars per source for a few videos and queries.
 import 'dart:io';
 
 import 'package:ai_bit/src/data/browse_client.dart';
 import 'package:ai_bit/src/data/search_client.dart';
 
 Future<void> main() async {
-  final search = YoutubeSearchClient();
   final browse = YoutubeBrowseClient();
-
-  void report(String label, List<dynamic> rows) {
-    final withAvatar = rows.where((v) => v.avatarUrl != null).length;
-    final withAuthor = rows.where((v) => (v.author as String).isNotEmpty).length;
-    stdout.writeln('${label.padRight(24)} ${rows.length} rows  '
-        'avatar=$withAvatar  author=$withAuthor');
-    if (rows.isNotEmpty) {
-      stdout.writeln('    first: author="${rows.first.author}" '
-          'avatar=${rows.first.avatarUrl ?? 'null'}');
-    }
+  final search = YoutubeSearchClient();
+  var missing = 0;
+  for (final id in ['dQw4w9WgXcQ', 'Ks-_Mh1QhMc', 'BnvrJ_lI5IQ']) {
+    final rows = await browse.related(id);
+    final with_ = rows.where((r) => (r.avatarUrl ?? '').isNotEmpty).length;
+    missing += rows.length - with_;
+    stdout.writeln('related $id: $with_/${rows.length} with a channel picture');
   }
-
-  report('search', await search.search('kannada news'));
-  report('search shorts', await search.searchShorts('kannada'));
-
-  const channelId = 'UCq-Fj5jknLsUf-MWSy4_brA';
-  report('channel videos', await browse.channelVideos(channelId));
-  report('channel shorts', await browse.channelShorts(channelId));
-
-  final info = await browse.channel(channelId);
-  stdout.writeln('channel header           title="${info.title}" '
-      'avatar=${info.avatarUrl ?? 'null'}');
-
-  search.close();
+  for (final q in ['cooking', 'cricket highlights']) {
+    final rows = await search.search(q);
+    final with_ = rows.where((r) => (r.avatarUrl ?? '').isNotEmpty).length;
+    stdout.writeln('search "$q": $with_/${rows.length} with a channel picture');
+  }
   browse.close();
+  search.close();
+  stdout.writeln(missing == 0 ? 'OK' : '$missing related rows without a picture');
 }

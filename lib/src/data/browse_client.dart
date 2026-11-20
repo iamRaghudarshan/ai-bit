@@ -397,6 +397,7 @@ class YoutubeBrowseClient {
         id: id,
         title: parts.first,
         author: author,
+        avatarUrl: lockupAvatar(l),
         channelId: channelId,
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),
@@ -504,6 +505,7 @@ class YoutubeBrowseClient {
       id: id,
       title: title,
       author: text(byline) ?? '',
+      avatarUrl: _firstThumbnail(c['channelThumbnail']),
       channelId: channelId,
       duration: length == null ? null : _parseClock(length),
       viewCount: _parseCompact(views),
@@ -630,6 +632,7 @@ class YoutubeBrowseClient {
         author: parts.length > 1 && !parts[1].toLowerCase().contains('view')
             ? parts[1]
             : '',
+        avatarUrl: lockupAvatar(l),
         channelId: '',
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),
@@ -834,6 +837,20 @@ class YoutubeBrowseClient {
       }
     }
     return '';
+  }
+
+  /// The channel avatar a lockup carries
+  /// (`metadata.lockupMetadataViewModel.image` → decorated avatar), or null.
+  ///
+  /// Related rows were parsed without it, so every Up next row — and every
+  /// co-watch pick on Home, half the feed — showed a letter where search
+  /// results showed the channel's picture: reported as "channel images
+  /// sometimes do not display".
+  static String? lockupAvatar(Map<String, dynamic> lockup) {
+    final meta = lockup['metadata'];
+    final model = meta is Map ? meta['lockupMetadataViewModel'] : null;
+    final image = model is Map ? model['image'] : null;
+    return image == null ? null : _firstThumbnail(image);
   }
 
   static String? _firstThumbnail(dynamic node) {
