@@ -61,11 +61,20 @@ that, and read the CI log rather than guessing when it fails.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.32.0, build 148** (tag `android-2.32.0`), published
-to `safenesthub.in` (`b6b20655…1cce`, 77,760,721 bytes; the compiled manifest
-was checked for the label, the YouTube intent-filters and the deep-linking
-opt-out). **Latest iOS build is 2.32.0, build 147** (tag `v2.32.0`), on
-TestFlight. 2.32.0 plays at once and upgrades to HD behind the video, and
+**Latest Android build is 2.33.0, build 151** (tag `android-2.33.0`), published
+to `safenesthub.in` (`26036804…8924`, 77,761,105 bytes; the compiled manifest
+was checked for the label, `launchMode` = 2 (singleTask), `WAKE_LOCK`, the
+link filters and the deep-linking opt-out). **Latest iOS build is 2.33.0,
+build 149** (tag `v2.33.0`). 2.33.0 fixes mid-video starts, lost finishes, the
+empty Up-next rail, autoplay (including with the screen off), the duplicate
+activity from Share, mixes the home feed, and asks for the high refresh rate.
+Android build 150 of the same version failed: `flutter_displaymode` pins
+compileSdk 33 and the androidx libraries need 34 — `android/build.gradle.kts`
+now raises any plugin below 34 to 36, so **a new plugin with an old
+compileSdk is handled; one needing a newer AGP feature is not**. The tag was
+moved onto the fix, iOS 149 was left as built.
+
+2.32.0 (Android 148, iOS 147) plays at once and upgrades to HD behind the video, and
 opens YouTube links from other apps on Android. 2.31.0 (Android 146, iOS 145)
 introduced the HD-unlock route (the token from YouTube's bot check, see
 "Stream resolution is the fragile core") and the now-playing bar's close fix,
