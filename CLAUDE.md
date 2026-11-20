@@ -79,10 +79,15 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.1, build 152** (tag `android-2.33.1`), published
-to `safenesthub.in` (`dbae8dc9…68aa`, 77,761,133 bytes; manifest checked for
-the label, `WAKE_LOCK`, link filters and deep-linking opt-out). **Latest iOS
-build is 2.33.1, build 153** (tag `v2.33.1`). 2.33.1 is the first release
+**Latest Android build is 2.33.2, build 155** (tag `android-2.33.2`), published
+to `safenesthub.in` (`28efb75a…3e3b`, 77,826,673 bytes; manifest checked).
+**Latest iOS build is 2.33.2, build 154** (tag `v2.33.2`). 2.33.2: autoplay
+follows the video that just ended, led by YouTube's own pick; Up next never
+empty (both row shapes, then fallbacks); "Play next" queues; dates with the
+relative age in brackets; channel pictures on related rows and in saved
+lists (schema v13, upgrade verified on the emulator over real data).
+
+2.33.1 (Android 152, iOS 153) is the first release
 tested end to end on the `AIBitPhone` emulator before shipping; it carries
 the fixes that testing found — player-filled autoplay queue, media
 notification channel, Shorts looping, capped-download picker, app-lock
