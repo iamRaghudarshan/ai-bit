@@ -453,5 +453,12 @@ class PlaybackSources {
   /// HD sources once they exist and have been proved to play to the end, or
   /// with null when they do not. The controller switches over at the current
   /// position. Never awaited before playback starts.
-  final Future<PlaybackSources?>? upgrade;
+  ///
+  /// A function rather than a future so the work starts only when something
+  /// is actually going to play these sources: `prefetch` resolves the next
+  /// two Shorts ahead of a swipe, and an eager future had every one of those
+  /// running the bot check, a player request and a solve for videos that
+  /// might never be opened. Calling it more than once shares one attempt; a
+  /// failed attempt is forgotten so a later open can try again.
+  final Future<PlaybackSources?> Function()? upgrade;
 }

@@ -365,6 +365,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
+    bool rebuild = false,
   }) async {
     // Wait for any load already running, so two never touch the player at once.
     final previous = _pendingLoad;
@@ -378,7 +379,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final completer = Completer<void>();
     _pendingLoad = completer.future;
     try {
-      await _play(video, upNext: upNext, recordHistory: recordHistory);
+      await _play(
+        video,
+        upNext: upNext,
+        recordHistory: recordHistory,
+        rebuild: rebuild,
+      );
     } finally {
       if (identical(_pendingLoad, completer.future)) _pendingLoad = null;
       // Whatever happened, the spinner comes down. A load that returned early
@@ -391,13 +397,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// [rebuild] re-creates the source for the video that is already current —
+  /// an audio-only toggle, or the HD upgrade landing — so it skips the
+  /// "same video, just resume" shortcut and records nothing: the watch row
+  /// exists and the sitting already counted this video.
   Future<void> _play(
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
+    bool rebuild = false,
   }) async {
     final token = ++_playToken;
-    if (_current?.id == video.id && _player != null && _error == null) {
+    if (!rebuild &&
+        _current?.id == video.id &&
+        _player != null &&
+        _error == null) {
       // Re-tapping the currently loaded video should just resume it.
       await _player!.play();
       return;
@@ -429,6 +443,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
 
+    // From here until _attach has swapped the native source, the outgoing
+    // player is still ticking and its listener is still attached. Those ticks
+    // must not be read as the new video's: they were being saved under the new
+    // id, so the next video resumed from wherever the previous one had got to
+    // — "starts from the middle", and on a shorter video "ends at once".
+    _awaitingSource = true;
     _current = video;
     // A deliberate reopen earns a fresh automatic retry; only a second failure
     // without leaving the video is treated as genuine.
@@ -455,18 +475,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // position later (see _persistPosition). Losing "carry on where you left
     // off" is the deliberate price of the mode — a private session that still
     // remembered where it got to would not be private.
-    if (!_config.incognito) {
+    if (!_config.incognito && !rebuild) {
       // Mark what was watched in Kids mode, so it lands in kids history rather
       // than the normal videos/shorts lists.
       unawaited(
         _db.recordWatch(_config.kidsMode ? video.asKids() : video),
       );
     }
-    _loadSponsorSegments(video.id);
+    if (!rebuild) _loadSponsorSegments(video.id);
 
     // The browser preview has no native player plugin. Stop after recording
     // the selection so every screen still renders and can be reviewed.
     if (kIsWeb) {
+      _awaitingSource = false;
       _loading = false;
       _duration = video.duration ?? Duration.zero;
       notifyListeners();
@@ -513,6 +534,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     } catch (e) {
       if (token != _playToken) return;
+      _awaitingSource = false;
       _loading = false;
       // Always carry the real reason. A generic "check your connection" sent
       // three rounds of debugging in the wrong direction while the connection
@@ -523,6 +545,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     }
   }
+
+  /// True from the moment [_current] moves to a new video until [_attach] has
+  /// handed the native player its source. The position listener ignores every
+  /// tick in that window, because they belong to the video being left.
+  bool _awaitingSource = false;
 
   Future<void> _attach(
     VideoBrief video,
@@ -550,6 +577,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
 
     _player!.videoPlayerController?.removeListener(_onValueChanged);
     _player!.videoPlayerController?.addListener(_onValueChanged);
+    // The source now belongs to this video; its ticks count again.
+    _awaitingSource = false;
     // Prefer a speed remembered for this channel, falling back to the global
     // default. Applied here so it takes effect the moment the video loads.
     final channelSpeed = _config.speedForChannel(video.channelId);
@@ -856,6 +885,21 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     return position >= duration - const Duration(seconds: 5);
   }
 
+  /// Whether switching to HD is still worth a rebuild at [position].
+  ///
+  /// Not in the last half-minute: the rebuild costs a visible reload and, with
+  /// the outgoing player's STATE_ENDED suppressed as teardown noise, an
+  /// upgrade landing there once stranded the video on its last frame with no
+  /// end screen and no autoplay. An unknown duration is treated as worthwhile,
+  /// since there is nothing to say the end is near.
+  static bool upgradeWorthwhile({
+    required Duration position,
+    required Duration duration,
+  }) {
+    if (duration <= Duration.zero) return true;
+    return duration - position >= const Duration(seconds: 30);
+  }
+
   /// True while a deliberate quality change is tearing the source down, so the
   /// events that come out of it are not mistaken for the video ending.
   bool _switchingQuality = false;
@@ -1018,6 +1062,26 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         ? 'Playback failed. Reopen the video to try again.'
         : 'Playback failed: $detail';
 
+    // Never while a load is in flight: the exception may be the outgoing
+    // source's teardown during a rebuild, and attaching a fallback from here
+    // would run a second setupDataSource against the one in progress — the
+    // "stuck loading with audio still running" that play() serialises
+    // against. Wait for it, then look at what the player is doing: a source
+    // that is playing or buffering has not failed.
+    final pending = _pendingLoad;
+    if (pending != null) {
+      try {
+        await pending;
+      } catch (_) {}
+    }
+    if (_switchingQuality) {
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      if (_current?.id != video?.id) return;
+      final value = _player?.videoPlayerController?.value;
+      if (_playing || (value?.isBuffering ?? false)) return;
+    }
+    if (_current?.id != video?.id) return;
+
     // Offline files do not expire, so a failure there is a real one — a
     // truncated or deleted download, which re-resolving cannot mend.
     if (video == null || _isOffline || _recoveredVideoId == video.id) {
@@ -1089,12 +1153,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   void _followUpgrade(VideoBrief video, PlaybackSources sources, int token) {
     final upgrade = sources.upgrade;
     if (upgrade == null) return;
-    unawaited(upgrade.then((better) async {
+    unawaited(upgrade().then((better) async {
       if (better == null) return;
       if (token != _playToken || _current?.id != video.id) return;
       if (_isOffline || !identical(_sources, sources)) return;
       // Audio mode plays the lowest rendition on purpose; HD is no upgrade.
       if (isAudioOnly) return;
+      // Not when the video is about to finish, has finished, or is counting
+      // down to the next one. The rebuild cancels the countdown and the
+      // outgoing player's STATE_ENDED is suppressed as teardown noise, so an
+      // upgrade landing here left the video parked on its last frame with no
+      // end screen and no autoplay — a worse outcome than thirty seconds of
+      // 360p, which is all that would be gained.
+      if (_endScreen || _countdownTimer != null) return;
+      if (!upgradeWorthwhile(position: _position, duration: _duration)) return;
       debugPrint('AI BIT: switching ${video.id} to HD at $_position');
       await reloadCurrent();
     }).catchError((Object e) {
@@ -1102,13 +1174,15 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }));
   }
 
-  /// Re-resolves the current video after an audio-only toggle, keeping the
-  /// playback position.
+  /// Re-resolves the current video after an audio-only toggle or when the HD
+  /// upgrade lands, keeping the playback position, the queue, the chapters and
+  /// the shuffle state.
   Future<void> reloadCurrent() async {
     final video = _current;
     if (video == null) return;
     final resumeAt = _position;
-    _current = null;
+    final chapters = _chapters;
+    final unshuffled = _unshuffledQueue;
     // Same guard as a quality switch: rebuilding the player makes the outgoing
     // one report STATE_ENDED, and with the duration momentarily unknown that
     // reads as a genuine finish — so toggling Audio only would throw up the end
@@ -1116,13 +1190,42 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _switchingQuality = true;
     _endScreen = false;
     try {
-      await play(video, upNext: _queue.toList(), recordHistory: false);
+      // `rebuild` rather than nulling _current first: with _current gone for
+      // the length of the load, the watch page's "is the player on my video"
+      // checks failed, and an up-next list that finished loading in that window
+      // was never handed to the queue — the rail was full and autoplay had
+      // nothing. The watch row and the session record are also left alone.
+      await play(
+        video,
+        upNext: _queue.toList(),
+        recordHistory: false,
+        rebuild: true,
+      );
       if (resumeAt > const Duration(seconds: 3)) await seek(resumeAt);
+      if (_current?.id == video.id) {
+        _chapters = chapters;
+        _unshuffledQueue = unshuffled;
+      }
     } finally {
       // Held a moment longer: the STATE_ENDED from the torn-down player can
       // land just after the rebuild returns, so clearing the guard at once
       // would still let it through.
-      Timer(const Duration(milliseconds: 800), () => _switchingQuality = false);
+      Timer(const Duration(milliseconds: 800), () {
+        _switchingQuality = false;
+        if (_current?.id != video.id) return;
+        // The guard also kept `initialized` from applying the saved quality to
+        // the new source, so do it now; and if the video genuinely ended while
+        // the guard was up, that finish was dropped — recover it rather than
+        // leaving the last frame on screen with nothing following.
+        unawaited(_applyPreferredQualityWhenReady());
+        if (!_playing &&
+            _duration > Duration.zero &&
+            _position > Duration.zero &&
+            isGenuineFinish(position: _position, duration: _duration)) {
+          _persistPosition(force: true);
+          unawaited(_onFinished());
+        }
+      });
     }
   }
 
@@ -1892,6 +1995,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// throttled to one notification per second so the mini player does not
   /// rebuild on every position tick.
   void _onValueChanged() {
+    // Still the previous video's player talking; see _awaitingSource.
+    if (_awaitingSource) return;
     final value = _player?.videoPlayerController?.value;
     if (value == null) return;
 

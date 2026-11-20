@@ -311,6 +311,7 @@ D:/flutter/bin/dart.bat run tool/check_stream_limits.dart        # does a stream
 D:/flutter/bin/dart.bat run tool/check_hls.dart [videoId] [--ffmpeg=<path>]  # the iOS ladder: sidx, playlists, real decode
 D:/flutter/bin/dart.bat run tool/probe_clients.dart              # which API clients still return combined streams
 D:/flutter/bin/dart.bat run tool/check_hd_unlock.dart            # the HTTP half of the token route; the rest is Settings → Test HD unlock
+D:/flutter/bin/dart.bat run tool/check_related.dart [videoId ...] # is the Up-next rail empty upstream, or only the details scrape?
 D:/flutter/bin/dart.bat run tool/check_signed_in.dart <cookies.txt> # does a signed-in session lift the cap? (measured: no)
 D:/flutter/bin/dart.bat run tool/check_playback.dart         # what FRACTION of videos play, per platform?
 D:/flutter/bin/dart.bat run tool/check_feed_recency.dart      # is the feed's candidate pool actually recent?
@@ -582,7 +583,17 @@ named route, which this Navigator-based app cannot serve, so `MainActivity`
 hands links over on `ai.bit/incoming` instead — the launch intent through
 `initial`, later ones through `onLink`. `youtubeReferenceIn` is pure and
 tested: shared text is usually a sentence around a link, and `vnd.youtube:`
-carries a bare id.
+carries a bare id. **The activity's `launchMode` is `singleTask`, not the
+Flutter template's `singleTop`, and the filters are why.** A share chooser
+starts its target without `FLAG_ACTIVITY_NEW_TASK`, so under `singleTop` a
+"Share → AI BIT" while the app was already running created a *second*
+`MainActivity` inside the sharing app's task — a second Flutter engine,
+player, database handle and media session in one process, fighting the first
+over audio and the lock screen, which 2.32.0 shipped and which reads as
+"nothing works properly". `singleTask` sends every launch to the one instance
+through `onNewIntent`. `onCreate` also ignores the launch intent when it is
+being replayed from Recents or after process death, or the shared video would
+reopen over whatever the user was doing.
 
 Deliberately absent, with reasons: Google Sign-In (declined; would put a real
 account behind a ToS-violating client - see Takeout above for how playlists
@@ -789,12 +800,31 @@ never before playback starts.** The first version ran it inline and was
 reported within the hour as "videos take more time to load": a bot check, a
 player request and a challenge solve are seconds, and every capped video sat
 on a spinner for them. Now the progressive stream plays at once and the route
-runs behind it as `PlaybackSources.upgrade`, a future the controller
-(`_followUpgrade`) waits on; when it completes with HD sources that have been
+runs behind it as `PlaybackSources.upgrade`, a *function* the controller
+(`_followUpgrade`) calls and waits on — a function and not a future, because
+`prefetch` resolves the next two Shorts ahead of a swipe and an eager future
+had every one of them minting and probing for a video nobody had opened; one
+call shares the attempt, and a failed attempt is forgotten so the next open
+can retry once the pause lapses rather than being pinned to 360p for the
+stream cache's two hours. When it completes with HD sources that have been
 proved to play to the end, the player is rebuilt at the current position —
 the same rebuild an audio-only toggle does — and only if the viewer is still
-on that video, not offline, not in audio mode, and nothing has replaced the
-sources meanwhile. YouTube itself starts low and steps up. The route walks
+on that video, not offline, not in audio mode, nothing has replaced the
+sources meanwhile, **and the video is not in its last thirty seconds or
+already on the end screen** (`upgradeWorthwhile`, tested). That last guard
+came from 2.32.0 being reported as "videos end by themselves and autoplay
+does not work": an upgrade landing near the end rebuilt the player, which
+cancelled the autoplay countdown, and the real finish that followed was then
+suppressed as the rebuild's teardown noise — so the video sat on its last
+frame with nothing after it. The rebuild (`reloadCurrent`) also no longer
+nulls `_current` while it runs: with the current video gone for the length of
+a load, the watch page's "is the player on my video" checks failed and an
+up-next list that finished loading in that window was never handed to the
+queue. It passes `rebuild: true` instead, which skips the "same video, just
+resume" shortcut and records nothing; a finish that landed inside the guard
+window is recovered when the guard lifts, and the saved quality is re-applied
+to the new source, which the guard had also been suppressing. YouTube itself
+starts low and steps up. The route walks
 WEB → MWEB → TVHTML5 (a client answering with server-side ABR and no URLs is
 skipped, not failed) and puts the result through **the same
 `_adaptiveTracksPlayThroughout` probe** before building a manifest from it.
@@ -871,6 +901,35 @@ before `m` (or nine months becomes nine minutes), and the abbreviated form
 requires a following "ago" so an ISO timestamp still returns null. There is one
 implementation now; `YtRepository.uploadAgeSeconds` delegates to it instead of
 keeping the second copy that a comment claimed was identical.
+
+**The outgoing player's ticks were being saved under the incoming video's
+id.** Reported as "some videos start from in between" and, for a shorter next
+video, "it ends by itself". `_play` moves `_current` to the new video and then
+awaits the resolve — a network round-trip plus the eight-second end-of-file
+probe — before `_attach` swaps the native source. For those seconds the old
+player is still playing and its listener is still attached, so
+`_onValueChanged` kept writing *its* position, and `_persistPosition` read
+`_current` — the new video — and saved it there. `recordWatch` had just
+created the row, so the update landed, `resumePosition` returned the old
+video's offset, and the new one opened at it; shorter than the offset, it
+opened at its end and finished at once. `_awaitingSource` is true from the
+moment `_current` moves until the listener is re-attached to the new source,
+and the listener drops every tick while it is. Not new to 2.32.0 — the
+window simply grew with the probe until it was hit routinely — and the same
+ticks were charging the old video's watch time and data to the new one.
+
+**The Up-next rail is fetched independently of the details scrape.**
+`videoDetails` is `youtube_explode_dart`'s `videos.get`, which scrapes the
+HTML watch page; a bot-check or consent interstitial on the phone's address
+breaks it outright. The watch page used to await it *before* asking for
+related videos, and swallowed the failure with a bare `catch (_)`, so one
+refused HTML page showed "No suggestions available" while the `next`
+endpoint the rail actually needs was answering twenty rows — and since the
+autoplay queue is filled from the rail, autoplay died with it. The two
+requests now run together and fail separately, the personalisation step has
+its own try so a ranking or database fault costs the ordering rather than the
+rows, and every swallowed error is logged. `tool/check_related.dart` runs
+both steps and names the one that failed.
 
 **A failed stream retries itself once.** "Sometimes a video just fails" had no
 pattern because it has several causes with one cure: a googlevideo URL carries

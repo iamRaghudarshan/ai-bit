@@ -193,48 +193,87 @@ class _WatchPageState extends State<WatchPage>
       return;
     }
 
+    final videoId = _video.id;
+    // Details and the up-next list are independent requests, fetched
+    // together and allowed to fail separately. They used to be chained —
+    // details first, then related — and the details call is a scrape of the
+    // watch page that a bot-check or consent interstitial breaks outright,
+    // so one refused HTML page emptied the rail and, because the queue is
+    // filled from the rail, killed autoplay with it. The `next` endpoint the
+    // rail actually needs was healthy the whole time.
+    final detailsFuture = repo
+        .videoDetails(videoId)
+        .timeout(const Duration(seconds: 15));
+    final relatedFuture = repo.related(videoId, channelId: _video.channelId);
+
+    yt.Video? details;
     try {
-      final details = await repo.videoDetails(_video.id);
-      final rawRelated = await repo.related(details);
-      if (!mounted) return;
-      // YouTube's related list is a recommendation for everybody; this makes
-      // it one for this viewer. Already-watched videos sink, followed and
-      // well-watched channels rise, and the channel already on screen is
-      // damped so autoplay stops walking down one uploader's back catalogue.
-      // The same ordering feeds both the visible Up-next list and the queue,
-      // so what autoplay plays is what the list said it would.
-      final db = context.read<AppDatabase>();
-      final trainer = context.read<RankerTrainer>();
-      // Every related list YouTube returns is a sample of what people watch
-      // after this video. Recording it builds the local co-visitation graph,
-      // which is the one collaborative signal an account-less app can keep.
-      unawaited(
-        db
-            .recordCoVisits(_video.id, [for (final v in rawRelated) v.id])
-            .then((_) => db.pruneCoVisits())
-            // The rows themselves, not just the edges. Without these the
-            // graph can only boost a video the feed already fetched; with
-            // them it can offer one outright, with no request at all.
-            .then((_) => db.cacheVideos(rawRelated))
-            .then((_) => db.pruneVideoCache())
-            .catchError((Object e) {
-          debugPrint('AI BIT: co-visits not recorded - $e');
-        }),
-      );
-      final related = repo.personalisedUpNext(
-        current: _video,
-        related: rawRelated,
-        // Seeded on the video being watched, so the co-visitation term answers
-        // "what do people watch after THIS" rather than "after any of the last
-        // eight things", which is the home feed's question.
-        profile: await db.tasteProfile(coVisitSeeds: [_video.id]),
-        impressions: await db.feedImpressions(),
-        // What this sitting has already played, so autoplay stops circling
-        // back to the same handful of videos.
-        recentlyPlayed: _playback?.playedThisSession ?? const [],
-        weights: trainer.weights,
-      );
-      if (!mounted) return;
+      details = await detailsFuture;
+    } catch (e) {
+      debugPrint('AI BIT: video details failed for $videoId - $e');
+    }
+    List<VideoBrief> rawRelated = const [];
+    try {
+      rawRelated = await relatedFuture;
+    } catch (e) {
+      debugPrint('AI BIT: up next failed for $videoId - $e');
+    }
+    if (!mounted || _video.id != videoId) return;
+
+    // YouTube's related list is a recommendation for everybody; this makes
+    // it one for this viewer. Already-watched videos sink, followed and
+    // well-watched channels rise, and the channel already on screen is
+    // damped so autoplay stops walking down one uploader's back catalogue.
+    // The same ordering feeds both the visible Up-next list and the queue,
+    // so what autoplay plays is what the list said it would. Its own try:
+    // a database or ranking fault must cost the personalisation, not the
+    // twenty rows already in hand.
+    var related = rawRelated;
+    if (rawRelated.isNotEmpty) {
+      try {
+        final db = context.read<AppDatabase>();
+        final trainer = context.read<RankerTrainer>();
+        // Every related list YouTube returns is a sample of what people watch
+        // after this video. Recording it builds the local co-visitation
+        // graph, which is the one collaborative signal an account-less app
+        // can keep.
+        unawaited(
+          db
+              .recordCoVisits(videoId, [for (final v in rawRelated) v.id])
+              .then((_) => db.pruneCoVisits())
+              // The rows themselves, not just the edges. Without these the
+              // graph can only boost a video the feed already fetched; with
+              // them it can offer one outright, with no request at all.
+              .then((_) => db.cacheVideos(rawRelated))
+              .then((_) => db.pruneVideoCache())
+              .catchError((Object e) {
+            debugPrint('AI BIT: co-visits not recorded - $e');
+          }),
+        );
+        final profile = await db.tasteProfile(coVisitSeeds: [videoId]);
+        final impressions = await db.feedImpressions();
+        if (!mounted || _video.id != videoId) return;
+        related = repo.personalisedUpNext(
+          current: _video,
+          related: rawRelated,
+          // Seeded on the video being watched, so the co-visitation term
+          // answers "what do people watch after THIS" rather than "after any
+          // of the last eight things", which is the home feed's question.
+          profile: profile,
+          impressions: impressions,
+          // What this sitting has already played, so autoplay stops circling
+          // back to the same handful of videos.
+          recentlyPlayed: _playback?.playedThisSession ?? const [],
+          weights: trainer.weights,
+        );
+      } catch (e) {
+        debugPrint('AI BIT: up next shown unranked - $e');
+        related = rawRelated;
+      }
+    }
+    if (!mounted || _video.id != videoId) return;
+
+    try {
       setState(() {
         _details = details;
         _related = related;
@@ -242,11 +281,14 @@ class _WatchPageState extends State<WatchPage>
         // from the player response, which carries no channel thumbnail, so
         // replacing wholesale made the picture appear and then vanish a moment
         // later as the details landed.
-        _video = VideoBrief.fromYt(details).withAvatar(_video.avatarUrl);
+        if (details != null) {
+          _video = VideoBrief.fromYt(details).withAvatar(_video.avatarUrl);
+        }
         _loadingDetails = false;
       });
       // Hand parsed chapters to the controller so the seek bar can mark them.
-      if (context.read<PlaybackController>().current?.id == _video.id) {
+      if (details != null &&
+          context.read<PlaybackController>().current?.id == _video.id) {
         context
             .read<PlaybackController>()
             .setChapters(parseChapters(details.description));
@@ -266,10 +308,13 @@ class _WatchPageState extends State<WatchPage>
 
       // Now that the real "up next" list exists, hand it to the queue so
       // autoplay has something to advance to.
-      if (mounted && context.read<PlaybackController>().current?.id == _video.id) {
+      if (related.isNotEmpty &&
+          mounted &&
+          context.read<PlaybackController>().current?.id == _video.id) {
         context.read<PlaybackController>().replaceQueue(related);
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('AI BIT: watch page details not applied - $e');
       if (!mounted) return;
       setState(() => _loadingDetails = false);
     }

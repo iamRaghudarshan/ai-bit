@@ -768,20 +768,32 @@ class YtRepository {
 
   /// The "Up next" list under the player. Needs the full [yt.Video] because
   /// the related-video token only exists on the watch page.
-  Future<List<VideoBrief>> related(yt.Video video) async {
+  ///
+  /// Takes the id, not the package's `Video`: the `next` endpoint needs
+  /// nothing else, and requiring the details first chained the rail to the
+  /// watch-page scrape that a bot-check interstitial breaks. [details], when
+  /// the caller has them, only feed the package fallback.
+  Future<List<VideoBrief>> related(
+    String videoId, {
+    yt.Video? details,
+    String channelId = '',
+  }) async {
     // Own `next`-endpoint parser first: the package's getRelatedVideos throws
     // on YouTube's current lockup format, and even when it worked it dropped
     // the duration. This keeps the duration badge on every suggestion.
-    final viaNext = await _safe(() => _browse.related(video.id.value));
+    final viaNext = await _safe(() => _browse.related(videoId));
     if (viaNext.isNotEmpty) return viaNext;
 
     try {
-      final list = await _yt.videos.getRelatedVideos(video);
+      if (details == null) throw StateError('no details for the fallback');
+      final list = await _yt.videos.getRelatedVideos(details);
       if (list == null || list.isEmpty) return const [];
       return list.map(VideoBrief.fromYt).toList();
     } catch (_) {
       // Last resort: same-channel uploads (which also carry their duration).
-      return _safe(() => channelUploads(video.channelId.value, limit: 12));
+      final channel = details?.channelId.value ?? channelId;
+      if (channel.isEmpty) return const [];
+      return _safe(() => channelUploads(channel, limit: 12));
     }
   }
 
@@ -1192,6 +1204,33 @@ class YtRepository {
   /// stream is already playing, so this bounds wasted work, not waiting.
   static const _hdUpgradeBudget = Duration(seconds: 60);
 
+  /// The [PlaybackSources.upgrade] hook for one capped video: starts the route
+  /// on first call, shares the attempt with any caller that arrives while it
+  /// runs, and forgets a failed one so the next open — after the route's
+  /// pause has lapsed — can try again instead of being pinned to 360p for the
+  /// stream cache's lifetime. Checks `_hdUnlockWorthTrying` at call time, not
+  /// at resolve time, so a video resolved during the pause is not written off.
+  Future<PlaybackSources?> Function() _lazyUpgrade(
+    String key,
+    String videoId,
+    PlayerStreams streams,
+  ) {
+    Future<PlaybackSources?>? inFlight;
+    return () {
+      final running = inFlight;
+      if (running != null) return running;
+      if (!_hdUnlockWorthTrying) return Future.value(null);
+      final attempt = _upgradeToHd(key, videoId, streams);
+      inFlight = attempt;
+      attempt.then((result) {
+        if (result == null) inFlight = null;
+      }).catchError((Object _) {
+        inFlight = null;
+      });
+      return attempt;
+    };
+  }
+
   /// Runs the HD-unlock route for an already-playing video and, if it yields
   /// tracks that serve to the end, replaces the cache entry with the HD
   /// sources and completes with them. Null on any failure.
@@ -1513,8 +1552,8 @@ class YtRepository {
             // video only comes in one size".
             qualities: streams.muxedQualities,
             audioOnlyUrl: streams.audioUrl,
-            upgrade: (canUseDash || canUseGeneratedHls) && _hdUnlockWorthTrying
-                ? _upgradeToHd(key, videoId, streams)
+            upgrade: canUseDash || canUseGeneratedHls
+                ? _lazyUpgrade(key, videoId, streams)
                 : null,
           );
           return _cache(key, sources);

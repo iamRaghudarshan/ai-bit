@@ -205,6 +205,42 @@ Some blurb about the video.
     });
   });
 
+  group('PlaybackController.upgradeWorthwhile', () {
+    bool worth(Duration position, Duration duration) =>
+        PlaybackController.upgradeWorthwhile(
+          position: position,
+          duration: duration,
+        );
+
+    test('switches to HD with most of the video still to play', () {
+      expect(worth(const Duration(seconds: 12), const Duration(minutes: 10)),
+          isTrue);
+    });
+
+    test('leaves the last half-minute alone', () {
+      // An upgrade landing here rebuilt the player, cancelled the autoplay
+      // countdown, and swallowed the real finish as teardown noise: the video
+      // sat on its last frame with no end screen and no next video.
+      expect(
+        worth(const Duration(minutes: 9, seconds: 45), const Duration(minutes: 10)),
+        isFalse,
+      );
+      expect(worth(const Duration(minutes: 10), const Duration(minutes: 10)),
+          isFalse);
+    });
+
+    test('exactly thirty seconds left still upgrades', () {
+      expect(
+        worth(const Duration(minutes: 9, seconds: 30), const Duration(minutes: 10)),
+        isTrue,
+      );
+    });
+
+    test('an unknown duration does not block the upgrade', () {
+      expect(worth(const Duration(minutes: 5), Duration.zero), isTrue);
+    });
+  });
+
   group('PlaybackController.isGenuineFinish', () {
     bool finish(Duration position, Duration duration) =>
         PlaybackController.isGenuineFinish(

@@ -33,7 +33,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -52,6 +52,16 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- launchMode is singleTask, not the template's singleTop, because
+                 of the filters below. A share chooser starts its target
+                 WITHOUT FLAG_ACTIVITY_NEW_TASK, so with singleTop a
+                 "Share -> AI BIT" while the app was already running created a
+                 SECOND MainActivity inside the sharing app's task: a second
+                 Flutter engine, player, database handle and media session in
+                 one process, fighting the first over audio and the lock
+                 screen. singleTask makes the activity the root of its own
+                 task, so every launch reaches the one instance through
+                 onNewIntent. -->
             <!-- YouTube links, so a tap elsewhere can land here instead of in
                  the YouTube app. Not verifiable (youtube.com is not ours), so
                  on Android 12+ this only shows in the chooser once the user

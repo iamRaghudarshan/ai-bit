@@ -43,7 +43,15 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingLink = linkFrom(intent)
+        // Only a genuinely new launch carries a link worth opening. Android
+        // re-delivers the original Intent when the process is recreated or
+        // the app is reopened from Recents, and replaying the share then would
+        // push the video over whatever the user was doing.
+        val fromHistory =
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) {
+            pendingLink = linkFrom(intent)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
