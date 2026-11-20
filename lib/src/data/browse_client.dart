@@ -404,6 +404,17 @@ class YoutubeBrowseClient {
         isLive: views.toLowerCase().contains('watching'),
       ));
     }
+    // YouTube's own autoplay choice, named in the same response. It is not
+    // always the first related row — YouTube picks it separately, and it is
+    // the one that stays on the subject of the video (after a TED talk it is
+    // another TED talk, where the first related row can be anything popular).
+    // Autoplay that takes it plays what YouTube itself would play next.
+    final pick = autoplayPick(json);
+    if (pick != null && pick.id != videoId) {
+      final at = out.indexWhere((v) => v.id == pick.id);
+      final row = at >= 0 ? out.removeAt(at) : pick;
+      out.insert(0, row);
+    }
     lastRelatedEmptyReason = out.isNotEmpty
         ? null
         : 'next endpoint answered with ${lockups.length} lockups '
@@ -411,6 +422,48 @@ class YoutubeBrowseClient {
             '${compact.length} compact rows; top-level keys: '
             '${json.keys.take(8).join(', ')}';
     return out;
+  }
+
+  /// YouTube's autoplay pick from a `next` response
+  /// (`playerOverlayAutoplayRenderer`), or null.
+  static VideoBrief? autoplayPick(Map<String, dynamic> json) {
+    Map? renderer;
+    void find(dynamic node) {
+      if (renderer != null) return;
+      if (node is Map) {
+        final r = node['playerOverlayAutoplayRenderer'];
+        if (r is Map) {
+          renderer = r;
+          return;
+        }
+        node.values.forEach(find);
+      } else if (node is List) {
+        node.forEach(find);
+      }
+    }
+
+    find(json);
+    final r = renderer;
+    if (r == null) return null;
+    final id = r['videoId'];
+    if (id is! String || id.isEmpty) return null;
+    String text(dynamic node) {
+      if (node is! Map) return '';
+      final simple = node['simpleText'];
+      if (simple is String) return simple;
+      final runs = node['runs'];
+      if (runs is List) {
+        return runs.map((x) => x is Map ? (x['text'] ?? '') : '').join();
+      }
+      return '';
+    }
+
+    return VideoBrief(
+      id: id,
+      title: text(r['videoTitle']),
+      author: text(r['byline']),
+      channelId: '',
+    );
   }
 
   /// One related row in the older `compactVideoRenderer` shape, or null.

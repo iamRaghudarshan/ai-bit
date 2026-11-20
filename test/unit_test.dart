@@ -207,6 +207,35 @@ Some blurb about the video.
     });
   });
 
+  group("YouTube's autoplay pick", () {
+    test('is read from playerOverlayAutoplayRenderer', () {
+      final pick = YoutubeBrowseClient.autoplayPick({
+        'playerOverlays': {
+          'playerOverlayRenderer': {
+            'autoplay': {
+              'playerOverlayAutoplayRenderer': {
+                'videoId': 'cef35Fk7YD8',
+                'videoTitle': {'simpleText': 'You are contagious'},
+                'byline': {
+                  'runs': [
+                    {'text': 'TEDx Talks'},
+                  ],
+                },
+              },
+            },
+          },
+        },
+      });
+      expect(pick!.id, 'cef35Fk7YD8');
+      expect(pick.title, 'You are contagious');
+      expect(pick.author, 'TEDx Talks');
+    });
+
+    test('absent means null', () {
+      expect(YoutubeBrowseClient.autoplayPick({'contents': {}}), isNull);
+    });
+  });
+
   group('related rows in the older compactVideoRenderer shape', () {
     // YouTube serves this shape to some networks instead of lockupViewModel;
     // read only the newer one, the Up next rail was empty on a phone.

@@ -328,9 +328,12 @@ class _WatchPageState extends State<WatchPage>
 
       // Now that the real "up next" list exists, hand it to the queue so
       // autoplay has something to advance to.
+      // Only over a suggested queue: a playlist or a queue the user built is
+      // theirs, and opening its video used to throw it away for suggestions.
       if (related.isNotEmpty &&
           mounted &&
-          context.read<PlaybackController>().current?.id == _video.id) {
+          context.read<PlaybackController>().current?.id == _video.id &&
+          context.read<PlaybackController>().queueIsSuggested) {
         context.read<PlaybackController>().replaceQueue(related);
       }
     } catch (e) {

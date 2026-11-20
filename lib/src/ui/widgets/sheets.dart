@@ -641,11 +641,23 @@ Future<void> showVideoMenu(
           ListTile(
             leading: const Icon(Icons.queue_play_next_outlined),
             title: const Text('Play next'),
+            // Queued after the current video, as YouTube's "Play next" does —
+            // it used to start the video at once. With nothing playing there
+            // is nothing to wait for, so it plays now.
             onTap: () {
-              playback.queue.isEmpty
-                  ? playback.play(video)
-                  : playback.play(video, upNext: playback.queue);
+              final queued = playback.current != null;
+              final messenger = ScaffoldMessenger.maybeOf(sheetContext);
+              playback.playAfterCurrent(video);
               Navigator.pop(sheetContext);
+              if (queued) {
+                messenger?.showSnackBar(
+                  const SnackBar(
+                    content: Text('Plays next'),
+                    duration: Duration(seconds: 2),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              }
             },
           ),
           ListTile(

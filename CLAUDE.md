@@ -985,6 +985,21 @@ supplied), ranks it as the page does (raw in Kids mode), and is retried once
 at the finish if the queue is still empty. The watch page still replaces it
 with its own list when open.
 
+**Autoplay picks each next video from the video that just ended.** Reported
+after 2.33.1 as "with the screen off the next video is fully different":
+`playNext` carried the rest of the queue over, so every later video came from
+the *first* video's suggestions and the chain drifted — with the screen on the
+watch page masked it by replacing the queue per video. A *suggested* queue
+(`_queueIsSuggested`) is now rebuilt from each new video's own suggestions,
+falling back to the old list only if that fetch fails; a playlist or a queue
+the user built is followed in order, and the watch page no longer overwrites
+one with suggestions. Each suggestion list is led by **YouTube's own autoplay
+pick** (`playerOverlayAutoplayRenderer` in the same `next` response), which is
+chosen separately from the related rows and stays on subject — after a TED
+talk it is another TED talk, where the first related row can be anything
+popular. `tool/check_autoplay_chain.dart` walks six hops to show it.
+"Play next" now queues after the current video instead of playing at once.
+
 **Autoplay with the screen off needs the player to hold the device awake.**
 The vendored ExoPlayer was built with no wake mode, so between one video
 ending and the next one's first buffered frame — a resolve, a manifest, a few

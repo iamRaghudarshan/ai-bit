@@ -546,6 +546,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _queue
       ..clear()
       ..addAll(upNext.where((v) => v.id != video.id));
+    // An explicit list (a playlist, a queue the user built) is followed as
+    // given; no list means the queue will be YouTube's suggestions for this
+    // video, filled in by _fillQueueIfEmpty.
+    if (!rebuild) _queueIsSuggested = upNext.isEmpty;
     // A new queue has no original order to restore.
     _unshuffledQueue = null;
     _loading = true;
@@ -1409,13 +1413,47 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void replaceQueue(List<VideoBrief> videos) {
+  /// Replaces the queue with [videos] — YouTube's suggestions for the video
+  /// now playing, unless [suggested] says it is a list the user chose.
+  void replaceQueue(List<VideoBrief> videos, {bool suggested = true}) {
     _queue
       ..clear()
       ..addAll(videos.where((v) => v.id != _current?.id));
+    _queueIsSuggested = suggested;
     // A wholesale replacement leaves nothing of the old order to restore.
     _unshuffledQueue = null;
     notifyListeners();
+  }
+
+  /// Whether the queue is YouTube's suggestions for the current video rather
+  /// than a list the user chose (a playlist, a built queue).
+  ///
+  /// It decides what autoplay does next. Reported as "with the screen off the
+  /// next video is fully different from what was playing": autoplay took the
+  /// next video from the queue and carried the REST of that queue over, so
+  /// the third, fourth and fifth videos all came from the first video's
+  /// suggestions, drifting further from what was actually playing each time.
+  /// With the screen on the watch page happened to replace the queue for each
+  /// new video, which is why it only showed with the screen off. A suggested
+  /// queue is now rebuilt from each new video's own suggestions, as YouTube's
+  /// autoplay does; a chosen list is still followed in order.
+  bool _queueIsSuggested = true;
+  bool get queueIsSuggested => _queueIsSuggested;
+
+  /// Queues [video] to play right after the current one — YouTube's "Play
+  /// next". It used to start the video at once, which is "play now".
+  void playAfterCurrent(VideoBrief video) {
+    if (_current == null) {
+      unawaited(play(video));
+      return;
+    }
+    if (video.id == _current?.id) return;
+    _queue
+      ..removeWhere((v) => v.id == video.id)
+      ..insert(0, video);
+    _unshuffledQueue = null;
+    notifyListeners();
+    unawaited(_remote.sync(hasPrevious: hasPrevious, hasNext: hasNext));
   }
 
   /// Videos already played, newest last. Gives "previous" something to mean —
@@ -1445,7 +1483,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> playNext() async {
     if (_queue.isEmpty) return;
     final next = _queue.removeAt(0);
-    await play(next, upNext: _queue.toList());
+    if (!_queueIsSuggested) {
+      await play(next, upNext: _queue.toList());
+      return;
+    }
+    // Suggested queue: what follows [next] is decided by [next]'s own
+    // suggestions, not by the list of the video before it. The old list is
+    // kept only as a fallback, so a failed fetch never ends the session.
+    final fallback = _queue.toList();
+    await play(next);
+    if (_current?.id != next.id) return;
+    final filled = await _fillQueueIfEmpty(next);
+    if (!filled && _queue.isEmpty && _current?.id == next.id) {
+      replaceQueue(fallback.where((v) => v.id != next.id).toList());
+    }
   }
 
   /// Steps back to the previously played video, pushing the current one to the
@@ -1467,7 +1518,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final leaving = _current;
     final previous = _playHistory.removeLast();
     final rest = [?leaving, ..._queue];
+    // Going back keeps the queue's kind: a suggested one stays suggested.
+    final suggested = _queueIsSuggested;
     await play(previous, upNext: rest, recordHistory: false);
+    if (_current?.id == previous.id) _queueIsSuggested = suggested;
   }
 
   void _pushHistory(VideoBrief video) {
@@ -1567,6 +1621,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> playFromQueue(int index) async {
     if (index < 0 || index >= _queue.length) return;
     final video = _queue[index];
+    if (_queueIsSuggested) {
+      // Picking a suggestion is choosing that video: what follows it is its
+      // own suggestions, exactly as when autoplay reaches it.
+      _queue.removeRange(0, index);
+      await playNext();
+      return;
+    }
     final rest = _queue.skip(index + 1).toList();
     await play(video, upNext: rest);
   }
