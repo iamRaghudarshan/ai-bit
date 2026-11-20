@@ -532,6 +532,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // exposes kidsLimitReached and lets the UI say so.
       _enforceKidsLimit();
       notifyListeners();
+      if (!rebuild) unawaited(_fillQueueIfEmpty(video));
     } catch (e) {
       if (token != _playToken) return;
       _awaitingSource = false;
@@ -1503,8 +1504,84 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           await _player?.play();
         }
       case PlaybackRepeat.off:
+        // A last chance for an empty queue, so a fill that failed or was
+        // still in flight at the start does not end the session here.
+        final finished = _current;
+        if (_config.autoplayNext && !hasNext && finished != null) {
+          await _fillQueueIfEmpty(finished);
+          if (_current?.id != finished.id) return; // the user moved on
+        }
         _startEndScreen();
     }
+  }
+
+  /// The in-flight fill, shared so the start-of-video and end-of-video calls
+  /// for one video make one request between them.
+  Future<bool>? _queueFill;
+  String? _queueFillFor;
+
+  /// Fills an empty autoplay queue from [video]'s own related list.
+  ///
+  /// The queue used to be filled only by the watch page, once its up-next
+  /// list had loaded. Leave that page before it loaded — minimise to the mini
+  /// player, go home, lock the phone — and its result was dropped with the
+  /// widget, so the queue stayed empty and the video simply ended: "autoplay
+  /// next audio or video not working", for exactly the way people listen.
+  /// The player owns the queue, so it now fills it itself; the watch page,
+  /// when open, still replaces it with its own list a moment later, which is
+  /// the same request ranked the same way.
+  ///
+  /// Never for a Short, which loops rather than advancing, and never over a
+  /// queue someone already gave it (a playlist, "play next"). Returns whether
+  /// there is now something to play next.
+  Future<bool> _fillQueueIfEmpty(VideoBrief video) {
+    if (_queue.isNotEmpty) return Future.value(true);
+    if (kIsWeb || video.isShort) return Future.value(false);
+    final running = _queueFill;
+    if (running != null && _queueFillFor == video.id) return running;
+    final fill = () async {
+      try {
+        final raw = await _repo.related(video.id, channelId: video.channelId);
+        final played = {for (final v in _sessionPlayed) v.id};
+        var next = raw
+            .where((v) => v.id != video.id && !played.contains(v.id))
+            .toList();
+        if (next.isEmpty) next = raw.where((v) => v.id != video.id).toList();
+        // Ranked the way the watch page ranks it, so autoplay plays what the
+        // list would have shown. Kids mode takes YouTube's order as it is:
+        // its viewing is kept out of the taste profile on purpose.
+        if (!_config.kidsMode && next.isNotEmpty) {
+          try {
+            next = _repo.personalisedUpNext(
+              current: video,
+              related: next,
+              profile: await _db.tasteProfile(coVisitSeeds: [video.id]),
+              impressions: await _db.feedImpressions(),
+              recentlyPlayed: playedThisSession,
+            );
+          } catch (e) {
+            debugPrint('AI BIT: autoplay queue left unranked - $e');
+          }
+        }
+        if (_current?.id != video.id) return false;
+        if (_queue.isEmpty && next.isNotEmpty) {
+          replaceQueue(next);
+          unawaited(_remote.sync(hasPrevious: hasPrevious, hasNext: hasNext));
+        }
+        return _queue.isNotEmpty;
+      } catch (e) {
+        debugPrint('AI BIT: autoplay queue not filled for ${video.id} - $e');
+        return false;
+      } finally {
+        if (_queueFillFor == video.id) {
+          _queueFill = null;
+          _queueFillFor = null;
+        }
+      }
+    }();
+    _queueFill = fill;
+    _queueFillFor = video.id;
+    return fill;
   }
 
   // ---------------------------------------------------------------- end screen

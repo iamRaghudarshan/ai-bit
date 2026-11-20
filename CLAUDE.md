@@ -940,6 +940,16 @@ its own try so a ranking or database fault costs the ordering rather than the
 rows, and every swallowed error is logged. `tool/check_related.dart` runs
 both steps and names the one that failed.
 
+**The player fills its own autoplay queue.** It used to be filled only by
+the watch page once its up-next list loaded, and a page left before that —
+minimised to the mini player, home, the phone locked — dropped the result
+with the widget, so the queue stayed empty and the video just ended. 2.33.0
+was reported for exactly that. `_fillQueueIfEmpty` fetches the video's own
+related list after every load (not for Shorts, not over a queue a playlist
+supplied), ranks it as the page does (raw in Kids mode), and is retried once
+at the finish if the queue is still empty. The watch page still replaces it
+with its own list when open.
+
 **Autoplay with the screen off needs the player to hold the device awake.**
 The vendored ExoPlayer was built with no wake mode, so between one video
 ending and the next one's first buffered frame — a resolve, a manifest, a few
