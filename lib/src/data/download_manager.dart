@@ -158,9 +158,12 @@ class DownloadManager extends ChangeNotifier {
       final spec = queued.quality;
       final wantMp3 = queued.audioOnly && spec == 'MP3';
       final height = int.tryParse(spec.replaceAll(RegExp('[^0-9]'), ''));
+      // Every height except 360p is a separate video track joined to audio —
+      // 144p and 240p included. This read `height > 360`, so picking 144p to
+      // save data silently downloaded the larger 360p file instead.
       final wantHd = !queued.audioOnly &&
           height != null &&
-          height > 360 &&
+          height != 360 &&
           _processor.isSupported;
       // Bounded: downloads resolve through youtube_explode's getManifest,
       // which can hang on a device when YouTube changes its player. Without a
@@ -276,6 +279,11 @@ class DownloadManager extends ChangeNotifier {
         transferred = received;
       } else if (target.toMp3) {
         received = await _convertToMp3(id: id, videoPath: file.path);
+      } else if (target.extractAudio) {
+        received = await _convertAudio(
+          videoPath: file.path,
+          convert: _processor.extractAudio,
+        );
       }
 
       _update(
@@ -565,10 +573,21 @@ class DownloadManager extends ChangeNotifier {
   Future<int> _convertToMp3({
     required String id,
     required String videoPath,
+  }) =>
+      _convertAudio(videoPath: videoPath, convert: _processor.toMp3);
+
+  /// Runs [convert] over the downloaded file in place, keeping the original
+  /// when it fails — a failed conversion must still leave something playable.
+  Future<int> _convertAudio({
+    required String videoPath,
+    required Future<bool> Function({
+      required String sourcePath,
+      required String outputPath,
+    }) convert,
   }) async {
     final source = '$videoPath.src';
     await File(videoPath).rename(source);
-    final ok = await _processor.toMp3(sourcePath: source, outputPath: videoPath);
+    final ok = await convert(sourcePath: source, outputPath: videoPath);
     if (!ok) {
       // Put the original back, so a failed conversion still leaves something
       // playable behind — everything reads AAC anyway.

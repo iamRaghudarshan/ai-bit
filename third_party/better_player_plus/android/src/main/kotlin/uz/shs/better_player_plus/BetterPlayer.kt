@@ -340,26 +340,32 @@ internal class BetterPlayer(
                 return null
             }
         }
-        var playerNotificationChannelName = notificationChannelName
-        if (notificationChannelName == null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val importance = NotificationManager.IMPORTANCE_LOW
+        // PATCH: the channel is created whether or not the host named it. The
+        // original only created the default one, so a host-supplied name was
+        // used as the id of a channel that did not exist and Android 8+
+        // dropped the media notification ("No Channel found") - no transport
+        // controls in the shade or on the lock screen. See PATCHES.md #27.
+        val playerNotificationChannelName =
+            notificationChannelName ?: DEFAULT_NOTIFICATION_CHANNEL
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val notificationManager = context.getSystemService(
+                NotificationManager::class.java
+            )
+            if (notificationManager.getNotificationChannel(playerNotificationChannelName) == null) {
                 val channel = NotificationChannel(
-                    DEFAULT_NOTIFICATION_CHANNEL,
-                    DEFAULT_NOTIFICATION_CHANNEL, importance
+                    playerNotificationChannelName,
+                    playerNotificationChannelName,
+                    NotificationManager.IMPORTANCE_LOW
                 )
-                channel.description = DEFAULT_NOTIFICATION_CHANNEL
-                val notificationManager = context.getSystemService(
-                    NotificationManager::class.java
-                )
+                channel.description = playerNotificationChannelName
+                channel.setShowBadge(false)
                 notificationManager.createNotificationChannel(channel)
-                playerNotificationChannelName = DEFAULT_NOTIFICATION_CHANNEL
             }
         }
 
         playerNotificationManager = PlayerNotificationManager.Builder(
             context, NOTIFICATION_ID,
-            playerNotificationChannelName!!
+            playerNotificationChannelName
         ).setMediaDescriptionAdapter(mediaDescriptionAdapter).build()
 
         playerNotificationManager?.apply {

@@ -41,6 +41,12 @@ const runtimePageHtml = r'''<!doctype html>
     catch (e) { /* channel not yet bound; nothing to do */ }
   }
 
+  // A progress line for the host's log. The calls below can take tens of
+  // seconds, and a timeout that only says "90 seconds passed" cannot tell a
+  // stalled fetch from a slow parse; these can.
+  var t0 = Date.now();
+  function trace(text) { post({ trace: '+' + (Date.now() - t0) + 'ms ' + text }); }
+
   function describe(e) {
     if (!e) return 'unknown error';
     if (typeof e === 'string') return e;
@@ -163,8 +169,10 @@ const runtimePageHtml = r'''<!doctype html>
   // caching.
   async function mintPoToken(requestKey, identifier) {
     var steps = [];
+    trace('mint: creating challenge');
     var challenge = await createChallenge(requestKey);
     steps.push('challenge');
+    trace('mint: challenge received');
     if (challenge.script) {
       new Function(challenge.script)();
     } else if (challenge.scriptUrl) {
@@ -175,8 +183,10 @@ const runtimePageHtml = r'''<!doctype html>
       throw new Error('challenge named no interpreter');
     }
     steps.push('interpreter');
+    trace('mint: interpreter loaded');
     var bg = await loadBotGuard(challenge.program, challenge.globalName);
     steps.push('vm');
+    trace('mint: vm ready');
     var webPoSignalOutput = [];
     var botguardResponse = await bg.snapshot({ webPoSignalOutput: webPoSignalOutput });
     if (typeof botguardResponse !== 'string' || !botguardResponse) {
@@ -212,9 +222,11 @@ const runtimePageHtml = r'''<!doctype html>
 
   async function playerScript(url) {
     if (playerScripts[url]) return playerScripts[url];
+    trace('fetching player script');
     var res = await fetch(url);
     if (!res.ok) throw new Error('player script answered HTTP ' + res.status);
     var text = await res.text();
+    trace('player script ' + text.length + ' bytes');
     playerScripts = {}; preprocessed = {};   // one build at a time
     playerScripts[url] = text;
     return text;
@@ -235,7 +247,9 @@ const runtimePageHtml = r'''<!doctype html>
     } else {
       input = { type: 'player', player: await playerScript(url), requests: requests, output_preprocessed: true };
     }
+    trace('solver start (' + input.type + ', ' + requests.length + ' request groups)');
     var result = await window.jsc(input);
+    trace('solver done');
     if (!result || result.type !== 'result') {
       throw new Error('solver answered ' + JSON.stringify(result).slice(0, 300));
     }

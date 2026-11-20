@@ -81,6 +81,12 @@ class HiddenWebRuntime {
     } catch (_) {
       return;
     }
+    // Progress lines from the page, logged so a stall names its step.
+    final trace = payload['trace'];
+    if (trace != null) {
+      debugPrint('AI BIT runtime: $trace');
+      return;
+    }
     final id = payload['id'];
     if (id is! int) return;
     final completer = _pending.remove(id);
@@ -115,6 +121,7 @@ class HiddenWebRuntime {
       );
       return await completer.future.timeout(timeout);
     } on TimeoutException {
+      debugPrint('AI BIT runtime: "$name" gave no answer in $timeout');
       _pending.remove(id);
       _reset();
       rethrow;
@@ -135,6 +142,19 @@ class HiddenWebRuntime {
   }
 
   void _reset() {
+    // Unload the abandoned page rather than just dropping our reference to
+    // it. Every WebView in a process shares one renderer, so a page still
+    // grinding through a hung solve kept that renderer busy and the fresh
+    // page built next timed out behind it — seen on an emulator as a good
+    // first token followed by a re-mint that never answered.
+    final old = _controller;
+    if (old != null) {
+      unawaited(
+        old.loadHtmlString('<html></html>').catchError((Object e) {
+          debugPrint('AI BIT runtime: old page not unloaded - $e');
+        }),
+      );
+    }
     _controller = null;
     _ready = null;
     for (final c in _pending.values) {

@@ -356,7 +356,12 @@ class DownloadTarget {
     this.audioHandle,
     this.audioBytes = 0,
     this.toMp3 = false,
+    this.extractAudio = false,
   });
+
+  /// Cut the sound out of a downloaded video file, keeping its codec. Used
+  /// when the separate audio track is capped and the 360p file is the source.
+  final bool extractAudio;
 
   final Object handle;
   final int totalBytes;

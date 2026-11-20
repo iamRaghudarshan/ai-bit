@@ -1239,10 +1239,17 @@ class YtRepository {
     String videoId,
     PlayerStreams streams,
   ) async {
+    debugPrint('AI BIT HD: upgrade started for $videoId');
+    // The same step log the Settings test prints, kept here too so a stall
+    // on a phone names its step in logcat rather than only "timed out".
+    final steps = <String>[];
     try {
       return await () async {
-        final attested = await _attestedStreams(videoId);
-        if (attested == null) return null;
+        final attested = await _attestedStreams(videoId, log: steps);
+        if (attested == null) {
+          debugPrint('AI BIT HD: no attested streams - ${steps.join(' | ')}');
+          return null;
+        }
         if (attested.hlsUrl != null) {
           return _cache(key, PlaybackSources(
             url: attested.hlsUrl!,
@@ -1267,7 +1274,8 @@ class YtRepository {
       }()
           .timeout(_hdUpgradeBudget);
     } catch (e) {
-      debugPrint('AI BIT: HD upgrade for $videoId did not complete — $e');
+      debugPrint('AI BIT: HD upgrade for $videoId did not complete — $e'
+          ' — steps so far: ${steps.join(' | ')}');
       return null;
     }
   }
@@ -1313,6 +1321,7 @@ class YtRepository {
           'sts ${player.signatureTimestamp}');
 
       var refusals = 0;
+      var noUrls = 0;
       for (final client in YoutubePlayerClient.webClients) {
         final response = await _player.fetchWeb(
           videoId,
@@ -1335,6 +1344,7 @@ class YtRepository {
         if (!response.hasAddressableFormats) {
           log?.add('${client.name}: '
               '${response.serverAbr ? 'server-side streaming only, no URLs' : 'no formats'}');
+          if (response.serverAbr) noUrls++;
           continue;
         }
         final solved =
@@ -1374,6 +1384,17 @@ class YtRepository {
       }
       if (refusals == YoutubePlayerClient.webClients.length) {
         _pauseHdUnlock('every web client refused the token');
+      } else if (refusals + noUrls == YoutubePlayerClient.webClients.length) {
+        // Measured on an emulator, 20 November 2026: with a freshly minted,
+        // accepted token, WEB and MWEB answer with server-side streaming only
+        // (formats, no URLs) and TVHTML5 with "The page needs to be
+        // reloaded". That is a policy, not a blip — no URL means nothing to
+        // build a manifest from — so the route rests for hours, not minutes,
+        // instead of spending three player requests on every video.
+        _pauseHdUnlock(
+          'web clients answer with server-side streaming only',
+          pauseFor: const Duration(hours: 6),
+        );
       }
     } catch (e) {
       log?.add('Failed: $e');
@@ -1382,11 +1403,9 @@ class YtRepository {
     return null;
   }
 
-  void _pauseHdUnlock(String why) {
-    _hdUnlockPausedUntil = DateTime.now().add(_hdUnlockBackoff);
-    debugPrint(
-      'AI BIT: HD unlock paused for ${_hdUnlockBackoff.inMinutes} min — $why',
-    );
+  void _pauseHdUnlock(String why, {Duration pauseFor = _hdUnlockBackoff}) {
+    _hdUnlockPausedUntil = DateTime.now().add(pauseFor);
+    debugPrint('AI BIT: HD unlock paused for ${pauseFor.inMinutes} min — $why');
   }
 
   /// Highest-bitrate AAC track, or any audio, as the audio-only URL. The
@@ -1632,7 +1651,25 @@ class YtRepository {
           ytClients: [client],
         );
 
+        final capped = await _downloadTracksCapped(videoId, manifest);
+
         if (audioOnly) {
+          if (capped) {
+            // The audio track would stop about a minute in, so the sound is
+            // taken from the uncapped 360p file instead and cut out on the
+            // device — a copy for "Audio", a re-encode for MP3.
+            final muxed = _bestMuxed(manifest);
+            if (muxed == null) continue;
+            return DownloadTarget(
+              handle: muxed,
+              totalBytes: muxed.size.totalBytes,
+              quality: toMp3 ? 'MP3' : 'Audio',
+              fileExtension: toMp3 ? 'mp3' : 'm4a',
+              audioOnly: true,
+              toMp3: toMp3,
+              extractAudio: !toMp3,
+            );
+          }
           if (manifest.audioOnly.isEmpty) continue;
           final best = _bestPlayableAudio(manifest.audioOnly);
           return DownloadTarget(
@@ -1652,7 +1689,13 @@ class YtRepository {
         // YouTube retired combined streams above 360p, so this is the only way
         // to get 1080p or better. Both tracks are copied into one container
         // without re-encoding, which is quick and loses nothing.
-        if (hd && manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
+        // Not when the tracks are capped: that download would stop about a
+        // minute in and then be joined into a truncated file. The 360p file
+        // below is what plays to the end.
+        if (hd &&
+            !capped &&
+            manifest.videoOnly.isNotEmpty &&
+            manifest.audioOnly.isNotEmpty) {
           final videos = _downloadableVideos(manifest);
           if (videos.isNotEmpty) {
             // The requested height exactly where it exists, otherwise the
@@ -1746,6 +1789,57 @@ class YtRepository {
     );
   }
 
+  /// Whether this video's separate audio and video tracks stop partway.
+  ///
+  /// The serving cap that limits HD playback (see
+  /// [_adaptiveTracksPlayThroughout]) applies to a download exactly as it does
+  /// to a player: the bytes past about a minute of media come back 403. Found
+  /// on an emulator, 20 November 2026 — every option in the download picker
+  /// except 360p was a track that would have died partway. Measured the same
+  /// way, with two bytes from the end of the audio track, which shares the
+  /// policy with the video tracks and is the cheapest to ask about. Unknowns
+  /// count as capped, and the answer is remembered for the session.
+  Future<bool> _downloadTracksCapped(
+    String videoId,
+    yt.StreamManifest manifest,
+  ) async {
+    final known = _downloadCapped[videoId];
+    if (known != null) return known;
+    if (manifest.audioOnly.isEmpty) return true;
+    final track = _bestPlayableAudio(manifest.audioOnly);
+    final total = track.size.totalBytes;
+    var capped = true;
+    if (total > 4) {
+      final client = http.Client();
+      try {
+        final response = await client
+            .get(track.url, headers: {'Range': 'bytes=${total - 2}-${total - 1}'})
+            .timeout(const Duration(seconds: 8));
+        capped = response.statusCode != 200 && response.statusCode != 206;
+      } catch (e) {
+        debugPrint('AI BIT: could not test the download tracks — $e');
+      } finally {
+        client.close();
+      }
+    }
+    if (capped) {
+      debugPrint('AI BIT: download tracks capped for $videoId — 360p only');
+    }
+    _downloadCapped[videoId] = capped;
+    return capped;
+  }
+
+  final _downloadCapped = <String, bool>{};
+
+  /// The tallest combined (video with sound) stream, or null.
+  static yt.MuxedStreamInfo? _bestMuxed(yt.StreamManifest manifest) {
+    final muxed = manifest.muxed.toList()
+      ..sort(
+        (a, b) => b.videoResolution.height.compareTo(a.videoResolution.height),
+      );
+    return muxed.isEmpty ? null : muxed.first;
+  }
+
   /// Every rendition that can actually be downloaded, with real sizes, so the
   /// picker shows the choice before anything transfers.
   ///
@@ -1769,9 +1863,13 @@ class YtRepository {
             ? null
             : _bestPlayableAudio(manifest.audioOnly);
         final audioBytes = audio?.size.totalBytes ?? 0;
+        final capped = await _downloadTracksCapped(videoId, manifest);
+        final muxed = _bestMuxed(manifest);
 
-        // HD renditions, tallest first, only where they can be joined.
-        if (allowFfmpeg && audio != null) {
+        // HD renditions, tallest first, only where they can be joined — and
+        // only where YouTube serves those tracks in full. Offered while capped,
+        // every one of them downloaded the first minute and then failed.
+        if (allowFfmpeg && audio != null && !capped) {
           final videos = _downloadableVideos(manifest);
           final seen = <int>{};
           for (final v in videos) {
@@ -1793,11 +1891,8 @@ class YtRepository {
         }
 
         // The one combined file, which always works.
-        final muxed = manifest.muxed.toList()
-          ..sort((a, b) =>
-              b.videoResolution.height.compareTo(a.videoResolution.height));
-        if (muxed.isNotEmpty) {
-          final m = muxed.first;
+        if (muxed != null) {
+          final m = muxed;
           options.add(DownloadOption(
             audioOnly: false,
             quality: m.qualityLabel,
@@ -1808,8 +1903,27 @@ class YtRepository {
           ));
         }
 
+        // Capped: the sound comes out of the 360p file instead, which needs
+        // FFmpeg for both. The size shown is what crosses the network.
+        if (capped && allowFfmpeg && muxed != null) {
+          for (final (quality, label, detail, ext) in const [
+            ('Audio', 'Audio only', 'Sound from the 360p file', 'm4a'),
+            ('MP3', 'MP3', 'Converted for older players', 'mp3'),
+          ]) {
+            options.add(DownloadOption(
+              audioOnly: true,
+              quality: quality,
+              label: label,
+              detail: detail,
+              bytes: muxed.size.totalBytes,
+              fileExtension: ext,
+              needsFfmpeg: true,
+            ));
+          }
+        }
+
         // Audio, and MP3 where it can be converted.
-        if (audio != null) {
+        if (audio != null && !capped) {
           options.add(DownloadOption(
             audioOnly: true,
             quality: 'Audio',

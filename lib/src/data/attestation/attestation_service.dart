@@ -246,11 +246,16 @@ class WebAttestation extends ChangeNotifier {
   Future<void> _ensureSolver() async {
     if (_solverLoaded) return;
     return _solverLoading ??= () async {
+      final clock = Stopwatch()..start();
       final lib = await _fetchVerified(_solverLib.url, _solverLib.sha256);
       final core = await _fetchVerified(_solverCore.url, _solverCore.sha256);
-      await _runtime.injectPersistent(
-        '$lib\nObject.assign(globalThis, lib);\n$core\n',
-      );
+      debugPrint('AI BIT attestation: solver fetched '
+          '(${lib.length + core.length} chars) in ${clock.elapsedMilliseconds}ms');
+      await _runtime
+          .injectPersistent('$lib\nObject.assign(globalThis, lib);\n$core\n')
+          .timeout(const Duration(seconds: 45));
+      debugPrint('AI BIT attestation: solver injected at '
+          '${clock.elapsedMilliseconds}ms');
       final has = await _runtime.call('hasSolver', const []);
       if (has != true) throw StateError('solver did not define jsc');
       _solverLoaded = true;

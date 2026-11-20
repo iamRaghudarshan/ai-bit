@@ -30,8 +30,17 @@ class BetterPlayerAsmsUtils {
   ///Request data from given uri along with headers. May return null if resource
   ///is not available or on error.
   static Future<String?> getDataFromUrl(String url, [Map<String, String?>? headers]) async {
+    // PATCH: a manifest the host app wrote itself is a file:// URL, which
+    // HttpClient rejects with an ArgumentError — an Error, not an Exception,
+    // so the catch below missed it and every generated DASH source raised an
+    // unhandled exception. The host knows that ladder already (it built the
+    // document), so there is nothing to fetch. See PATCHES.md #26.
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return null;
+    }
     try {
-      final request = await _httpClient.getUrl(Uri.parse(url));
+      final request = await _httpClient.getUrl(uri);
       if (headers != null) {
         headers.forEach((name, value) => request.headers.add(name, value!));
       }

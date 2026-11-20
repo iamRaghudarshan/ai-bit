@@ -232,6 +232,14 @@ class _DownloadTile extends StatelessWidget {
           ? onToggle
           : record.isComplete
           ? () => WatchPage.open(context, record.video)
+          // A failed row says "tap to retry", so a tap retries. It did
+          // nothing, and the only working retry was hidden in the menu.
+          : record.status == DownloadStatus.failed
+          ? () => downloads.enqueue(
+                record.video,
+                audioOnly: record.audioOnly,
+                quality: record.quality,
+              )
           : null,
       child: ColoredBox(
         color: selected

@@ -279,6 +279,26 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    app is backgrounded, because the countdown is a UI affordance and nothing
    holds the device awake across it.
 
+26. `BetterPlayerAsmsUtils.getDataFromUrl` handed every manifest URL to
+   `HttpClient`, including the `file://` DASH manifests AI BIT generates.
+   `HttpClient` rejects those with an `ArgumentError`, which the method's
+   `on Exception` does not catch, so every Short and every generated-HD video
+   logged an unhandled exception from `_setupAsmsDataSource`. Found by running
+   the release APK on an emulator and reading logcat. Non-HTTP URLs now
+   return null up front; the host already knows the ladder it wrote
+   (`PlaybackSources.ladder`), and the parser would have read a DASH document
+   as HLS anyway.
+
+27. `setupPlayerNotification` created a notification channel only when the
+   host passed no channel name. AI BIT passes "AI BIT playback", so the
+   `PlayerNotificationManager` posted to a channel id that had never been
+   created, and Android 8+ rejected every post (`NotificationService: No
+   Channel found ... channelId=AI BIT playback`) — the media notification,
+   and with it the shade and lock-screen transport controls, never appeared.
+   Background audio was unaffected because the foreground service posts its
+   own notification on its own channel. Found on an emulator through logcat.
+   The channel is now created, if missing, for whichever name is in use.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

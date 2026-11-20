@@ -338,15 +338,20 @@ class _ChannelPageState extends State<ChannelPage>
     return LayoutBuilder(
       builder: (context, constraints) {
         final columns = (feedColumnsFor(constraints.maxWidth) + 1).clamp(2, 5);
+        // Height from the tile's real width: a 16:9 thumbnail, the stacked
+        // edge above it, two title lines and the "View full playlist" line.
+        // A fixed aspect ratio left a third of each card empty on a phone,
+        // because the text block does not grow with the width.
+        final tileWidth =
+            (constraints.maxWidth - 24 - 12 * (columns - 1)) / columns;
+        final textScale = MediaQuery.textScalerOf(context).scale(1);
         return GridView.builder(
           padding: const EdgeInsets.all(12),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
             mainAxisSpacing: 16,
             crossAxisSpacing: 12,
-            // Thumbnail at 16:9 plus room for two lines of title and the
-            // "View full playlist" line under it.
-            childAspectRatio: 0.78,
+            mainAxisExtent: tileWidth * 9 / 16 + 8 + 66 * textScale,
           ),
           itemCount: _playlists.length,
           itemBuilder: (context, i) => _PlaylistCard(playlist: _playlists[i]),

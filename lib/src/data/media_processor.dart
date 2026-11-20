@@ -32,6 +32,12 @@ abstract class MediaProcessor {
     required String sourcePath,
     required String outputPath,
   });
+
+  /// Copies the audio out of a video file, without re-encoding.
+  Future<bool> extractAudio({
+    required String sourcePath,
+    required String outputPath,
+  });
 }
 
 /// A processor that declines everything.
@@ -54,6 +60,12 @@ class UnavailableMediaProcessor implements MediaProcessor {
 
   @override
   Future<bool> toMp3({
+    required String sourcePath,
+    required String outputPath,
+  }) async => false;
+
+  @override
+  Future<bool> extractAudio({
     required String sourcePath,
     required String outputPath,
   }) async => false;
@@ -112,6 +124,22 @@ class FfmpegMediaProcessor implements MediaProcessor {
     // difference from the source is audible, without doubling the file size.
     return _run(
       '-y -i ${_arg(sourcePath)} -vn -c:a libmp3lame -q:a 2 ${_arg(outputPath)}',
+      outputPath,
+    );
+  }
+
+  /// Copies the AAC track out of [sourcePath] into an .m4a at [outputPath].
+  @override
+  Future<bool> extractAudio({
+    required String sourcePath,
+    required String outputPath,
+  }) async {
+    if (!isSupported) return false;
+    // -f mp4: the output keeps a temporary name until it succeeds, so the
+    // container cannot be inferred from the extension.
+    return _run(
+      '-y -i ${_arg(sourcePath)} -vn -c:a copy -movflags +faststart '
+      '-f mp4 ${_arg(outputPath)}',
       outputPath,
     );
   }
