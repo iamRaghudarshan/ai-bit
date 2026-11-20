@@ -135,6 +135,37 @@ void main() {
     });
   });
 
+  group('downloads', skip: unavailable, () {
+    DownloadRecord record(String id, {required bool audio, DownloadStatus? s}) =>
+        DownloadRecord(
+          video: video(id),
+          filePath: '/tmp/$id.${audio ? 'm4a' : 'mp4'}',
+          quality: audio ? 'Audio' : '360p',
+          audioOnly: audio,
+          totalBytes: 1,
+          receivedBytes: 1,
+          status: s ?? DownloadStatus.completed,
+        );
+
+    test('a sound-only download is recognised, so it plays as audio', () async {
+      // Without this the player showed a black box and an endless spinner
+      // over a file that has no picture.
+      await db.saveDownload(record('song', audio: true));
+      await db.saveDownload(record('film', audio: false));
+      expect(await db.isAudioDownload('song'), isTrue);
+      expect(await db.isAudioDownload('film'), isFalse);
+      expect(await db.isAudioDownload('nothing'), isFalse);
+    });
+
+    test('an unfinished audio download does not count', () async {
+      await db.saveDownload(
+        record('half', audio: true, s: DownloadStatus.failed),
+      );
+      expect(await db.isAudioDownload('half'), isFalse);
+      expect(await db.completedDownloadPath('half'), isNull);
+    });
+  });
+
   group('feed impressions', skip: unavailable, () {
     test('counts showings and accumulates attention', () async {
       await db.recordImpressions({'a': 1.0});

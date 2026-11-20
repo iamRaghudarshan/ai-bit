@@ -578,7 +578,9 @@ class _PlayerSurface extends StatelessWidget {
                               vertical: 5,
                             ),
                             child: Text(
-                              playback.isAudioFallback
+                              playback.isOfflineAudio
+                                  ? 'Downloaded audio'
+                                  : playback.isAudioFallback
                                   ? 'Audio only — no video stream available'
                                   : 'Audio only',
                               style: const TextStyle(
@@ -1185,13 +1187,24 @@ class _PillRow extends StatelessWidget {
             highlighted: isDownloaded,
             onTap: () async {
               final messenger = ScaffoldMessenger.of(context);
-              if (isDownloaded) {
-                await downloads.remove(video.id);
-                messenger.showSnackBar(
-                  const SnackBar(content: Text('Download removed')),
+              if (isDownloaded || isDownloading) {
+                // Asked, not done. One tap on "Downloaded" deleted the file
+                // outright — found on an emulator, where a single stray tap
+                // threw away a 44 MB download with no way back. YouTube asks
+                // first; so does this, for a running download too.
+                final confirmed = await _confirmDownloadAction(
+                  context,
+                  downloaded: isDownloaded,
                 );
-              } else if (isDownloading) {
-                await downloads.cancel(video.id);
+                if (!confirmed) return;
+                if (isDownloaded) {
+                  await downloads.remove(video.id);
+                  messenger.showSnackBar(
+                    const SnackBar(content: Text('Download removed')),
+                  );
+                } else {
+                  await downloads.cancel(video.id);
+                }
               } else {
                 showDownloadSheet(context, video);
               }
@@ -1209,6 +1222,42 @@ class _PillRow extends StatelessWidget {
 
   String _likeLabel(BuildContext context) =>
       likeCount == null ? 'Like' : compactCount(likeCount);
+
+  /// A bottom sheet asking whether to delete (or stop) the download.
+  static Future<bool> _confirmDownloadAction(
+    BuildContext context, {
+    required bool downloaded,
+  }) async {
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                downloaded ? Icons.delete_outline : Icons.close,
+              ),
+              title: Text(downloaded ? 'Delete from downloads' : 'Stop download'),
+              subtitle: Text(
+                downloaded
+                    ? 'The video will no longer play offline.'
+                    : 'What has downloaded so far is discarded.',
+              ),
+              onTap: () => Navigator.of(sheet).pop(true),
+            ),
+            ListTile(
+              leading: const Icon(Icons.arrow_back),
+              title: const Text('Keep it'),
+              onTap: () => Navigator.of(sheet).pop(false),
+            ),
+          ],
+        ),
+      ),
+    );
+    return result ?? false;
+  }
 
   void _explainSignIn(BuildContext context, String action) {
     ScaffoldMessenger.of(context).showSnackBar(

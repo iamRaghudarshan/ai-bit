@@ -562,6 +562,18 @@ class AppDatabase {
     return rows.isEmpty ? null : rows.first['file_path'] as String?;
   }
 
+  /// Whether the completed download for [videoId] is sound only.
+  Future<bool> isAudioDownload(String videoId) async {
+    final rows = await _db.query(
+      'downloads',
+      columns: ['audio_only'],
+      where: 'video_id = ? AND status = ?',
+      whereArgs: [videoId, DownloadStatus.completed.name],
+      limit: 1,
+    );
+    return rows.isNotEmpty && (rows.first['audio_only'] as int? ?? 0) == 1;
+  }
+
   Future<void> deleteDownload(String videoId) =>
       _db.delete('downloads', where: 'video_id = ?', whereArgs: [videoId]);
 

@@ -181,7 +181,14 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// True whenever there is no picture — the user asked for audio only, this
   /// video started on mobile data with "audio only on mobile" set, or we had to
   /// fall back to it.
-  bool get isAudioOnly => _config.audioOnly || _mobileAudio || isAudioFallback;
+  bool get isAudioOnly =>
+      _config.audioOnly || _mobileAudio || isAudioFallback || _offlineAudio;
+
+  /// True while a sound-only download is what is playing. It has no picture,
+  /// so the surface showed a black box with a spinner that never stopped;
+  /// treating it as audio mode gives it the artwork view instead.
+  bool _offlineAudio = false;
+  bool get isOfflineAudio => _offlineAudio;
 
   // ---------------------------------------------------- saving conditions
   //
@@ -515,6 +522,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           : await _repo.resolve(video.id);
       _sources = sources;
       _isOffline = offlinePath != null;
+      _offlineAudio =
+          offlinePath != null && await _db.isAudioDownload(video.id);
       if (_isOffline) {
         // A file already on disk costs no mobile data and no download radio
         // time, so there is nothing to save by degrading it.
