@@ -1262,6 +1262,17 @@ well-watched channels rise, and **the channel already on screen is damped**, so
 autoplay stops walking down one uploader's back catalogue. The same ordering
 feeds the visible list and the queue, so autoplay plays what the list promised.
 
+**It is scored in places of YouTube's list, and every personal term is
+bounded in places** — a loved channel climbs about one, something watched
+sinks about three, and freshness, popularity and the long-run topic profile
+are not used at all. It used to be the home-feed score plus a position bonus
+worth at most one point, while freshness alone was worth 0.9, so under a 2009
+music video anything uploaded yesterday — a cricket highlight, an office
+cartoon — led the rail, and 18th-placed evergreen hits jumped to the top.
+`tool/check_up_next.dart` measured 2.3 of YouTube's top five kept and rows
+moving 4.4 places; it is 5/5 and 0.0 for a viewer whose history is unrelated
+to the video now. Re-run it after touching `rankUpNext`.
+
 Two things deliberately do **not** go through it. **Kids mode** ranks nothing —
 it curates from a fixed topic list and consults no personal signal, and ranking
 it against a profile built from the adult's viewing is precisely what must not

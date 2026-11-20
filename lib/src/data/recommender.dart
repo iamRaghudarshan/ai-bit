@@ -1462,26 +1462,43 @@ List<VideoBrief> rankUpNext({
       contextTokens: contextTokens,
     );
 
-    // YouTube's ordering, decaying with position. The first entry is worth a
-    // full point and the tenth about a third of one, which is enough to keep
-    // the list recognisably YouTube's while letting a strong personal match
-    // climb over a weak one.
-    final positionPrior = 1 / (1 + i * 0.2);
-
-    // Autoplay that marches through one channel is the complaint this damping
-    // exists for. The channel is still allowed to win — it just has to win on
-    // something other than being the one already on screen, and each further
-    // video from a channel this session has already played costs more again.
+    // Scored in SLOTS of YouTube's own list, and that unit is the whole
+    // design. YouTube's related order is its co-watch model applied to the
+    // video on screen; the viewer's history may nudge it, not replace it.
+    //
+    // It used to be the home-feed score plus a position bonus worth at most
+    // one point, while freshness alone was worth up to 0.9 and popularity and
+    // the long-run topic profile more besides. So under a 2009 music video,
+    // anything uploaded yesterday — a cricket highlight, an office cartoon —
+    // jumped to the top, and huge evergreen hits from position 18 led the
+    // rail. Measured with tool/check_up_next.dart: 2.3 of YouTube's top five
+    // survived in the app's top five, rows moved 4.4 places on average.
+    //
+    // Now every personal term is bounded in slots: a channel the viewer
+    // follows or watches a lot can climb about one place, something already
+    // watched sinks about three (still offered, as YouTube does, just lower),
+    // and freshness, popularity and the long-run topic profile — home-feed
+    // questions — play no part here at all.
     final sameChannel =
         video.channelId.isNotEmpty && video.channelId == current.channelId;
     final sessionRepeats = sessionChannels[video.channelId] ?? 0;
+    // Each term is 0..1, so the most a video can climb is about three places,
+    // and only with all three behind it. No shared cap: one would let the
+    // context term a neighbour also has cancel a real channel preference.
+    final personal =
+        scored.affinity * 1.2 + scored.coVisit * 1.0 + scored.context * 0.8;
+    final watchedSlots = scored.watchedPenalty < 0 ? 3.0 : 0.0;
 
     ranked.add((
-      score: scored.totalWith(weights) +
-          scored.context * ScoredCandidate.upNextContextWeight +
-          positionPrior -
-          (sameChannel ? 0.4 : 0.0) -
-          sessionRepeats * 0.25,
+      score: -i.toDouble() +
+          personal -
+          watchedSlots +
+          scored.impressionPenalty * 0.5 +
+          scored.dislikePenalty -
+          // Autoplay marching down one uploader's back catalogue is the
+          // complaint this exists for; a nudge, not a ban.
+          (sameChannel ? 0.6 : 0.0) -
+          sessionRepeats * 0.5,
       index: i,
       video: video,
     ));

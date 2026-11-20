@@ -2239,7 +2239,9 @@ Some blurb about the video.
       expect(out.map((x) => x.id).toList(), ['r0', 'r1', 'r2', 'r3', 'r4']);
     });
 
-    test('a channel the viewer watches climbs over YouTube ordering', () {
+    test('a channel the viewer watches climbs a place over YouTube ordering', () {
+      // A nudge, measured in places of YouTube's list — not a licence to
+      // jump the queue from anywhere (see the test after this group's end).
       final profile = TasteProfile.from(
         history: [
           WatchSignal(
@@ -2258,8 +2260,8 @@ Some blurb about the video.
         current: current,
         related: [
           v('a', channel: 'UC-nobody'),
-          v('b', channel: 'UC-nobody2'),
           v('loved', channel: 'UC-loved'),
+          v('b', channel: 'UC-nobody2'),
         ],
         profile: profile,
         now: now,
@@ -2267,9 +2269,39 @@ Some blurb about the video.
       expect(out.first.id, 'loved');
     });
 
+    test('a loved channel cannot leap from the bottom of the list', () {
+      // Under a 2009 music video, profile terms used to lift the 18th related
+      // video to the top. YouTube's order is the backbone now.
+      final profile = TasteProfile.from(
+        history: [
+          WatchSignal(
+            videoId: 'seen',
+            channelId: 'UC-loved',
+            title: 'clip',
+            watchedAt: now.subtract(const Duration(hours: 1)),
+            completion: 1,
+          ),
+        ],
+        searches: const [],
+        subscribed: const {'UC-loved'},
+        now: now,
+      );
+      final out = rankUpNext(
+        current: current,
+        related: [
+          for (var i = 0; i < 6; i++) v('r$i', channel: 'UC-$i'),
+          v('loved', channel: 'UC-loved'),
+        ],
+        profile: profile,
+        now: now,
+      );
+      expect(out.take(3).map((x) => x.id), ['r0', 'r1', 'r2']);
+    });
+
     test('autoplay does not walk down the current channel back catalogue', () {
-      // Same position in YouTube's list, same everything else - the one from
-      // the channel already on screen should lose.
+      // Adjacent in YouTube's list, the one from the channel already on screen
+      // — which this sitting has therefore already played, as the app always
+      // reports — yields to the other. Only an adjacent swap: a nudge.
       final out = rankUpNext(
         current: current,
         related: [
@@ -2278,6 +2310,7 @@ Some blurb about the video.
         ],
         profile: TasteProfile.empty,
         now: now,
+        recentlyPlayed: [current],
       );
       expect(out.first.id, 'different');
     });
@@ -2847,9 +2880,12 @@ Some blurb about the video.
           channel: 'UC-guitar',
           title: 'guitar fingerpicking lesson',
         ),
+        // YouTube ranked the guitar drill first for a guitar lesson; a heavy
+        // cooking history must not pull the cooking video over it. This is the
+        // shape of the reported failure — a cricket video under a music video.
         related: [
-          v('cooking', channel: 'UC-cooking', title: 'risotto carbonara pasta'),
           v('guitar', channel: 'UC-lessons', title: 'guitar fingerpicking drill'),
+          v('cooking', channel: 'UC-cooking', title: 'risotto carbonara pasta'),
         ],
         profile: profile,
         now: now,
