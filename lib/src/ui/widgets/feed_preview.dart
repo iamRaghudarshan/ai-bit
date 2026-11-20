@@ -82,6 +82,41 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   bool get _allowed =>
       !kIsWeb && _config.feedPreviews && blockedReason == null;
 
+  bool _scrolling = false;
+  VideoBrief? _pendingVideo;
+
+  /// Told by the feed when a drag or fling starts and when it settles.
+  ///
+  /// Measured on an emulator, the feed scrolled at roughly half the frame
+  /// rate with previews on: a preview that had started during a pause kept
+  /// decoding through the next fling, because stopping waited for the
+  /// visibility detector to report the card gone — late, by design — and
+  /// the second player's teardown then landed mid-scroll too. YouTube silences
+  /// a preview the instant you scroll and starts one only once you stop. So
+  /// does this: a scroll start pauses at once (cheap) and cancels any
+  /// countdown; the expensive teardown and any new preview wait for the end.
+  void onScrolling(bool scrolling) {
+    if (_scrolling == scrolling) return;
+    _scrolling = scrolling;
+    if (scrolling) {
+      _dwellTimer?.cancel();
+      final player = _player;
+      if (player != null) unawaited(player.pause().catchError((Object _) {}));
+      return;
+    }
+    // Settled: whichever card the visibility updates last chose is the one
+    // being looked at. Anything that was previewing is now stale.
+    if (_activeId != null && _activeId != _pendingVideo?.id) stop();
+    final next = _pendingVideo;
+    if (next != null && _pendingId == next.id && _allowed) {
+      _dwellTimer?.cancel();
+      _dwellTimer = Timer(_dwell, () => _start(next));
+    } else if (_activeId != null) {
+      final player = _player;
+      if (player != null) unawaited(player.play().catchError((Object _) {}));
+    }
+  }
+
   /// Called as cards scroll in and out. [fraction] is how much of the card is
   /// on screen; the most-visible card wins.
   void onCardVisibility(VideoBrief video, double fraction) {
@@ -94,8 +129,10 @@ class FeedPreviewCoordinator extends ChangeNotifier {
     if (fraction >= 0.7) {
       if (_activeId == video.id || _pendingId == video.id) return;
       _pendingId = video.id;
+      _pendingVideo = video;
       _dwellTimer?.cancel();
-      _dwellTimer = Timer(_dwell, () => _start(video));
+      // Mid-scroll the countdown waits for the scroll to settle.
+      if (!_scrolling) _dwellTimer = Timer(_dwell, () => _start(video));
       return;
     }
 
@@ -104,11 +141,13 @@ class FeedPreviewCoordinator extends ChangeNotifier {
       _pendingId = null;
       _dwellTimer?.cancel();
     }
-    if (_activeId == video.id && fraction < 0.4) stop();
+    // Mid-scroll the player is already paused; the teardown waits for the
+    // scroll to settle (onScrolling) so it does not land in the fling.
+    if (_activeId == video.id && fraction < 0.4 && !_scrolling) stop();
   }
 
   Future<void> _start(VideoBrief video) async {
-    if (!_allowed || _pendingId != video.id) return;
+    if (!_allowed || _pendingId != video.id || _scrolling) return;
     await _disposePlayer();
 
     try {

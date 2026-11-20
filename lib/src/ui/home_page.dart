@@ -842,6 +842,21 @@ class HomePageState extends State<HomePage>
   }
 
   Widget _buildFeed() {
+    // Previews follow the scroll: silenced the moment a drag or fling starts
+    // and allowed again only once it has settled. See
+    // FeedPreviewCoordinator.onScrolling.
+    return NotificationListener<ScrollNotification>(
+      onNotification: (n) {
+        if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
+        if (n is ScrollStartNotification) _previews?.onScrolling(true);
+        if (n is ScrollEndNotification) _previews?.onScrolling(false);
+        return false;
+      },
+      child: _buildFeedBody(),
+    );
+  }
+
+  Widget _buildFeedBody() {
     return RefreshIndicator(
         onRefresh: _refresh,
         child: Builder(
