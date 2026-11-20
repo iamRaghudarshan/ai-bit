@@ -199,9 +199,11 @@ class VideoCard extends StatelessWidget {
                           video.author,
                           if (video.viewCount != null)
                             '${compactCount(video.viewCount)} views',
-                          timeAgo(video.uploadDate, raw: video.uploadRaw),
+                          uploadLabel(video.uploadDate, raw: video.uploadRaw),
                         ]),
-                        maxLines: 1,
+                        // Two lines: the date and its relative age no longer
+                        // fit beside the channel and views on one.
+                        maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 12.5,
@@ -306,7 +308,7 @@ class VideoRow extends StatelessWidget {
                     video.author,
                     if (video.viewCount != null)
                       '${compactCount(video.viewCount)} views',
-                    timeAgo(video.uploadDate, raw: video.uploadRaw),
+                    uploadLabel(video.uploadDate, raw: video.uploadRaw),
                   ]),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,

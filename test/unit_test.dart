@@ -207,6 +207,40 @@ Some blurb about the video.
     });
   });
 
+  group('uploadLabel', () {
+    final now = DateTime(2026, 11, 20, 15, 0);
+
+    test('exact date and time, with the relative age in brackets', () {
+      expect(
+        uploadLabel(DateTime(2026, 11, 18, 20, 4), raw: '2 days ago', now: now),
+        '18-11-2026 08:04 PM (2 days ago)',
+      );
+    });
+
+    test('a list row gets its date worked out from days and hours', () {
+      expect(uploadLabel(null, raw: '2 days ago', now: now),
+          '18-11-2026 (2 days ago)');
+      expect(uploadLabel(null, raw: '5h ago', now: now),
+          '20-11-2026 (5h ago)');
+      expect(uploadLabel(null, raw: 'Streamed 1 day ago', now: now),
+          '19-11-2026 (Streamed 1 day ago)');
+    });
+
+    test('weeks, months and years stay relative rather than guess a date', () {
+      expect(uploadLabel(null, raw: '3 months ago', now: now), '3 months ago');
+      expect(uploadLabel(null, raw: '17y ago', now: now), '17y ago');
+    });
+
+    test('works in other languages too', () {
+      expect(uploadLabel(null, raw: '2 दिन पहले', now: now),
+          '18-11-2026 (2 दिन पहले)');
+    });
+
+    test('nothing known is empty', () {
+      expect(uploadLabel(null, now: now), '');
+    });
+  });
+
   group("YouTube's autoplay pick", () {
     test('is read from playerOverlayAutoplayRenderer', () {
       final pick = YoutubeBrowseClient.autoplayPick({

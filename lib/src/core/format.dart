@@ -1,6 +1,8 @@
 /// Small display formatters shared across the UI.
 library;
 
+import '../data/recommender.dart' show parseRelativeAgeSeconds;
+
 /// `1234567` -> `1.2M`. Returns an empty string for null so callers can just
 /// drop it into a text run without a null guard.
 String compactCount(int? n) {
@@ -65,6 +67,32 @@ String formatDateTime(DateTime? date) {
   String two(int n) => n.toString().padLeft(2, '0');
   return '${two(local.day)}-${two(local.month)}-${local.year} '
       '${two(hour)}:${two(local.minute)} $period';
+}
+
+/// The upload label used on every video: the date (and time, where YouTube
+/// gave one) with the relative age after it in brackets —
+/// `19-11-2026 08:04 PM (2 days ago)`.
+///
+/// Lists only carry YouTube's relative wording ("2 days ago"), not a
+/// timestamp, so there the date is worked out from it — but only for
+/// minutes, hours and days, where it lands on the right day:
+/// `18-11-2026 (2 days ago)`. "3 months ago" or "2 years ago" is rounded by
+/// YouTube to the unit, so a computed date could be weeks out; those stay
+/// relative rather than print a date that may be wrong. [now] is for tests.
+String uploadLabel(DateTime? date, {String? raw, DateTime? now}) {
+  final relative = timeAgo(date, raw: raw);
+  final exact = formatDateTime(date);
+  if (exact.isNotEmpty) {
+    return relative.isEmpty || relative == exact ? exact : '$exact ($relative)';
+  }
+  if (relative.isEmpty) return '';
+  final seconds = parseRelativeAgeSeconds(raw);
+  if (seconds == null || seconds >= 7 * 86400) return relative;
+  final estimated =
+      (now ?? DateTime.now()).subtract(Duration(seconds: seconds)).toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(estimated.day)}-${two(estimated.month)}-${estimated.year} '
+      '($relative)';
 }
 
 /// Joins the non-empty parts of a metadata line with the usual dot separator.
