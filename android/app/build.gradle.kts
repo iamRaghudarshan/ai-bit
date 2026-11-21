@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -31,11 +33,40 @@ android {
         manifestPlaceholders["appName"] = "AI BIT " + flutter.versionName
     }
 
+    // ONE permanent signing key for every release.
+    //
+    // Releases used to be signed with the CI runner's debug key, which is
+    // generated fresh on every run — so each APK had a different signature
+    // and Android refused to install any of them over the last ("App not
+    // installed"). The only way through was uninstalling, which erased the
+    // phone's history, playlists and downloads, and made the forced-update
+    // screen a dead end. `android/key.properties` (gitignored) names the
+    // keystore; CI writes it from repository secrets, and a machine without
+    // it falls back to the debug key so it can still build for itself.
+    // LOSING THIS KEY MEANS EVERY PHONE MUST UNINSTALL AGAIN. Copies: this
+    // PC's ~/.android/aibit-release.jks, D:/AI BIT signing backup/, and the
+    // ANDROID_KEYSTORE_B64 secret (write-only - it cannot be read back).
+    val keyProps = Properties().apply {
+        val f = rootProject.file("key.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val hasReleaseKey = keyProps.getProperty("storeFile")?.let { file(it).exists() } == true
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // Signed with the debug key: this is a personal, sideloaded /
-            // TestFlight app that is never published, so there is no upload key.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(
+                if (hasReleaseKey) "release" else "debug",
+            )
 
             // R8 off, deliberately.
             //

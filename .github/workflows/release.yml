@@ -346,9 +346,29 @@ jobs:
       - name: Test
         run: .github/scripts/report.sh test flutter test
 
-      # No upload signing config, so this is signed with the debug key. Fine for
-      # sideloading onto your own phone; it could not go to Play, which this app
-      # must not do anyway.
+      # The permanent signing key, from repository secrets. Every APK used to
+      # be signed with this runner's freshly generated debug key, so no build
+      # would install over the one before it ("App not installed") and every
+      # update meant uninstalling — erasing the phone's library. Refuses to
+      # build without the secrets rather than quietly falling back, because a
+      # randomly signed APK reaching the phones is exactly the bug.
+      - name: Install the signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD secrets are missing. Refusing to build an APK with a random key - it would not install over existing copies."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/aibit-release.jks"
+          {
+            echo "storeFile=$RUNNER_TEMP/aibit-release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyPassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=aibit"
+          } > android/key.properties
+
       - name: Build the APK
         run: |
           # The tag is the source of truth, not a file somebody has to
@@ -375,6 +395,20 @@ jobs:
           # of the artifact do not depend on the version in the filename.
           cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
              build/app/outputs/flutter-apk/app-release.apk
+
+      # The APK must carry THE key, checked by fingerprint rather than trusted
+      # from the config: a fallback to the debug key builds perfectly and only
+      # fails on a phone, as "App not installed".
+      - name: Verify the signature
+        run: |
+          EXPECTED="b607441a97597d625701daee1b047786a1a91aff618362c5c9d53ecf7cd8add3"
+          SIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          GOT="$("$SIGNER" verify --print-certs build/app/outputs/flutter-apk/app-release.apk | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)"
+          if [ "$GOT" != "$EXPECTED" ]; then
+            echo "::error::APK is signed with $GOT, not the AI BIT release key $EXPECTED. It would not install over existing copies."
+            exit 1
+          fi
+          echo "Signed with the AI BIT release key."
 
       - uses: actions/upload-artifact@v4
         with:

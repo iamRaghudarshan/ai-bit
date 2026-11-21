@@ -60,9 +60,10 @@ C:/Users/Pro-TEAM/AppData/Local/Android/Sdk/emulator/emulator.exe -avd AIBitPhon
 D:/flutter/bin/flutter.bat build apk --release --target-platform android-x64 --build-name 2.33.1-local --build-number 9999
 ```
 
-The first local build takes ~20 minutes, later ones 2–3. It is signed with the
-local debug key, so installing over a CI build needs an uninstall first, which
-wipes the emulator's app data. Release keeps `debugPrint`, so `adb logcat |
+The first local build takes ~20 minutes, later ones 2–3. Local release builds
+on this PC are signed with the **permanent release key** (below), so they
+install over a CI build and vice versa; a machine without `android/key.properties`
+falls back to its debug key and needs an uninstall. Release keeps `debugPrint`, so `adb logcat |
 grep flutter` shows the app's own log lines. Drive it with `adb shell input`
 and read `adb exec-out screencap`. **This is a real end-to-end test and it
 found eight defects in one sitting that every unit test and every probe had
@@ -148,6 +149,21 @@ require a newer one. That is an SDK/Xcode bump in CI, and it will almost
 certainly arrive bundled with the `material_ui` migration — treat the two as
 one piece of work rather than discovering either mid-release.
 
+
+**Android releases are signed with ONE permanent key, from 2.33.3.** Before
+that, every CI APK carried the runner's freshly generated debug key, so no
+build installed over the previous one ("App not installed") and every update
+meant uninstalling — erasing the phone's library — which also made the forced
+update screen a dead end. Now `android/app/build.gradle.kts` reads
+`android/key.properties` (gitignored); CI writes it from the
+`ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` secrets, refuses to build
+without them, and checks the APK's certificate SHA-256 is
+`b607441a…7cd8add3` before uploading. The keystore is
+`C:/Users/Pro-TEAM/.android/aibit-release.jks` (password in
+`aibit-key.properties` beside it), backed up in `D:/AI BIT signing backup/`.
+GitHub secrets cannot be read back, so **losing both local copies means every
+phone must uninstall again**. Installs from before 2.33.3 have to uninstall
+once to move onto this key.
 
 Builds run on GitHub Actions and are triggered by a tag, never by a commit:
 
