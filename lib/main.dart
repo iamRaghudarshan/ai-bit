@@ -26,6 +26,7 @@ import 'src/data/models.dart';
 import 'src/ui/app_lock_page.dart';
 import 'src/ui/playlist_page.dart';
 import 'src/ui/root_shell.dart';
+import 'src/ui/update_prompt.dart';
 import 'src/ui/watch_page.dart';
 import 'src/ui/widgets/now_playing_overlay.dart';
 
@@ -87,6 +88,12 @@ Future<void> main() async {
     // does not compete with the feed for the first paint.
     Timer(const Duration(seconds: 4), () {
       _navigatorKey.currentContext?.read<YtRepository>().warmUpHd();
+    });
+    // Newer build? Told once per build, or blocked if below the manifest's
+    // minimum. After the feed's first paint, like everything else here.
+    Timer(const Duration(seconds: 2), () {
+      if (_navigatorKey.currentContext == null) return;
+      UpdatePrompt.checkOnLaunch(() => _navigatorKey.currentContext!);
     });
   });
 }

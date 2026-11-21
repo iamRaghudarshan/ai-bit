@@ -20,6 +20,7 @@ import 'package:ai_bit/src/data/search_client.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
+import 'package:ai_bit/src/data/update_service.dart';
 import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:ai_bit/src/core/settings_rules.dart';
@@ -32,6 +33,36 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('forced update', () {
+    UpdateResult at(int installed, {int latest = 160, int minimum = 0}) =>
+        UpdateResult(
+          currentVersion: 'x',
+          currentBuild: installed,
+          latest: UpdateInfo(
+            version: 'y',
+            build: latest,
+            url: 'u',
+            notes: '',
+            minSupportedBuild: minimum,
+          ),
+        );
+
+    test('an old build below the minimum must update', () {
+      expect(at(155, minimum: 156).updateRequired, isTrue);
+    });
+    test('at or above the minimum it is only offered', () {
+      expect(at(156, minimum: 156).updateRequired, isFalse);
+      expect(at(156, minimum: 156).updateAvailable, isTrue);
+    });
+    test('no minimum never forces', () {
+      expect(at(10).updateRequired, isFalse);
+    });
+    test('a minimum above the latest build cannot lock anyone out', () {
+      // Nothing newer to install, so nothing to demand.
+      expect(at(160, latest: 160, minimum: 999).updateRequired, isFalse);
+    });
+  });
+
   group('compactCount', () {
     test('leaves small numbers alone', () {
       expect(compactCount(0), '0');

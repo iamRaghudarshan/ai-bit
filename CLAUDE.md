@@ -327,6 +327,19 @@ use) and `curl https://safenest.raghudarshan.online/ai-bit-latest.json` (the old
 one, which every already-installed copy still polls)
 and the new `/ai-bit-<new>.apk`.
 
+**Launch-time update prompt and FORCED updates** (`update_prompt.dart`, from
+2.33.3; Android only). Two seconds after launch the app reads the manifest: a
+newer build shows a dialog once per build (Later is remembered), and a running
+build **below `min_supported_build`** gets a full screen with no way past it
+except Download (plus a "Back up my library first" button, since that screen
+blocks Settings). To force everyone off a bad build, set `min_supported_build`
+to the new build's number when publishing. A minimum above the manifest's own
+`build` forces nothing, by design. **Installs older than 2.33.3 have none of
+this code** and can never be forced; they only learn of updates through the
+manual check. Test the screens locally with `--dart-define=AIBIT_UPDATE_URL=
+http://127.0.0.1:8765/m.json` plus `adb reverse tcp:8765 tcp:8765` and a
+throwaway manifest, never by editing the live one.
+
 In-app: **Settings → About → Check for updates** (`update_service.dart`) fetches
 `ai-bit-latest.json`, reads the running build from `package_info_plus`
 (`buildNumber` = the CI run number, the real installed build), and offers the

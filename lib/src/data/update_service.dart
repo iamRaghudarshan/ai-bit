@@ -10,12 +10,18 @@ class UpdateInfo {
     required this.build,
     required this.url,
     required this.notes,
+    this.minSupportedBuild = 0,
   });
 
   final String version;
   final int build;
   final String url;
   final String notes;
+
+  /// Builds below this must update before the app can be used. Set in the
+  /// manifest (`min_supported_build`) when a release fixes something bad
+  /// enough that nobody should stay on the old one; 0 means never forced.
+  final int minSupportedBuild;
 }
 
 /// The outcome of an update check: what is installed, what the server offers,
@@ -35,6 +41,13 @@ class UpdateResult {
 
   bool get updateAvailable =>
       latest != null && latest!.build > currentBuild;
+
+  /// True when the installed build is older than the server's minimum and a
+  /// newer one exists to move to. The second half matters: a manifest whose
+  /// minimum is above its own build would otherwise lock everyone out with
+  /// nothing to install.
+  bool get updateRequired =>
+      updateAvailable && currentBuild < latest!.minSupportedBuild;
 }
 
 /// Checks a small JSON manifest on the download site for a newer build.
@@ -56,8 +69,14 @@ class UpdateService {
   /// to keep answering until every install has taken a build carrying the new
   /// one. Retiring safenest.raghudarshan.online before that is what stranded a
   /// customer in August; it is the same trap, one layer down.
-  static const manifestUrl =
-      'https://safenesthub.in/ai-bit-latest.json';
+  ///
+  /// `--dart-define=AIBIT_UPDATE_URL=…` overrides it for a local test build
+  /// only, so the forced-update screen can be exercised against a throwaway
+  /// manifest instead of the live one every install reads.
+  static const manifestUrl = String.fromEnvironment(
+    'AIBIT_UPDATE_URL',
+    defaultValue: 'https://safenesthub.in/ai-bit-latest.json',
+  );
 
   Future<UpdateResult> check() async {
     final info = await PackageInfo.fromPlatform();
@@ -80,6 +99,7 @@ class UpdateService {
         build: (map['build'] as num?)?.toInt() ?? 0,
         url: '${map['url'] ?? ''}',
         notes: '${map['notes'] ?? ''}',
+        minSupportedBuild: (map['min_supported_build'] as num?)?.toInt() ?? 0,
       );
       return UpdateResult(
         currentVersion: info.version,
