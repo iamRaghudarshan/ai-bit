@@ -80,9 +80,17 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.4, build 158** (tag `android-2.33.4`), published
-to `safenesthub.in` (`868506fd…b17b`, 77,826,805 bytes; served copy hashed).
-**Latest iOS build is 2.33.4, build 159** (tag `v2.33.4`). 2.33.4: the
+**Latest Android build is 2.33.5, build 160** (tag `android-2.33.5`), published
+to `safenesthub.in` (`e20d5ae1…f8f1`, 77,826,805 bytes; served copy hashed).
+**Latest iOS build is 2.33.5, build 161** (tag `v2.33.5`). 2.33.5: a
+permanent Audio only left on by the old watch-page switch is reset once
+(`SettingsService.resetLeftoverAudioOnly`) — iPhones kept it through
+TestFlight updates, so every video opened as sound only. Reproduced on the
+emulator with the Settings switch on under 158, then 160 installed over it
+opened videos with the picture.
+
+2.33.4 (Android 158, iOS 159), published
+to `safenesthub.in` (`868506fd…b17b`). 2.33.4: the
 audio-only artwork moved beneath the player controls (its pause button had
 been a picture over the Next control, so pausing skipped the video) and a
 Show video button; pause, next and Show video retested on build 158 itself.
