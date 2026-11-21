@@ -343,6 +343,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   bool _loading = false;
   bool get isLoading => _loading;
 
+  /// True while the current video's source is being rebuilt in place — the
+  /// HD upgrade landing, an audio-only toggle, a progressive quality change.
+  /// The same native player is reused, so the surface should stay up rather
+  /// than drop to a loading placeholder mid-video.
+  bool get isRebuilding => _switchingQuality;
+
   String? _error;
   String? get error => _error;
 

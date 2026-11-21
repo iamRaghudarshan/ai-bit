@@ -515,9 +515,27 @@ class _PlayerSurface extends StatelessWidget {
               );
             }
             if (kIsWeb) return const _PreviewSurface();
-            if (player == null || !showPlayer || playback.isLoading) {
-              return const Center(
-                child: CircularProgressIndicator(color: AppColors.brand),
+            final loading = playback.isLoading && !playback.isRebuilding;
+            if (player == null || !showPlayer || loading) {
+              // The thumbnail under the spinner, as YouTube does, rather than
+              // a black box: the page reads as the video arriving instead of
+              // as something failing to load.
+              final thumb = playback.current?.thumbUrl;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  if (thumb != null && thumb.isNotEmpty)
+                    CachedNetworkImage(
+                      imageUrl: thumb,
+                      fit: BoxFit.cover,
+                      fadeInDuration: Duration.zero,
+                      errorWidget: (_, _, _) => const SizedBox.shrink(),
+                    ),
+                  const ColoredBox(color: Color(0x55000000)),
+                  const Center(
+                    child: CircularProgressIndicator(color: AppColors.brand),
+                  ),
+                ],
               );
             }
             return Stack(

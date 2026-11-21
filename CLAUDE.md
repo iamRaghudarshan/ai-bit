@@ -1045,6 +1045,20 @@ top 20 as subscription uploads in one block with co-watch discovery after it.
 `_maxSourceShare` (tested) keeps the mix — measured after: 10 subscription, 9
 co-watch, 1 interest, interleaved — and yields when other sources run dry.
 
+**Start time: nothing slow sits in front of the first frame.** `resolve()`
+used to make three round trips in a row before the player got a URL — the ios
+player request, the android one, then the end-of-file probe — and the probe
+alone had an 8 s timeout, so on a weak signal a tap could wait that long
+("sometimes takes long to start"). The player clients are now asked together
+(`_fetchParallel`; once one answers with something startable the other gets
+1.5 s more), and when a progressive stream exists the probe gets 1.5 s
+(`_inlineProbeBudget`) — unanswered, the video starts at 360p and the upgrade
+settles the question behind playback, switching to HD if it was a yes.
+`tool/check_start_time.dart` measures it (on this PC 500 → 230 ms; a phone's
+round trips are several times longer). The watch page shows the thumbnail
+under the spinner while loading and keeps the surface up during an in-place
+rebuild (`isRebuilding`), so an HD switch no longer blanks the video.
+
 **A failed stream retries itself once.** "Sometimes a video just fails" had no
 pattern because it has several causes with one cure: a googlevideo URL carries
 an expiry stamp, can be refused after a network change, and the generated DASH

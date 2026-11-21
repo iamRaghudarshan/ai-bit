@@ -15,6 +15,8 @@ import 'package:ai_bit/src/data/custom_feeds.dart';
 import 'package:ai_bit/src/data/interests.dart';
 import 'package:ai_bit/src/data/models.dart';
 import 'package:ai_bit/src/data/player_client.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:ai_bit/src/data/recommender.dart';
 import 'package:ai_bit/src/data/search_client.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
@@ -33,6 +35,59 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('player requests run together', () {
+    // The ios client never carries the progressive stream; android does.
+    String body({required bool muxed}) => jsonEncode({
+          'playabilityStatus': {'status': 'OK'},
+          'streamingData': {
+            'formats': [
+              if (muxed) {'url': 'https://g/muxed', 'height': 360},
+            ],
+          },
+        });
+
+    test('a slow client does not hold up one that can already play', () async {
+      final client = YoutubePlayerClient(
+        client: MockClient((request) async {
+          final ios = request.headers['User-Agent']!.contains('ios');
+          if (ios) {
+            // A weak signal: this one would take far longer than the grace.
+            await Future<void>.delayed(const Duration(seconds: 6));
+          }
+          return http.Response(body(muxed: !ios), 200);
+        }),
+      );
+      final sw = Stopwatch()..start();
+      final streams = await client.fetch('x');
+      expect(streams?.muxedUrl, 'https://g/muxed');
+      expect(sw.elapsed, lessThan(const Duration(seconds: 3)));
+    });
+
+    test('both answering in time are merged, as the walk did', () async {
+      final client = YoutubePlayerClient(
+        client: MockClient((request) async => http.Response(
+              body(muxed: !request.headers['User-Agent']!.contains('ios')),
+              200,
+            )),
+      );
+      final parallel = await client.fetch('x');
+      final walked = await client.fetch('x', parallel: false);
+      expect(parallel?.muxedUrl, walked?.muxedUrl);
+    });
+
+    test('a client that cannot play yet is waited for', () async {
+      // ios answers first with nothing startable; android must still count.
+      final client = YoutubePlayerClient(
+        client: MockClient((request) async {
+          final ios = request.headers['User-Agent']!.contains('ios');
+          if (!ios) await Future<void>.delayed(const Duration(seconds: 2));
+          return http.Response(body(muxed: !ios), 200);
+        }),
+      );
+      expect((await client.fetch('x'))?.muxedUrl, 'https://g/muxed');
+    });
+  });
+
   group('forced update', () {
     UpdateResult at(int installed, {int latest = 160, int minimum = 0}) =>
         UpdateResult(

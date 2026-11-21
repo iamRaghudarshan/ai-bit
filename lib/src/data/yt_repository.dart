@@ -1073,6 +1073,24 @@ class YtRepository {
   /// to the end beats HD that might not.
   Future<bool> _adaptiveTracksPlayThroughout(
     List<AdaptiveFormat> formats,
+  ) async =>
+      await _probeTracks(formats, const Duration(seconds: 8)) ?? false;
+
+  /// How long a video waits on the probe before it starts at 360p anyway.
+  ///
+  /// The probe sat on the critical path of every video with an 8 second
+  /// timeout, so on a weak signal it alone could hold a tap for 8 seconds —
+  /// the "sometimes it takes long to start". It normally answers in a round
+  /// trip; past this budget the progressive stream plays and the question is
+  /// finished in the background by the upgrade, which switches to HD if the
+  /// answer turns out to be yes.
+  static const _inlineProbeBudget = Duration(milliseconds: 1500);
+
+  /// The end-of-file test itself: true or false when googlevideo answered,
+  /// null when it did not answer within [timeout] or failed outright.
+  Future<bool?> _probeTracks(
+    List<AdaptiveFormat> formats,
+    Duration timeout,
   ) async {
     final videos = [
       for (final f in formats)
@@ -1099,7 +1117,7 @@ class YtRepository {
             Uri.parse(probe.url),
             headers: {'Range': 'bytes=${clen - 2}-${clen - 1}'},
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(timeout);
       final served = response.statusCode == 200 || response.statusCode == 206;
       if (!served) {
         debugPrint(
@@ -1110,7 +1128,7 @@ class YtRepository {
       return served;
     } catch (e) {
       debugPrint('AI BIT: could not test the adaptive tracks — $e');
-      return false;
+      return null;
     } finally {
       client.close();
     }
@@ -1254,14 +1272,31 @@ class YtRepository {
   Future<PlaybackSources?> Function() _lazyUpgrade(
     String key,
     String videoId,
-    PlayerStreams streams,
-  ) {
+    PlayerStreams streams, {
+    bool probeOrdinary = false,
+  }) {
     Future<PlaybackSources?>? inFlight;
     return () {
       final running = inFlight;
       if (running != null) return running;
-      if (!_hdUnlockWorthTrying) return Future.value(null);
-      final attempt = _upgradeToHd(key, videoId, streams);
+      final attempt = () async {
+        // The inline probe ran out of time, so whether the ordinary tracks
+        // serve to the end is still open. Settle it first: it is one range
+        // request, needs no token, and a yes means HD with no bot check.
+        if (probeOrdinary &&
+            await _adaptiveTracksPlayThroughout(streams.adaptiveFormats)) {
+          final generated = await _generatedSources(
+            key,
+            videoId,
+            streams.adaptiveFormats,
+            audioOnlyUrl: streams.audioUrl,
+            fallbackUrl: streams.muxedUrl,
+          );
+          if (generated != null) return generated;
+        }
+        if (!_hdUnlockWorthTrying) return null;
+        return _upgradeToHd(key, videoId, streams);
+      }();
       inFlight = attempt;
       attempt.then((result) {
         if (result == null) inFlight = null;
@@ -1584,9 +1619,20 @@ class YtRepository {
         // tracks plays about a minute and then dies, which is worse than the
         // progressive stream below. The check is skipped entirely when neither
         // platform could use the result.
-        if ((canUseDash || canUseGeneratedHls) &&
-            streams.adaptiveFormats.isNotEmpty &&
-            await _adaptiveTracksPlayThroughout(streams.adaptiveFormats)) {
+        // With a progressive stream to fall back on, the probe gets a short
+        // budget; without one it is the only route to video and gets the
+        // full timeout. An unanswered probe is settled behind playback.
+        final canGenerate = (canUseDash || canUseGeneratedHls) &&
+            streams.adaptiveFormats.isNotEmpty;
+        final bool? uncapped = !canGenerate
+            ? false
+            : await _probeTracks(
+                streams.adaptiveFormats,
+                streams.muxedUrl != null
+                    ? _inlineProbeBudget
+                    : const Duration(seconds: 8),
+              );
+        if (uncapped ?? false) {
           final generated = await _generatedSources(
             key,
             videoId,
@@ -1613,7 +1659,8 @@ class YtRepository {
             qualities: streams.muxedQualities,
             audioOnlyUrl: streams.audioUrl,
             upgrade: canUseDash || canUseGeneratedHls
-                ? _lazyUpgrade(key, videoId, streams)
+                ? _lazyUpgrade(key, videoId, streams,
+                    probeOrdinary: canGenerate && uncapped == null)
                 : null,
           );
           return _cache(key, sources);

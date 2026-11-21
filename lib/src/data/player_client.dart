@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -93,7 +94,8 @@ class YoutubePlayerClient {
 
   /// Walks the client list and returns the first response that yields
   /// something playable. Returns null when none do.
-  Future<PlayerStreams?> fetch(String videoId) async {
+  Future<PlayerStreams?> fetch(String videoId, {bool parallel = true}) async {
+    if (parallel) return _fetchParallel(videoId);
     final found = <PlayerStreams>[];
     String? reason;
 
@@ -121,6 +123,76 @@ class YoutubePlayerClient {
     if (found.isNotEmpty) return PlayerStreams.merge(found);
     if (reason != null) throw PlayerUnavailableException(reason);
     return null;
+  }
+
+  /// Same answer as the sequential walk, with every client asked at once.
+  ///
+  /// The walk only stops early on an HLS ladder, which comes back for about
+  /// one video in eight, so in practice it always asked both clients — one
+  /// round trip after the other, on the critical path of every video opened.
+  /// Asking together costs the slower of the two instead of their sum.
+  /// Results are still considered in [_clients] order, so the merge and the
+  /// "first ladder wins" rule see exactly what the walk would have.
+  ///
+  /// Waiting for *every* client would make the slowest one the cost, and a
+  /// request may take up to 20 seconds to time out on a weak signal. So once
+  /// one client has answered with something the player can start on — a
+  /// ladder or a progressive stream — the others get [_straggler] longer and
+  /// are then dropped.
+  Future<PlayerStreams?> _fetchParallel(String videoId) async {
+    final responses = List<Map<String, dynamic>?>.filled(_clients.length, null);
+    final all = Completer<void>();
+    var remaining = _clients.length;
+    Timer? grace;
+    for (var i = 0; i < _clients.length; i++) {
+      _request(videoId, _clients[i]).then((json) {
+        responses[i] = json;
+        if (grace == null && remaining > 1 && _startable(json)) {
+          grace = Timer(_straggler, () {
+            if (!all.isCompleted) all.complete();
+          });
+        }
+      }, onError: (Object _) {}).whenComplete(() {
+        remaining--;
+        if (remaining == 0 && !all.isCompleted) all.complete();
+      });
+    }
+    await all.future;
+    grace?.cancel();
+    final found = <PlayerStreams>[];
+    String? reason;
+    for (final json in responses) {
+      if (json == null) continue;
+      final status = json['playabilityStatus'] as Map?;
+      if (status?['status'] != 'OK') {
+        reason ??= status?['reason']?.toString();
+        continue;
+      }
+      try {
+        final streams = _parse(json);
+        if (streams.hlsUrl != null) return streams;
+        found.add(streams);
+      } catch (_) {
+        // A response that does not parse is skipped, as in the walk.
+        continue;
+      }
+    }
+    if (found.isNotEmpty) return PlayerStreams.merge(found);
+    if (reason != null) throw PlayerUnavailableException(reason);
+    return null;
+  }
+
+  static const _straggler = Duration(milliseconds: 1500);
+
+  /// Whether a response alone is enough to start playing.
+  bool _startable(Map<String, dynamic> json) {
+    if ((json['playabilityStatus'] as Map?)?['status'] != 'OK') return false;
+    try {
+      final streams = _parse(json);
+      return streams.hlsUrl != null || streams.muxedUrl != null;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<Map<String, dynamic>> _request(
