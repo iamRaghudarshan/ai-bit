@@ -394,6 +394,17 @@ D:/flutter/bin/flutter.bat run -d chrome --web-port 5555
 
 ## What is built
 
+**Audio only has two strengths.** The watch page's switch is a *session*
+override (`PlaybackController.setAudioOnly`): it lasts until the app is left
+and returned to — screen off and on, or another app and back — and then the
+picture returns by itself. The Settings switch is the permanent default.
+Both are instant: audio mode plays the same stream with the picture covered,
+so `refreshAudioMode` is a track selection on a ladder and nothing at all on
+a progressive stream. It used to call `reloadCurrent`, which blanked the
+video for seconds and restarted it, and the watch page wrote the global
+setting, so one tap meant sound-only forever — reported as "not switching
+back to video when the screen turns on". Data saver uses the same path.
+
 Playback: single long-lived player, background audio, PiP, speed, sleep timer,
 captions, an audio-only mode that plays the video stream with the picture
 covered, and a screen-off saving mode that steps down the ladder. The player's

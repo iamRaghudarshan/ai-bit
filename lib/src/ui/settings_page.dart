@@ -70,7 +70,7 @@ class SettingsPage extends StatelessWidget {
             ),
             onChanged: (value) {
               settings.audioOnly = value;
-              if (playback.hasVideo) playback.reloadCurrent();
+              if (playback.hasVideo) playback.refreshAudioMode();
             },
           ),
           SwitchListTile(
@@ -161,7 +161,8 @@ class SettingsPage extends StatelessWidget {
             ),
             onChanged: (value) {
               settings.dataSaver = value;
-              if (playback.hasVideo) playback.reloadCurrent();
+              // A track selection, not a rebuild: no gap in playback.
+              if (playback.hasVideo) playback.refreshAudioMode();
             },
           ),
           if (WebAttestation.isSupported) ...[

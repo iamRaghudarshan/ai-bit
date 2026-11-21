@@ -1502,11 +1502,22 @@ class _ActionRow extends StatelessWidget {
                       SwitchListTile(
                         secondary: const Icon(Icons.headphones_outlined),
                         title: const Text('Audio only'),
-                        value: settings.audioOnly,
-                        onChanged: (v) {
-                          settings.audioOnly = v;
-                          playback.reloadCurrent();
-                        },
+                        subtitle: Text(
+                          settings.audioOnly
+                              ? 'Always on — set in Settings'
+                              : 'Picture comes back when you return to the app',
+                        ),
+                        value: playback.isAudioOnly,
+                        // A video with no picture to show cannot be switched.
+                        onChanged:
+                            playback.isAudioFallback || playback.isOfflineAudio
+                            ? null
+                            : (v) {
+                                playback.setAudioOnly(v);
+                                // Close on the tap, so the change is seen
+                                // rather than hidden behind the sheet.
+                                Navigator.pop(sheetContext);
+                              },
                       ),
                       SwitchListTile(
                         secondary: const Icon(Icons.playlist_play),

@@ -254,7 +254,65 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// video started on mobile data with "audio only on mobile" set, or we had to
   /// fall back to it.
   bool get isAudioOnly =>
-      _config.audioOnly || _mobileAudio || isAudioFallback || _offlineAudio;
+      _config.audioOnly ||
+      _sessionAudio ||
+      _mobileAudio ||
+      isAudioFallback ||
+      _offlineAudio;
+
+  /// Audio only, switched on from the watch page.
+  ///
+  /// Not the Settings default. The watch page used to write the global
+  /// setting, so one tap meant sound-only for every video from then on, across
+  /// restarts — and turning the screen back on never brought the picture back,
+  /// which is what people expect it to do. This lasts until the app is left
+  /// and returned to (screen off and on, or another app and back), then the
+  /// picture returns by itself.
+  bool _sessionAudio = false;
+
+  /// The app was left while [_sessionAudio] was on; coming back ends it.
+  bool _sessionAudioLeft = false;
+
+  /// The switch on the watch page. Instant: no reload, no gap, no position
+  /// lost — audio mode plays the same stream with the picture covered, so
+  /// there is nothing to rebuild. Turning it OFF clears every "no picture"
+  /// reason the user can override, the Settings default included, because
+  /// someone who flips the switch to see the video means it.
+  Future<void> setAudioOnly(bool on) async {
+    _sessionAudio = on;
+    _sessionAudioLeft = false;
+    if (!on) {
+      if (_config.audioOnly) _config.audioOnly = false;
+      _mobileAudio = false;
+    }
+    await refreshAudioMode();
+  }
+
+  /// Re-applies the rendition audio mode calls for after it changed — the
+  /// smallest rung while nothing is shown, the normal choice once it is.
+  /// A track selection on a ladder; on a single progressive stream there is
+  /// nothing to change, only the cover to show or hide.
+  Future<void> refreshAudioMode() async {
+    _qualityToken++; // any pending "apply when ready" is now stale
+    notifyListeners();
+    _syncWakelock();
+    final player = _player;
+    if (player == null || _current == null || _isOffline) return;
+    final adaptive =
+        player.betterPlayerAsmsTracks.isNotEmpty || (_sources?.isDash ?? false);
+    if (!adaptive || _ladderHeights.isEmpty) return;
+    await _applyQuality(
+      isAudioOnly
+          ? _lowestQuality
+          : qualityForConditions(
+              ladder: [for (final h in _ladderHeights) '${h}p'],
+              preferred: _config.preferredQuality,
+              lowest: _config.dataSaver || _mobileSaving,
+              stepDown: _batterySaving,
+            ),
+    );
+    notifyListeners();
+  }
 
   /// True while a sound-only download is what is playing. It has no picture,
   /// so the surface showed a black box with a spinner that never stopped;
@@ -856,7 +914,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // video plays, its audio plays, because they are the same source.
     // Audio-only-on-mobile takes the same path for the same reason: it is the
     // existing audio mode, not a second one.
-    if (_config.audioOnly || _mobileAudio) return sources.url;
+    if (_config.audioOnly || _sessionAudio || _mobileAudio) return sources.url;
 
     final wanted = _config.preferredQuality;
     if (wanted != SettingsService.autoQuality) {
@@ -2120,10 +2178,18 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // system to keep a screen awake that the user has just left is how a
         // background-audio app becomes a battery complaint.
         _foreground = false;
+        if (_sessionAudio) _sessionAudioLeft = true;
         _syncWakelock();
         unawaited(_dropVideoTrack());
       case AppLifecycleState.resumed:
         _foreground = true;
+        if (_sessionAudioLeft) {
+          // Back on the screen after listening away from it: the picture
+          // returns, which is what turning the screen on is asking for.
+          _sessionAudioLeft = false;
+          _sessionAudio = false;
+          unawaited(refreshAudioMode());
+        }
         _syncWakelock();
         unawaited(_restoreVideoTrack());
       default:
