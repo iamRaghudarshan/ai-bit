@@ -697,6 +697,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       _enforceKidsLimit();
       notifyListeners();
       if (!rebuild) unawaited(_fillQueueIfEmpty(video));
+      // After the attach, so warming the next video never competes with
+      // starting this one. A queue filled later warms through replaceQueue.
+      _warmNext();
     } catch (e) {
       if (token != _playToken) return;
       _awaitingSource = false;
@@ -1498,6 +1501,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // A wholesale replacement leaves nothing of the old order to restore.
     _unshuffledQueue = null;
     notifyListeners();
+    _warmNext();
+  }
+
+  /// Resolves the head of the queue ahead of time, so autoplay and the Next
+  /// button start from a cached stream instead of a fresh player request.
+  /// Shorts already warm their neighbours from the Shorts page.
+  void _warmNext() {
+    if (kIsWeb || _queue.isEmpty || _config.dataSaver) return;
+    final next = _queue.first;
+    if (next.isLive) return;
+    _repo.prefetch(next.id);
   }
 
   /// Whether the queue is YouTube's suggestions for the current video rather

@@ -999,7 +999,11 @@ class YtRepository {
   /// Fire-and-forget: failures are swallowed, and a video already cached is
   /// skipped so this costs nothing when called repeatedly.
   void prefetch(String videoId) {
+    if (isPreview) return;
     if (_streamCache.containsKey('$videoId:false')) return;
+    // A fling past twenty cards must not fire twenty resolves; the ones that
+    // matter are the cards the finger stopped on, and those come last.
+    if (_prefetching.length >= _maxPrefetching) return;
     if (!_prefetching.add(videoId)) return;
     unawaited(
       resolve(videoId).then((_) {}, onError: (Object _) {}).whenComplete(
@@ -1009,6 +1013,7 @@ class YtRepository {
   }
 
   final _prefetching = <String>{};
+  static const _maxPrefetching = 3;
 
   /// Whether this platform can play a generated DASH manifest.
   ///
@@ -1565,7 +1570,33 @@ class YtRepository {
     }
   }
 
+  /// Resolutions still running, by cache key.
+  ///
+  /// The feed resolves what is on screen before it is tapped (see
+  /// [prefetch]), so a tap often lands while that request is still out.
+  /// Without this the tap started a second, identical resolve and the
+  /// prefetch bought nothing; now it joins the one already running.
+  final _resolving = <String, Future<PlaybackSources>>{};
+
   Future<PlaybackSources> resolve(
+    String videoId, {
+    bool audioOnly = false,
+    bool force = false,
+  }) {
+    final key = '$videoId:$audioOnly';
+    if (!force) {
+      final running = _resolving[key];
+      if (running != null) return running;
+    }
+    final attempt = _resolveNow(videoId, audioOnly: audioOnly, force: force);
+    _resolving[key] = attempt;
+    attempt.then((_) {}, onError: (Object _) {}).whenComplete(() {
+      if (identical(_resolving[key], attempt)) _resolving.remove(key);
+    });
+    return attempt;
+  }
+
+  Future<PlaybackSources> _resolveNow(
     String videoId, {
     bool audioOnly = false,
     bool force = false,

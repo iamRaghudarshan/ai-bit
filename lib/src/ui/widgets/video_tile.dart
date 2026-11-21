@@ -5,6 +5,7 @@ import '../../core/format.dart';
 import '../../core/theme.dart';
 import '../../data/models.dart';
 import 'responsive_feed.dart';
+import 'tap_ahead.dart';
 
 /// 16:9 thumbnail with the duration badge and an optional resume bar.
 class VideoThumb extends StatelessWidget {
@@ -118,7 +119,9 @@ class VideoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return InkWell(
+    return TapAhead(
+      video: video,
+      child: InkWell(
       onTap: onTap,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -224,6 +227,7 @@ class VideoCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -358,7 +362,9 @@ class VideoRow extends StatelessWidget {
       );
     }
 
-    return InkWell(onTap: onTap, onLongPress: onLongPress, child: content);
+    final row = InkWell(onTap: onTap, onLongPress: onLongPress, child: content);
+    // A list in selection mode is being edited, not browsed.
+    return selected == null ? TapAhead(video: video, child: row) : row;
   }
 }
 
