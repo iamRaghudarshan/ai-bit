@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:better_player_plus/better_player_plus.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/format.dart';
 import '../../core/theme.dart';
 import '../../core/chapters.dart';
+import '../../data/models.dart';
 import '../../player/playback_controller.dart';
 import 'sheets.dart';
 
@@ -126,8 +129,19 @@ class _VideoControlsState extends State<VideoControls> {
         ? (position.inMilliseconds / total).clamp(0.0, 1.0)
         : 0.0;
 
+    final audioOnly = playback.isAudioOnly;
     return Stack(
       children: [
+        // Audio only draws its artwork HERE, beneath the controls, not over
+        // them. It used to be a layer above the whole player made transparent
+        // to touch, so its own pause button was only a picture: the tap fell
+        // through to whatever control lay underneath — the Next button — and
+        // pausing skipped the video. Under the controls, the real play/pause,
+        // skip and scrubber work exactly as they do over a picture.
+        if (audioOnly)
+          Positioned.fill(
+            child: IgnorePointer(child: _AudioBackdrop(video: playback.current)),
+          ),
         GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _toggle,
@@ -157,6 +171,25 @@ class _VideoControlsState extends State<VideoControls> {
             ),
           ),
         ),
+        // Always on screen in audio mode, whether or not the controls are, and
+        // it is the way back: there was no control anywhere on the player to
+        // leave audio only.
+        if (audioOnly)
+          Positioned(
+            top: 8,
+            left: 8,
+            child: _AudioOnlyPill(
+              label: playback.isOfflineAudio
+                  ? 'Downloaded audio'
+                  : playback.isAudioFallback
+                  ? 'Audio only — no video for this one'
+                  : 'Audio only',
+              // A video with no picture cannot be switched back to one.
+              onShowVideo: playback.isOfflineAudio || playback.isAudioFallback
+                  ? null
+                  : () => playback.setAudioOnly(false),
+            ),
+          ),
         // A hairline of progress once the controls fade, the way the real app
         // does it — otherwise a playing video gives no sign of how far in it is
         // without tapping first.
@@ -439,4 +472,116 @@ class _ChapterTicks extends CustomPainter {
       old.chapters != chapters ||
       old.totalMs != totalMs ||
       old.scrubbing != scrubbing;
+}
+
+
+/// What audio only shows instead of a picture: the video's thumbnail, blurred
+/// across the surface and sharp in the middle. No buttons of its own — the
+/// player's controls are drawn over it and do the work.
+class _AudioBackdrop extends StatelessWidget {
+  const _AudioBackdrop({required this.video});
+
+  final VideoBrief? video;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = video?.thumbUrl;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: Colors.black),
+        if (url != null) ...[
+          // Its own layer and a small source: at sigma 24 a 120-pixel image
+          // blurred looks the same as a 720-pixel one for a fraction of the
+          // work, and a rebuild of the controls does not repaint it.
+          RepaintBoundary(
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+              child: CachedNetworkImage(
+                memCacheWidth: 120,
+                imageUrl: url,
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+          const ColoredBox(color: Colors.black45),
+          Center(
+            child: FractionallySizedBox(
+              heightFactor: 0.62,
+              child: AspectRatio(
+                aspectRatio: 16 / 9,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: CachedNetworkImage(
+                    memCacheWidth: 480,
+                    imageUrl: url,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// "Audio only" with a Show video button beside it.
+class _AudioOnlyPill extends StatelessWidget {
+  const _AudioOnlyPill({required this.label, this.onShowVideo});
+
+  final String label;
+  final VoidCallback? onShowVideo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.7),
+      borderRadius: BorderRadius.circular(20),
+      clipBehavior: Clip.antiAlias,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 8, 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.headphones, color: Colors.white, size: 15),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          if (onShowVideo != null)
+            InkWell(
+              onTap: onShowVideo,
+              child: const Padding(
+                // A finger-sized target, not a word-sized one.
+                padding: EdgeInsets.fromLTRB(10, 8, 12, 8),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.videocam, color: AppColors.brand, size: 16),
+                    SizedBox(width: 4),
+                    Text(
+                      'Show video',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }

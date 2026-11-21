@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' show ImageFilter;
 
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -577,48 +576,6 @@ class _PlayerSurface extends StatelessWidget {
                       },
                     ),
                   ),
-                // Audio-only has no picture, so the player draws a black
-                // rectangle — which reads as a failure rather than a feature.
-                // Transparent to touch, so the controls underneath still take
-                // taps for play, seek and the rest.
-                if (playback.isAudioOnly)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: _AudioArtwork(video: playback.current),
-                    ),
-                  ),
-                if (playback.isAudioOnly)
-                  IgnorePointer(
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: Padding(
-                        padding: const EdgeInsets.only(top: 10),
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.65),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 5,
-                            ),
-                            child: Text(
-                              playback.isOfflineAudio
-                                  ? 'Downloaded audio'
-                                  : playback.isAudioFallback
-                                  ? 'Audio only — no video stream available'
-                                  : 'Audio only',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 11,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
               ],
             );
           },
@@ -728,86 +685,6 @@ class _GrabHandle extends StatelessWidget {
 /// An audio asset has no video track, so the player surface is simply black.
 /// Blurred artwork with the thumbnail on top makes it obvious that something is
 /// playing, and matches what every music player does.
-class _AudioArtwork extends StatelessWidget {
-  const _AudioArtwork({required this.video});
-
-  final VideoBrief? video;
-
-  @override
-  Widget build(BuildContext context) {
-    // Only the play/pause state is needed here. Watching the whole controller
-    // rebuilt this subtree — and re-ran the blur below — on every position or
-    // duration notification.
-    final isPlaying =
-        context.select<PlaybackController, bool>((p) => p.isPlaying);
-    final playback = context.read<PlaybackController>();
-    final url = video?.thumbUrl;
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (url != null)
-          // Its own layer, so a rebuild of the controls over it does not
-          // repaint the blur; and a small source — at sigma 24 a 120-pixel
-          // image blurred looks the same as a 720-pixel one and costs a
-          // fraction of the pixels.
-          RepaintBoundary(
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-              child: CachedNetworkImage(
-                memCacheWidth: 120,
-                imageUrl: url,
-                fit: BoxFit.cover,
-              ),
-            ),
-          ),
-        const ColoredBox(color: Colors.black54),
-        Center(
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (url != null)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: CachedNetworkImage(memCacheWidth: 720, 
-                    imageUrl: url,
-                    width: 140,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              const SizedBox(width: 16),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Row(
-                    children: [
-                      Icon(Icons.headphones, color: Colors.white, size: 18),
-                      SizedBox(width: 6),
-                      Text(
-                        'Audio only',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  IconButton.filled(
-                    icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
-                    iconSize: 30,
-                    onPressed: playback.togglePlayPause,
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
 
 /// Stand-in for the video surface in the browser preview, where the native
 /// player plugin does not exist.
