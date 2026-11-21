@@ -80,9 +80,17 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.2, build 155** (tag `android-2.33.2`), published
-to `safenesthub.in` (`28efb75a…3e3b`, 77,826,673 bytes; manifest checked).
-**Latest iOS build is 2.33.2, build 154** (tag `v2.33.2`). 2.33.2: autoplay
+**Latest Android build is 2.33.3, build 156** (tag `android-2.33.3`), published
+to `safenesthub.in` (`bf9fe477…fc70`, 77,826,773 bytes; served copy hashed).
+**Latest iOS build is 2.33.3, build 157** (tag `v2.33.3`). 2.33.3: feed
+previews no longer take audio focus (videos that would not start until
+minimised), faster start (parallel player requests, bounded probe, thumbnail
+while loading), instant session-scoped Audio only, launch-time and forced
+updates, and the **first release signed with the permanent key** — installs
+before it must uninstall once; verified on the emulator that build 156
+installs over a key-signed copy with history and subscriptions intact.
+
+2.33.2 (Android 155, iOS 154): autoplay
 follows the video that just ended, led by YouTube's own pick; Up next never
 empty (both row shapes, then fallbacks); "Play next" queues; dates with the
 relative age in brackets; channel pictures on related rows and in saved
