@@ -39,7 +39,22 @@ class FeedPreviewCoordinator extends ChangeNotifier {
     this._network,
     this._battery,
   })  : _repo = repository,
-        _config = settings;
+        _config = settings {
+    _playback.addListener(_onPlayback);
+  }
+
+  /// The moment a real video starts LOADING, any preview goes. Waiting for it
+  /// to be *playing* is too late: on a phone the resolve takes seconds, and a
+  /// preview that finished setting up inside that window started, took audio
+  /// focus, and Android answered by stopping the video the user had just
+  /// opened for good — reported as "videos don't play until I minimise and
+  /// reopen". The watch page is a see-through route over the feed, so the
+  /// feed's cards stay "visible" underneath it and nothing else stops them.
+  void _onPlayback() {
+    if (_playback.isLoading || _playback.isPlaying) {
+      if (_activeId != null || _pendingId != null || _player != null) stop();
+    }
+  }
 
   final YtRepository _repo;
   final SettingsService _config;
@@ -72,7 +87,8 @@ class FeedPreviewCoordinator extends ChangeNotifier {
         dataSaver: _config.dataSaver,
         audioOnly: _config.audioOnly,
         isMobile: _network?.isMobile ?? false,
-        somethingPlaying: _playback.current != null && _playback.isPlaying,
+        somethingPlaying: _playback.current != null &&
+            (_playback.isPlaying || _playback.isLoading),
         batterySaver: _config.batterySaver,
         batteryLow: _battery?.isLow ?? false,
       );
@@ -159,7 +175,8 @@ class FeedPreviewCoordinator extends ChangeNotifier {
 
       final controller = BetterPlayerController(
         BetterPlayerConfiguration(
-          autoPlay: true,
+          // Started by hand below, once it can no longer take audio focus.
+          autoPlay: false,
           looping: true,
           fit: BoxFit.cover,
           aspectRatio: 16 / 9,
@@ -181,11 +198,18 @@ class FeedPreviewCoordinator extends ChangeNotifier {
         ),
       );
       await controller.setVolume(0);
+      // A muted preview must never take audio focus. Every player in the
+      // vendored plugin asks for it (PATCHES.md, so a call pauses the video),
+      // and focus is exclusive: a preview starting while the real video loads
+      // makes Android stop the real one permanently. Mixing with others is
+      // what skips the focus request.
+      controller.setMixWithOthers(true);
 
       if (_pendingId != video.id || !_allowed) {
         controller.dispose(forceDispose: true);
         return;
       }
+      await controller.play();
 
       _player = controller;
       _activeId = video.id;
@@ -228,6 +252,7 @@ class FeedPreviewCoordinator extends ChangeNotifier {
 
   @override
   void dispose() {
+    _playback.removeListener(_onPlayback);
     _dwellTimer?.cancel();
     _stopTimer?.cancel();
     unawaited(_disposePlayer());
