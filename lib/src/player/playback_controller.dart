@@ -260,6 +260,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       isAudioFallback ||
       _offlineAudio;
 
+  /// True when the permanent Settings switch is why there is no picture, so
+  /// the player can say so instead of leaving it a mystery.
+  bool get audioOnlyFromSettings => _config.audioOnly;
+
   /// Audio only, switched on from the watch page.
   ///
   /// Not the Settings default. The watch page used to write the global

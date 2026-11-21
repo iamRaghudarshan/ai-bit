@@ -23,6 +23,8 @@ import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
 import 'package:ai_bit/src/data/update_service.dart';
+import 'package:ai_bit/src/data/settings.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ai_bit/src/data/yt_repository.dart';
 import 'package:ai_bit/src/player/playback_controller.dart';
 import 'package:ai_bit/src/core/settings_rules.dart';
@@ -35,6 +37,28 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('leftover audio only from older versions', () {
+    test('a saved Audio only is cleared on the first launch', () async {
+      // What an iPhone carried through TestFlight updates from 2.33.2.
+      SharedPreferences.setMockInitialValues({'audio_only': true});
+      final settings = await SettingsService.load();
+      expect(settings.audioOnly, isFalse);
+    });
+
+    test('turned on again afterwards, it stays on', () async {
+      SharedPreferences.setMockInitialValues({'audio_only': true});
+      var settings = await SettingsService.load();
+      settings.audioOnly = true; // a deliberate choice in Settings
+      settings = await SettingsService.load(); // next launch
+      expect(settings.audioOnly, isTrue);
+    });
+
+    test('a fresh install is untouched', () async {
+      SharedPreferences.setMockInitialValues({});
+      expect((await SettingsService.load()).audioOnly, isFalse);
+    });
+  });
+
   group('player requests run together', () {
     // The ios client never carries the progressive stream; android does.
     String body({required bool muxed}) => jsonEncode({

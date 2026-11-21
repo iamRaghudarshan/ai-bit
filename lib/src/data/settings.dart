@@ -34,8 +34,28 @@ class SettingsService extends ChangeNotifier {
   /// Sentinel for "let the player pick the highest available".
   static const autoQuality = 'Auto';
 
-  static Future<SettingsService> load() async =>
-      SettingsService._(await SharedPreferences.getInstance());
+  static Future<SettingsService> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    await resetLeftoverAudioOnly(prefs);
+    return SettingsService._(prefs);
+  }
+
+  static const _kAudioOnlyReset = 'audio_only_reset_2334';
+
+  /// Clears an "Audio only" left switched on by an older version, once.
+  ///
+  /// Up to 2.33.2 the switch on the watch page wrote this permanent setting,
+  /// so a single tap meant every video opened as sound only from then on,
+  /// with nothing on the player saying why. iPhones kept that through every
+  /// TestFlight update — reported as "on iOS a video always opens as audio".
+  /// The switch on the player is per-sitting now, so the leftover is cleared
+  /// on the first launch of a build carrying this; turning it on again in
+  /// Settings is a deliberate choice and is never undone.
+  static Future<void> resetLeftoverAudioOnly(SharedPreferences prefs) async {
+    if (prefs.getBool(_kAudioOnlyReset) ?? false) return;
+    await prefs.setBool(_kAudioOnly, false);
+    await prefs.setBool(_kAudioOnlyReset, true);
+  }
 
   ThemeMode get themeMode =>
       ThemeMode.values[_prefs.getInt(_kTheme) ?? ThemeMode.dark.index];
