@@ -80,9 +80,15 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.3, build 156** (tag `android-2.33.3`), published
-to `safenesthub.in` (`bf9fe477…fc70`, 77,826,773 bytes; served copy hashed).
-**Latest iOS build is 2.33.3, build 157** (tag `v2.33.3`). 2.33.3: feed
+**Latest Android build is 2.33.4, build 158** (tag `android-2.33.4`), published
+to `safenesthub.in` (`868506fd…b17b`, 77,826,805 bytes; served copy hashed).
+**Latest iOS build is 2.33.4, build 159** (tag `v2.33.4`). 2.33.4: the
+audio-only artwork moved beneath the player controls (its pause button had
+been a picture over the Next control, so pausing skipped the video) and a
+Show video button; pause, next and Show video retested on build 158 itself.
+
+2.33.3 (Android 156, iOS 157), published
+to `safenesthub.in` (`bf9fe477…fc70`). 2.33.3: feed
 previews no longer take audio focus (videos that would not start until
 minimised), faster start (parallel player requests, bounded probe, thumbnail
 while loading), instant session-scoped Audio only, launch-time and forced
