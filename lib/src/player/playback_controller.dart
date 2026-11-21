@@ -645,10 +645,13 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
+    final startTimer = Stopwatch()..start();
     try {
       // A finished download always wins: it plays instantly, costs no data and
       // works with no network at all.
       final offlinePath = await _offlineFile(video.id);
+      debugPrint('AI BIT start: ${video.id} offline check '
+          '${startTimer.elapsedMilliseconds}ms');
       final sources = offlinePath != null
           ? PlaybackSources(url: offlinePath, qualities: const {})
           // Resolved in full even in audio mode.
@@ -676,8 +679,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         _mobileAudio = false;
       }
       if (token != _playToken) return;
+      debugPrint('AI BIT start: ${video.id} sources ready '
+          '${startTimer.elapsedMilliseconds}ms');
       final resumeAt = await _db.resumePosition(video.id);
       await _attach(video, sources, startAt: resumeAt);
+      debugPrint('AI BIT start: ${video.id} player attached '
+          '${startTimer.elapsedMilliseconds}ms');
       _followUpgrade(video, sources, token);
       _loading = false;
       // Opening a video after the day's Kids allowance is gone loads it and

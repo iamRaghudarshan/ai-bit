@@ -1588,8 +1588,11 @@ class YtRepository {
     // Ask YouTube's player endpoint first. It is the only source of the HLS
     // ladder, which is both the way to get above 360p and the only way to play
     // a live stream at all.
+    final timer = Stopwatch()..start();
     try {
       final streams = await _player.fetch(videoId);
+      debugPrint('AI BIT start: $videoId player answered in '
+          '${timer.elapsedMilliseconds}ms');
       if (streams != null) {
         if (audioOnly && streams.audioUrl != null) {
           return _cache(key, PlaybackSources(
@@ -1632,6 +1635,8 @@ class YtRepository {
                     ? _inlineProbeBudget
                     : const Duration(seconds: 8),
               );
+        debugPrint('AI BIT start: $videoId probe done at '
+            '${timer.elapsedMilliseconds}ms (uncapped=$uncapped)');
         if (uncapped ?? false) {
           final generated = await _generatedSources(
             key,
