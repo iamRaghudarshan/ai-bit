@@ -80,9 +80,18 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.5, build 160** (tag `android-2.33.5`), published
-to `safenesthub.in` (`e20d5ae1…f8f1`, 77,826,805 bytes; served copy hashed).
-**Latest iOS build is 2.33.5, build 161** (tag `v2.33.5`). 2.33.5: a
+**Latest Android build is 2.33.6, build 162** (tag `android-2.33.6`), published
+to `safenesthub.in` (`c7be3f03…09a5`; served copy hashed). **Latest iOS build
+is 2.33.6, build 163** (tag `v2.33.6`). 2.33.6: the mini player's X now
+supersedes the load, upgrade and countdown behind it (closing mid-load used to
+play on with no bar); a load waits at most 15s behind another and an attach at
+most 15s for ready; cards on screen resolve before the tap (`TapAhead`), the
+queue head is warmed. **Built without device testing** — the AIBitPhone
+emulator hung on every boot (QEMU hanging threads) from 22 November until the
+PC is restarted; retest closing, minimising and many videos on it.
+
+2.33.5 (Android 160, iOS 161), published
+to `safenesthub.in` (`e20d5ae1…f8f1`). 2.33.5: a
 permanent Audio only left on by the old watch-page switch is reset once
 (`SettingsService.resetLeftoverAudioOnly`) — iPhones kept it through
 TestFlight updates, so every video opened as sound only. Reproduced on the
