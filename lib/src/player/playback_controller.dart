@@ -512,19 +512,31 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   int _playToken = 0;
   Future<void>? _pendingLoad;
 
+  /// The longest a new load waits behind an older one, and the longest an
+  /// attach waits for the native player to report the source ready.
+  static const _loadWaitLimit = Duration(seconds: 15);
+
   Future<void> play(
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
     bool rebuild = false,
   }) async {
-    // Wait for any load already running, so two never touch the player at once.
+    // Supersede whatever is loading now, before waiting for it: the older load
+    // checks this token after each step and stands down, instead of finishing
+    // a resolve and an attach for a video nobody wants any more.
+    _playToken++;
+    // Wait for any load already running, so two never touch the player at once
+    // — but not forever. A load stuck on a dead connection used to hold every
+    // later tap behind it, so no video at all would start until the app was
+    // restarted.
     final previous = _pendingLoad;
     if (previous != null) {
       try {
-        await previous;
+        await previous.timeout(_loadWaitLimit);
       } catch (_) {
-        // Its own caller reported it; this one carries on regardless.
+        // Its own caller reported it, or it is stuck; either way this one
+        // carries on.
       }
     }
     final completer = Completer<void>();
@@ -686,9 +698,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       debugPrint('AI BIT start: ${video.id} sources ready '
           '${startTimer.elapsedMilliseconds}ms');
       final resumeAt = await _db.resumePosition(video.id);
+      // Closed or replaced while the position was read.
+      if (token != _playToken) return;
       await _attach(video, sources, startAt: resumeAt);
       debugPrint('AI BIT start: ${video.id} player attached '
           '${startTimer.elapsedMilliseconds}ms');
+      if (token != _playToken) {
+        // Closed with the mini player's X while the source was being set up.
+        // stop() has already torn down the player it saw, but an attach that
+        // had to create one made it after that, and left alone it would play
+        // with no bar on screen to stop it.
+        if (_current == null) _discardOrphanPlayer();
+        return;
+      }
       _followUpgrade(video, sources, token);
       _loading = false;
       // Opening a video after the day's Kids allowance is gone loads it and
@@ -735,22 +757,27 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       _player = BetterPlayerController(_configuration(startAt: startAt))
         ..setBetterPlayerGlobalKey(playerKey)
         ..addEventsListener(_onPlayerEvent);
-      await _player!.setupDataSource(dataSource);
+      await _setup(_player!, dataSource);
       unawaited(_syncAutomaticPip());
     } else {
-      await _player!.setupDataSource(dataSource);
-      if (startAt != null) await _player!.seekTo(startAt);
-      await _player!.play();
+      final player = _player!;
+      await _setup(player, dataSource);
+      // stop() may have run while the source was being set up.
+      if (!identical(_player, player)) return;
+      if (startAt != null) await player.seekTo(startAt);
+      await player.play();
     }
+    final player = _player;
+    if (player == null) return;
 
-    _player!.videoPlayerController?.removeListener(_onValueChanged);
-    _player!.videoPlayerController?.addListener(_onValueChanged);
+    player.videoPlayerController?.removeListener(_onValueChanged);
+    player.videoPlayerController?.addListener(_onValueChanged);
     // The source now belongs to this video; its ticks count again.
     _awaitingSource = false;
     // Prefer a speed remembered for this channel, falling back to the global
     // default. Applied here so it takes effect the moment the video loads.
     final channelSpeed = _config.speedForChannel(video.channelId);
-    await _player!.setSpeed(channelSpeed ?? _config.playbackSpeed);
+    await player.setSpeed(channelSpeed ?? _config.playbackSpeed);
 
     _cancelCountdown();
     _endScreen = false;
@@ -776,6 +803,28 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // manifest has been read, so this waits for them rather than firing at
     // setup and finding an empty list.
     unawaited(_applyPreferredQualityWhenReady());
+  }
+
+  /// Hands [player] a new source, waiting at most [_loadWaitLimit] for it.
+  ///
+  /// `setupDataSource` completes only when the native player reports the
+  /// source ready, which on a connection that has quietly died is never.
+  /// Every later load queued behind that one, so a single stalled video
+  /// stopped every other video from starting — "some videos do not play"
+  /// until the app was killed. Past the limit the attach carries on: the
+  /// player keeps trying in the background and reports buffering, an error or
+  /// playback through its events as usual, so nothing is lost by not waiting.
+  Future<void> _setup(
+    BetterPlayerController player,
+    BetterPlayerDataSource source,
+  ) async {
+    await player.setupDataSource(source).timeout(
+      _loadWaitLimit,
+      onTimeout: () {
+        debugPrint('AI BIT: source still not ready after '
+            '${_loadWaitLimit.inSeconds}s — carrying on without it');
+      },
+    );
   }
 
   /// Builds the data source for one URL of [video]. Shared by the initial load
@@ -2057,6 +2106,23 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// So the state is cleared and listeners are notified in the middle, with
   /// the fallible work on either side wrapped. Bookkeeping still goes first,
   /// because both calls read fields that are about to be cleared.
+  /// Disposes a player an attach created after [stop] had already run.
+  void _discardOrphanPlayer() {
+    final player = _player;
+    _player = null;
+    _playing = false;
+    if (player == null) return;
+    debugPrint('AI BIT: dropping a player that started after close');
+    try {
+      player.videoPlayerController?.removeListener(_onValueChanged);
+      player.removeEventsListener(_onPlayerEvent);
+      player.dispose(forceDispose: true);
+    } catch (e) {
+      debugPrint('AI BIT: could not dispose the orphan player — $e');
+    }
+    notifyListeners();
+  }
+
   Future<void> stop() async {
     final player = _player;
 
@@ -2071,6 +2137,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     } catch (e) {
       debugPrint('AI BIT: could not bank state while stopping — $e');
     }
+
+    // Everything still in flight belongs to the video being closed: a load
+    // part-way through its resolve, a pending HD upgrade, a quality wait and
+    // the end-screen countdown. Each used to carry on after the X and start
+    // the video again — or the next one — with no bar on screen to stop it.
+    _playToken++;
+    _qualityToken++;
+    _cancelCountdown();
+    _endScreen = false;
+    _loading = false;
+    _awaitingSource = false;
+    _error = null;
+    _queue.clear();
+    _unshuffledQueue = null;
 
     _watchMillis = 0;
     _watchTickAt = null;
