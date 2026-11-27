@@ -1452,7 +1452,7 @@ class AppDatabase {
       SELECT p.id, p.name, p.created_at,
              COUNT(i.video_id) AS item_count,
              (SELECT video_id FROM playlist_items
-               WHERE playlist_id = p.id ORDER BY added_at DESC LIMIT 1) AS cover
+               WHERE playlist_id = p.id ORDER BY added_at DESC, rowid DESC LIMIT 1) AS cover
       FROM playlists p
       LEFT JOIN playlist_items i ON i.playlist_id = p.id
       GROUP BY p.id
@@ -1520,7 +1520,9 @@ class AppDatabase {
       'playlist_items',
       where: 'playlist_id = ?',
       whereArgs: [playlistId],
-      orderBy: 'added_at DESC',
+      // rowid breaks ties: adds in the same millisecond (a fast import, or
+      // CI on a quick Mac) otherwise come back in no defined order.
+      orderBy: 'added_at DESC, rowid DESC',
     );
     return rows.map(VideoBrief.fromMap).toList();
   }

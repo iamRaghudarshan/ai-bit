@@ -80,7 +80,13 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.34.0, build 164** (tag `android-2.34.0`), published
+**Latest Android build is 2.34.1, build 166; iOS 2.34.1, build 167.** 2.34.1
+is search: the response is parsed in a background isolate (results ~1.1s on
+the emulator, was 5-6s), the desktop answer's Shorts shelves are merged into
+one row after the 2nd result as the phone app lays it out
+(`phoneSearchLayout`), and the box + chips hide on scroll down.
+
+2.34.0, build 164 (tag `android-2.34.0`), was published
 to `safenesthub.in` (`fd1f7883…0b5a`; served copy hashed; CI APK verified on
 the emulator over existing data). **Latest iOS build is 2.34.0, build 165**
 (tag `v2.34.0`). 2.34.0 is the YouTube-parity release: one continuous
