@@ -1444,11 +1444,20 @@ class _RevealWhenSelectedState extends State<_RevealWhenSelected> {
   void _reveal() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      Scrollable.ensureVisible(
-        context,
+      // Only the chip row's own scroll view, never the ones above it.
+      // Scrollable.ensureVisible walks EVERY enclosing scrollable, and since
+      // the chips moved into the feed's floating header that included the
+      // feed itself: the header rebuilds while scrolling, the selected chip
+      // asked to be revealed again, and the whole feed was dragged back to
+      // the top — Home could not be scrolled at all (found on AIBitPhone).
+      final row = Scrollable.maybeOf(context);
+      final box = context.findRenderObject();
+      if (row == null || box == null) return;
+      row.position.ensureVisible(
+        box,
+        alignment: 0.3,
         duration: const Duration(milliseconds: 250),
         alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
-        alignment: 0.3,
       );
     });
   }
