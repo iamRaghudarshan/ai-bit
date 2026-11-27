@@ -24,6 +24,7 @@ Future<void> showDescriptionSheet(
   final statLine = metaLine(stats);
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,

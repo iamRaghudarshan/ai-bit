@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../data/models.dart';
+import '../core/app_navigator.dart';
 import 'shorts_page.dart';
-import 'widgets/now_playing_overlay.dart';
 
 /// The vertical Shorts player as a pushed, full-screen route.
 ///
@@ -29,13 +29,13 @@ class ShortsRoute {
     if (shorts.isEmpty) return Future.value();
     final list = [for (final s in shorts) s.isShort ? s : s.asShort()];
     final start = startIndex.clamp(0, list.length - 1);
-    return Navigator.of(context).push(
+    // Onto the content navigator, so the navigation bar stays under it as
+    // on YouTube; the player sheet hides while this is the top page (see
+    // ContentRouteObserver.shortsOnTop).
+    return pushContent(
+      context,
       PageRouteBuilder<void>(
-        // Named so the now-playing overlay knows not to paint its bar over a
-        // screen that is itself the player. See RouteStackObserver.
-        settings: const RouteSettings(
-          name: RouteStackObserver.shortsRouteName,
-        ),
+        settings: const RouteSettings(name: AppRoutes.shorts),
         opaque: true,
         transitionDuration: const Duration(milliseconds: 220),
         reverseTransitionDuration: const Duration(milliseconds: 180),

@@ -585,6 +585,12 @@ class SettingsPage extends StatelessWidget {
 
   Future<void> _checkForUpdates(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
+    // The spinner goes to the ROOT navigator (showDialog's default), while
+    // this page lives on the content navigator inside the shell. Popping
+    // `Navigator.of(context)` therefore closed Settings and left the spinner
+    // up over the whole app with no way past it, so the dialog's own
+    // navigator is captured here and popped below.
+    final dialogNavigator = Navigator.of(context, rootNavigator: true);
     showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -594,8 +600,10 @@ class SettingsPage extends StatelessWidget {
     final service = UpdateService();
     final result = await service.check();
     service.close();
+    // Dismissed even if this page has gone meanwhile: a barrier-locked
+    // spinner with nothing left to close it is the worst outcome here.
+    if (dialogNavigator.mounted) dialogNavigator.pop();
     if (!context.mounted) return;
-    Navigator.of(context).pop(); // dismiss the spinner
 
     // A reachability failure — say so plainly.
     if (result.latest == null) {
@@ -767,6 +775,7 @@ class SettingsPage extends StatelessWidget {
       return;
     }
     final choice = await showModalBottomSheet<String>(
+      useRootNavigator: true,
       context: context,
       builder: (sheet) => SafeArea(
         child: Column(
@@ -806,6 +815,7 @@ class SettingsPage extends StatelessWidget {
     required int current,
     required List<(int, String)> options,
   }) => showModalBottomSheet<int>(
+    useRootNavigator: true,
     context: context,
     // The theme now gives every sheet a drag handle; scroll-controlled so a
     // long option list grows past the default 9/16 cap instead of clipping.
@@ -849,6 +859,7 @@ class SettingsPage extends StatelessWidget {
       ('Amber', 0xFFF59E0B),
     ];
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       builder: (context) => SafeArea(
         child: Padding(
@@ -921,6 +932,7 @@ class SettingsPage extends StatelessWidget {
       });
 
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       // Up to nine renditions with subtitles, plus the theme's drag handle:
       // more than the default 9/16 cap holds.

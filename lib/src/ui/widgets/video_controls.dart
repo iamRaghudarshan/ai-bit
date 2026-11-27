@@ -17,6 +17,7 @@ import '../../data/models.dart';
 import '../../data/player_client.dart';
 import '../../data/settings.dart';
 import '../../player/playback_controller.dart';
+import '../player_sheet_controller.dart';
 import 'cast_button.dart';
 import 'end_screen.dart';
 import 'player_settings_sheet.dart';
@@ -128,10 +129,33 @@ class _VideoControlsState extends State<VideoControls>
     _wasPlaying = _isPlaying;
     _playPause.value = _wasPlaying ? 1 : 0;
     _restartHideTimer();
+    PlayerSheetController.compact.addListener(_onSheetCompact);
+  }
+
+  /// The sheet left the expanded state (a drag began, or it docked): the
+  /// controls go, so the mini player and the drag show the bare picture, and
+  /// reopening the sheet shows the video rather than whatever bar was up.
+  void _onSheetCompact() {
+    if (!mounted) return;
+    if (PlayerSheetController.compact.value) {
+      _hideTimer?.cancel();
+      // A hold in progress ends here: the controls are about to unmount
+      // their detector, and a disposed recogniser that had already won fires
+      // neither end nor cancel — the video stayed at 2x with every later
+      // hold refused.
+      _endHold();
+      _pendingTap?.cancel();
+      _pendingTap = null;
+      if (_visible) _setVisible(false);
+    } else {
+      // Back open: rebuild so the (hidden) controls are mounted again.
+      setState(() {});
+    }
   }
 
   @override
   void dispose() {
+    PlayerSheetController.compact.removeListener(_onSheetCompact);
     _hideTimer?.cancel();
     _pendingTap?.cancel();
     _seekHide?.cancel();
@@ -386,6 +410,18 @@ class _VideoControlsState extends State<VideoControls>
     );
   }
 
+  /// The controls drawing nothing. That unmounts the hold detector, whose
+  /// end and cancel then never fire, so a hold still in force is ended here
+  /// (after the frame, since ending it sets state).
+  Widget _nothing() {
+    if (_holding) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _endHold();
+      });
+    }
+    return const SizedBox.shrink();
+  }
+
   Widget _buildControls(
     BuildContext context,
     PlaybackController playback,
@@ -400,11 +436,16 @@ class _VideoControlsState extends State<VideoControls>
     // small to hit. Android draws its own play/pause and skip over a PiP
     // window, as it does for YouTube.
     if (!widget.controller.controlsEnabled || (value?.isPip ?? false)) {
-      return const SizedBox.shrink();
+      return _nothing();
+    }
+    // Nothing over the picture while the player sheet is docked or being
+    // dragged — the mini player is the bare video, as on YouTube.
+    if (PlayerSheetController.compact.value && !fullscreen) {
+      return _nothing();
     }
     // Shorts draw their own surface; none of this belongs over one.
     if ((playback.current?.isShort ?? false) && !fullscreen) {
-      return const SizedBox.shrink();
+      return _nothing();
     }
     // The player reports no duration until the manifest has been read, and on
     // some sources never — which showed a total of 0:00 next to a running
@@ -754,9 +795,9 @@ class _VideoControlsState extends State<VideoControls>
                 if (fullscreen) {
                   widget.controller.exitFullScreen();
                 } else {
-                  // Pops the watch page; the mini player takes over and
-                  // playback carries on.
-                  Navigator.of(context).maybePop();
+                  // Collapses the player sheet; the mini player takes over
+                  // and playback carries on.
+                  PlayerSheetController.instance?.collapse();
                 }
               },
             ),

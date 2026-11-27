@@ -16,6 +16,7 @@ import 'sheets.dart';
 /// no way to see it — a queue you cannot inspect is one you cannot trust.
 Future<void> showQueueSheet(BuildContext context) {
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,

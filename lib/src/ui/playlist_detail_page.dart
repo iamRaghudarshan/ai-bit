@@ -142,6 +142,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   void _showMenu() {
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Column(

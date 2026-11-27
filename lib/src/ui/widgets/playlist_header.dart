@@ -39,6 +39,7 @@ class PlaylistHeader extends StatelessWidget {
 
   void _showDescription(BuildContext context) {
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       useSafeArea: true,

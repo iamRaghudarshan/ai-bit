@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_navigator.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/saved_playlists.dart';
@@ -51,7 +52,8 @@ Future<List<LibraryPlaylist>> loadLibraryPlaylists(AppDatabase db) async {
 /// Opens [entry]; completes when the viewer comes back.
 Future<void> openLibraryPlaylist(BuildContext context, LibraryPlaylist entry) {
   if (entry.local != null) {
-    return Navigator.of(context).push(
+    return pushContent(
+      context,
       MaterialPageRoute<void>(
         builder: (_) => PlaylistDetailPage(playlist: entry.local!),
       ),
@@ -71,6 +73,7 @@ Future<void> showLibraryPlaylistMenu(
   final db = context.read<AppDatabase>();
   final local = entry.local;
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     builder: (sheetContext) => SafeArea(
       child: Column(

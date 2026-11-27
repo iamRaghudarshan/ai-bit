@@ -137,6 +137,7 @@ Future<void> showCommentsSheet(
   CommentPage first,
 ) {
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,
@@ -157,6 +158,7 @@ Future<void> showCommentsSheetLoading(
   Color? barrierColor,
 }) {
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,

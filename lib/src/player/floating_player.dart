@@ -69,6 +69,16 @@ class FloatingPlayer {
 
   static bool _handlerInstalled = false;
   static _ResumeWatcher? _resumeWatcher;
+  static void Function(bool inPip)? _onPictureInPicture;
+
+  /// Hears the Activity entering and leaving Picture in Picture, whichever
+  /// way it got there — including the automatic PiP that leaving the app
+  /// triggers, which the player plugin never reports. Android only; a no-op
+  /// elsewhere. `main.dart` hands it `PlaybackController.setInPictureInPicture`.
+  static void watchPictureInPicture(void Function(bool inPip) onChanged) {
+    _onPictureInPicture = onChanged;
+    _ensureHandler();
+  }
 
   static void _ensureHandler() {
     if (_handlerInstalled || !isSupported) return;
@@ -79,6 +89,8 @@ class FloatingPlayer {
             ? call.arguments as String
             : 'The floating player could not be shown.';
         _failures.add(message);
+      } else if (call.method == 'onPictureInPictureChanged') {
+        _onPictureInPicture?.call(call.arguments == true);
       }
       // Anything else is a native side newer than this file. Ignored rather
       // than thrown back, because an unhandled reply would only produce log

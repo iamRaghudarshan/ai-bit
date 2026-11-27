@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_navigator.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/search_client.dart';
@@ -51,7 +52,7 @@ class SearchPage extends StatefulWidget {
   );
 
   static Future<void> open(BuildContext context, {String? initialQuery}) =>
-      Navigator.of(context).push(route(initialQuery: initialQuery));
+      pushContent(context, route(initialQuery: initialQuery));
 
   @override
   State<SearchPage> createState() => SearchPageState();
@@ -436,6 +437,7 @@ class SearchPageState extends State<SearchPage> {
           g,
     ];
     await showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       showDragHandle: true,

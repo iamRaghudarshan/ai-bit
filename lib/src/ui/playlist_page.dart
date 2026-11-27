@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../core/app_navigator.dart';
 import '../data/db.dart';
 import '../data/models.dart';
 import '../data/saved_playlists.dart';
@@ -25,7 +26,8 @@ class PlaylistPage extends StatefulWidget {
   final PlaylistBrief playlist;
 
   static Future<void> open(BuildContext context, PlaylistBrief playlist) {
-    return Navigator.of(context).push(
+    return pushContent(
+      context,
       MaterialPageRoute<void>(builder: (_) => PlaylistPage(playlist: playlist)),
     );
   }
@@ -180,6 +182,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
 
   void _showMenu() {
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Column(

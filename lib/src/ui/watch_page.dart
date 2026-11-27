@@ -1,20 +1,15 @@
 import 'dart:async';
-import 'dart:math' as math;
 import 'dart:ui' as ui;
 
-import 'package:better_player_plus/better_player_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
-import '../core/app_navigator.dart';
 import '../core/chapters.dart';
 import '../core/format.dart';
-import '../core/seek_session.dart' show swipeEntersFullscreen;
 import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/download_manager.dart';
@@ -24,66 +19,48 @@ import '../data/ranker_trainer.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'channel_page.dart';
+import 'player_sheet_controller.dart';
 import 'widgets/comments_sheet.dart';
 import 'widgets/description_sheet.dart';
-import 'widgets/now_playing_overlay.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
-/// Full-screen watch experience: player surface, metadata, actions, up next.
+/// The watch page's content: title, channel row, actions, comments teaser and
+/// Up next — everything below the video.
+///
+/// It is not a route any more. It is the expanded body of the one continuous
+/// player sheet (`PlayerSheet`), which also owns the video surface and the
+/// mini player; the sheet mounts one of these per video, keyed by its id, so
+/// a new video — tapped, autoplayed, skipped to from the lock screen — always
+/// arrives as a fresh page scrolled to the top.
 class WatchPage extends StatefulWidget {
   const WatchPage({super.key, required this.video});
 
   final VideoBrief video;
 
-  /// Opens the watch page over whatever is showing.
+  /// Plays [video] and expands the player sheet over whatever is showing.
   ///
-  /// Uses a non-opaque route that slides up from the bottom, so the page
-  /// underneath stays visible while the player is dragged down to minimise —
-  /// the interaction the real app is built around. Completes when the user
-  /// dismisses it, which lets callers refresh history-dependent lists.
+  /// Completes when the sheet next collapses to the mini player or closes,
+  /// which lets callers refresh history-dependent lists — the same moment the
+  /// old pushed route used to complete at.
   static Future<void> open(BuildContext context, VideoBrief video) {
-    return Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        // Named so RouteStackObserver can tell the player's own screens apart
-        // from every other pushed route: the persistent now-playing bar must
-        // not be painted over the watch page or over the fullscreen route the
-        // player pushes above it.
-        settings: const RouteSettings(name: RouteStackObserver.watchRouteName),
-        opaque: false,
-        barrierColor: Colors.black26,
-        transitionDuration: const Duration(milliseconds: 260),
-        reverseTransitionDuration: const Duration(milliseconds: 200),
-        pageBuilder: (_, _, _) => WatchPage(video: video),
-        transitionsBuilder: (_, animation, _, child) => SlideTransition(
-          position: Tween(
-            begin: const Offset(0, 1),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-          ),
-          child: child,
-        ),
-      ),
-    );
+    final playback = context.read<PlaybackController>();
+    final before = playback.current?.id;
+    // Presented BEFORE play: play() moves the player's current video and
+    // notifies synchronously, which is what fulfils the sheet's request. A
+    // request made after that notification was never fulfilled, and pinned
+    // the sheet to this video even once the player moved back to `before`.
+    final presented = _present(video, currentBefore: before);
+    // Only (re)start the stream if this video is not already the live one —
+    // reopening what is in the mini player must not restart playback.
+    if (before != video.id) unawaited(playback.play(video));
+    return presented;
   }
 
-  /// Brings the playing video back from the now-playing bar.
-  ///
-  /// Two ways this used to fail, both reported as "tapping the minimised video
-  /// does nothing". The bar painted over pushed screens is built in
-  /// `MaterialApp.builder`, *outside* the Navigator, so `Navigator.of` threw
-  /// there and the tap was lost — the app's own navigator is used instead. And
-  /// a watch page left underneath a channel or playlist opened from it would
-  /// have had a second one stacked on top; it is removed first, so there is
-  /// only ever one watch page and it shows what is actually playing.
+  /// Brings the playing video back from the mini player.
   static Future<void> reopen(BuildContext context, VideoBrief video) {
-    final navigator = navigatorFor(context);
-    if (navigator == null) return Future.value();
-    for (final buried in appRouteStack.watchRoutes) {
-      if (buried.isActive && !buried.isCurrent) navigator.removeRoute(buried);
-    }
-    return open(navigator.context, video);
+    PlayerSheetController.instance?.expand();
+    return Future.value();
   }
 
   /// Starts [videos] at [startAt] and queues everything after it, so a channel
@@ -95,36 +72,32 @@ class WatchPage extends StatefulWidget {
   }) {
     if (videos.isEmpty) return Future.value();
     final index = startAt.clamp(0, videos.length - 1);
-    context.read<PlaybackController>().play(
-      videos[index],
-      upNext: videos.skip(index + 1).toList(),
+    final playback = context.read<PlaybackController>();
+    final before = playback.current?.id;
+    // One play, carrying the queue. Calling [open] after it would issue a
+    // second play without the queue whenever the first is still waiting
+    // behind an older load, and the newer ticket would win. Presented first,
+    // for the reason given in [open].
+    final presented = _present(videos[index], currentBefore: before);
+    unawaited(
+      playback.play(videos[index], upNext: videos.skip(index + 1).toList()),
     );
-    return open(context, videos[index]);
+    return presented;
+  }
+
+  static Future<void> _present(VideoBrief video, {String? currentBefore}) {
+    // A search box left focused would keep the keyboard over the video.
+    FocusManager.instance.primaryFocus?.unfocus();
+    final sheet = PlayerSheetController.instance;
+    if (sheet == null) return Future.value();
+    return sheet.open(video, currentId: currentBefore);
   }
 
   @override
   State<WatchPage> createState() => _WatchPageState();
 }
 
-class _WatchPageState extends State<WatchPage>
-    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  /// How far down the sheet must travel before releasing minimises it.
-  static const _dismissDistance = 130.0;
-  static const _dismissVelocity = 700.0;
-
-  late final AnimationController _settle = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 220),
-  );
-
-  /// How far the sheet has been dragged down, in pixels.
-  ///
-  /// A notifier rather than a field under `setState`: the drag fires on every
-  /// pointer move, and rebuilding the whole page — header, pill row, comments
-  /// preview, twenty up-next rows — per move was the stutter in the one
-  /// gesture made after nearly every tap. Only the translate listens now.
-  final ValueNotifier<double> _drag = ValueNotifier(0);
-
+class _WatchPageState extends State<WatchPage> with WidgetsBindingObserver {
   late VideoBrief _video = widget.video;
   yt.Video? _details;
   List<VideoBrief> _related = const [];
@@ -132,23 +105,13 @@ class _WatchPageState extends State<WatchPage>
 
   PlaybackController? _playback;
 
-  /// Where the spring-back started, read by the settle listener.
-  double _settleFrom = 0;
-
   @override
   void initState() {
     super.initState();
-    // Attached once. It used to be added inside _onDragEnd, which stacked a
-    // fresh listener on every spring-back and never removed any of them.
-    _settle.addListener(() {
-      _drag.value =
-          _settleFrom * (1 - Curves.easeOutCubic.transform(_settle.value));
-    });
-    _start();
-    // Follow the player when it moves on by itself.
-    _playback = context.read<PlaybackController>()..addListener(_followPlayer);
+    _playback = context.read<PlaybackController>()..addListener(_onPlayback);
     WidgetsBinding.instance.addObserver(this);
     _wasLandscape = _viewIsLandscape();
+    _loadDetails();
   }
 
   // ------------------------------------------------------------ rotation
@@ -198,9 +161,17 @@ class _WatchPageState extends State<WatchPage>
     }
     if (player.isFullScreen) return;
     _fullscreenByRotation = false;
+    // Only from the expanded watch page. Turning the phone while browsing
+    // with the mini player docked is not a request to fill the screen with
+    // it, and YouTube does not treat it as one.
+    final sheet = PlayerSheetController.instance;
+    if (sheet == null || !sheet.isExpanded || sheet.animation.value < 1) {
+      return;
+    }
     final current = playback.current;
     if (current == null || current.id != _video.id || current.isShort) return;
     if (playback.error != null || playback.isLoading) return;
+    // Nothing over the shell: a dialog, a bottom sheet or the lock pad.
     if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
     // A tablet has the room for the page beside the video; turning one is
     // not a request for fullscreen.
@@ -225,33 +196,11 @@ class _WatchPageState extends State<WatchPage>
     });
   }
 
-  /// An upward swipe on the inline video.
-  void _enterFullscreen() {
-    final playback = _playback;
-    final player = playback?.player;
-    if (player == null || player.isFullScreen) return;
-    if (playback?.current?.id != _video.id) return;
-    _fullscreenByRotation = false;
-    player.enterFullScreen();
-  }
-
-  /// Adopts whatever the player switched to.
-  ///
-  /// The page decides whether to show the video surface by comparing its own
-  /// video to the player's. Autoplay, the end-screen countdown and the lock
-  /// screen's skip buttons all change the player's video without telling the
-  /// page, so it stopped recognising what was playing and hid the surface
-  /// behind a spinner — the next video's audio played while the picture never
-  /// came back.
-  /// False until the player has actually reached this page's video.
-  ///
-  /// The listener is attached before [_start]'s own `play` has landed, so a
-  /// notification in that window still carries the *previous* video — and
-  /// following it would make the page adopt whatever was playing before,
-  /// fetch its details, then flip back a moment later.
-  bool _following = false;
-
-  void _followPlayer() {
+  /// One-shot notices the controller leaves for the page. Following the
+  /// player's video is no longer this page's job: the sheet mounts a new page
+  /// per video, so autoplay, the end screen and the lock screen's skip
+  /// buttons all arrive as a fresh page for the video actually playing.
+  void _onPlayback() {
     // A SponsorBlock auto-skip leaves a one-shot notice; show it and clear it.
     final notice = _playback?.sponsorSkipNotice;
     if (notice != null && mounted) {
@@ -264,57 +213,6 @@ class _WatchPageState extends State<WatchPage>
         ),
       );
     }
-
-    final current = _playback?.current;
-    if (!mounted) return;
-    if (current == null) {
-      // Closed from the now-playing bar while this page sat underneath a
-      // channel or playlist opened from it. Left in place, backing out of that
-      // page landed on a dead player for a video nobody is watching.
-      final route = ModalRoute.of(context);
-      if (route != null && route.isActive && !route.isCurrent) {
-        Future.microtask(() {
-          if (route.isActive && !route.isCurrent) {
-            route.navigator?.removeRoute(route);
-          }
-        });
-      }
-      return;
-    }
-    if (current.id == _video.id) {
-      // The player is on our video: anything after this is a real move.
-      _following = true;
-      return;
-    }
-    if (!_following) return;
-    // Opening another video pushes a second watch page over this one; only the
-    // page on top should adopt the change, or the one underneath refetches
-    // details nobody is looking at.
-    //
-    // "On top" includes having the player's own fullscreen route above it:
-    // autoplay and the end screen's Play now both move on while fullscreen,
-    // and the page underneath must still adopt the new video, or leaving
-    // fullscreen landed on the previous video's details.
-    if (!(ModalRoute.of(context)?.isCurrent ?? true) &&
-        !(_playback?.player?.isFullScreen ?? false)) {
-      return;
-    }
-    setState(() {
-      _video = current;
-      _details = null;
-      _related = const [];
-    });
-    unawaited(_loadDetails());
-  }
-
-  Future<void> _start() async {
-    final playback = context.read<PlaybackController>();
-    // Only (re)start the stream if this video is not already the live one —
-    // reopening from the mini player must not restart playback.
-    if (playback.current?.id != _video.id) {
-      unawaited(playback.play(_video));
-    }
-    await _loadDetails();
   }
 
   Future<void> _loadDetails() async {
@@ -469,378 +367,79 @@ class _WatchPageState extends State<WatchPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _playback?.removeListener(_followPlayer);
-    _settle.dispose();
-    _drag.dispose();
+    _playback?.removeListener(_onPlayback);
     super.dispose();
   }
 
-  void _onDragUpdate(DragUpdateDetails details) {
-    // Downward only — dragging up should not lift the sheet off the top.
-    _drag.value = (_drag.value + details.delta.dy).clamp(0.0, 2000.0);
-  }
-
-  void _onDragEnd(DragEndDetails details) {
-    final velocity = details.velocity.pixelsPerSecond.dy;
-    if (_drag.value > _dismissDistance || velocity > _dismissVelocity) {
-      // Playback deliberately continues — popping only hides the surface, and
-      // the mini player takes over.
-      Navigator.of(context).maybePop();
-      return;
-    }
-    // Spring back to rest.
-    _settleFrom = _drag.value;
-    _settle
-      ..reset()
-      ..forward();
-  }
-
   void _openRelated(VideoBrief video) {
-    setState(() {
-      _video = video;
-      _details = null;
-      _related = const [];
-    });
-    context.read<PlaybackController>().play(video);
-    _loadDetails();
+    // The sheet mounts a fresh page for it, keyed by its id.
+    unawaited(WatchPage.open(context, video));
   }
 
   @override
   Widget build(BuildContext context) {
-    // `select`, not `watch`: this build needs one boolean, and watching the
-    // whole controller rebuilt the entire page — description, comment preview
-    // and up-next list — on every play, pause, quality change and caption
-    // toggle. It now rebuilds only when the answer actually changes.
-    final isCurrent = context.select<PlaybackController, bool>(
-      (playback) => playback.current?.id == _video.id,
-    );
-
-    // The sheet is built once per real change and handed in as `child`; the
-    // drag only moves it. No opacity fade any more: an Opacity below 1 over a
-    // subtree holding the platform video texture forces a saveLayer of the
-    // whole page on every frame of the gesture, which is the most expensive
-    // thing the compositor can be asked for on a mid-range phone. The
-    // translation alone reads as minimising.
-    return ValueListenableBuilder<double>(
-      valueListenable: _drag,
-      child: _buildSheet(isCurrent),
-      builder: (context, drag, child) => Transform.translate(
-        offset: Offset(0, drag),
-        child: child,
-      ),
-    );
-  }
-
-  Widget _buildSheet(bool isCurrent) {
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            // The video sits directly under the status bar, as in the real
-            // app. There used to be a grab-handle strip above it; dragging
-            // the video itself minimises, and the minimise chevron is in the
-            // player's own top bar.
-            //
-            // The bottom strip is excluded because that is where the seek bar
-            // lives: putting the whole player in a vertical-drag detector meant
-            // any scrub starting with slight downward movement was claimed by
-            // the sheet, and the seek bar could not be dragged at all.
-            _DragToMinimise(
-              onUpdate: _onDragUpdate,
-              onEnd: _onDragEnd,
-              onSwipeUp: _enterFullscreen,
-              child: _PlayerSurface(showPlayer: isCurrent),
-            ),
-            Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                physics: const ClampingScrollPhysics(),
-                children: [
-                  _Header(
-                    video: _video,
-                    details: _details,
-                    onSeek: (to) =>
-                        context.read<PlaybackController>().seek(to),
-                  ),
-                  _PillRow(
-                    video: _video,
-                    likeCount: _details?.engagement.likeCount,
-                  ),
-                  const SizedBox(height: 8),
-                  if (!YtRepository.isPreview)
-                    CommentsPreview(videoId: _video.id),
-                  const Divider(height: 24),
-                  if (_loadingDetails && _related.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(32),
-                      child: Center(child: CircularProgressIndicator()),
-                    )
-                  else if (_related.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Text(
-                        'No suggestions available for this video.',
-                        textAlign: TextAlign.center,
-                      ),
-                    )
-                  // Phones get full-width cards with no heading, as YouTube
-                  // draws its watch-page feed; a tablet's wider page keeps
-                  // compact rows, where a card would be absurdly large.
-                  else if (MediaQuery.sizeOf(context).width < 600) ...[
-                    for (final video in _related)
-                      VideoCard(
-                        video: video,
-                        onTap: () => _openRelated(video),
-                        onMenu: () => showVideoMenu(context, video),
-                      ),
-                  ] else ...[
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
-                      child: Text(
-                        'Up next',
-                        style: TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    for (final video in _related)
-                      VideoRow(
-                        video: video,
-                        onTap: () => _openRelated(video),
-                        onMenu: () => showVideoMenu(context, video),
-                      ),
-                  ],
-                  const SizedBox(height: 32),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Hosts the actual video surface, or a placeholder while streams resolve.
-class _PlayerSurface extends StatelessWidget {
-  const _PlayerSurface({required this.showPlayer});
-
-  final bool showPlayer;
-
-  @override
-  Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
-    final player = playback.player;
-
-    // 16:9 at full width — except on a phone held sideways outside
-    // fullscreen (the user left fullscreen without turning back), where a
-    // full-width 16:9 box is taller than the screen and pushed the rest of
-    // the page off it. Capped, and centred on black.
-    final screen = MediaQuery.sizeOf(context);
-    final height = math.min(screen.width * 9 / 16, screen.height * 0.62);
-    return SizedBox(
-      width: double.infinity,
-      height: height,
-      child: ColoredBox(
-        color: Colors.black,
-        child: Center(
-          child: AspectRatio(
-            aspectRatio: 16 / 9,
-            child: Builder(
-          builder: (context) {
-            if (playback.error != null) {
-              return _PlaybackError(
-                message: playback.error!,
-                onRetry: playback.reloadCurrent,
-              );
-            }
-            if (kIsWeb) return const _PreviewSurface();
-            final loading = playback.isLoading && !playback.isRebuilding;
-            if (player == null || !showPlayer || loading) {
-              // The thumbnail under the spinner, as YouTube does, rather than
-              // a black box: the page reads as the video arriving instead of
-              // as something failing to load.
-              final thumb = playback.current?.thumbUrl;
-              return Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (thumb != null && thumb.isNotEmpty)
-                    CachedNetworkImage(
-                      imageUrl: thumb,
-                      fit: BoxFit.cover,
-                      fadeInDuration: Duration.zero,
-                      errorWidget: (_, _, _) => const SizedBox.shrink(),
-                    ),
-                  const ColoredBox(color: Color(0x55000000)),
-                  const Center(
-                    child: CircularProgressIndicator(color: AppColors.brand),
-                  ),
-                ],
-              );
-            }
-            // Always mounted, including in audio mode.
-            //
-            // Returning the artwork *instead* of this widget left iOS with
-            // no render surface to attach to, so the native player failed
-            // every audio-only load with "Failed to load video: unknown
-            // error". The artwork is painted by the controls, never in place
-            // of the player.
-            //
-            // Nothing else is stacked here any more. The gestures, the stats
-            // panel and the end screen are drawn by VideoControls, which the
-            // plugin builds inline and in its fullscreen route alike; layered
-            // here they existed only inline.
-            return BetterPlayer(key: playback.playerKey, controller: player);
-          },
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Makes the video draggable to minimise, without stealing the seek bar.
-///
-/// A plain vertical-drag detector around the player competes with the seek bar
-/// for every touch, and the sheet usually wins — which is what made the seek bar
-/// undraggable. This one refuses to start a drag that begins in the bottom
-/// strip, so the two never contend.
-class _DragToMinimise extends StatefulWidget {
-  const _DragToMinimise({
-    required this.child,
-    required this.onUpdate,
-    required this.onEnd,
-    required this.onSwipeUp,
-  });
-
-  final Widget child;
-  final void Function(DragUpdateDetails) onUpdate;
-  final void Function(DragEndDetails) onEnd;
-
-  /// An upward swipe past 80dp or 600dp/s: enter fullscreen, as on YouTube.
-  /// Handled here, on the same recogniser as minimising, rather than by a
-  /// second vertical-drag detector inside the player — two would fight over
-  /// every vertical drag and the inner one would win, killing minimise.
-  final VoidCallback onSwipeUp;
-
-  @override
-  State<_DragToMinimise> createState() => _DragToMinimiseState();
-}
-
-class _DragToMinimiseState extends State<_DragToMinimise> {
-  /// Height at the bottom reserved for the seek bar and its controls.
-  static const _controlsZone = 64.0;
-
-  /// False when the gesture began over the seek bar, in which case every
-  /// update is ignored until the finger lifts.
-  ///
-  /// That strip is the only exception left. Brightness and volume used to take
-  /// a vertical drag on each half of the video, which made every downward
-  /// swipe ambiguous; with those gone, dragging anywhere on the picture
-  /// minimises, and only scrubbing is carved out.
-  bool _accepting = false;
-
-  /// Net vertical travel of the current drag; negative is upwards. The sheet
-  /// itself clamps at zero, so an upward drag moves nothing until released.
-  double _dy = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, box) => GestureDetector(
-        // translucent, so taps still reach the player's own controls.
-        behavior: HitTestBehavior.translucent,
-        onVerticalDragDown: (d) {
-          _accepting = d.localPosition.dy < box.maxHeight - _controlsZone;
-          _dy = 0;
-        },
-        onVerticalDragUpdate: (d) {
-          if (!_accepting) return;
-          _dy += d.delta.dy;
-          widget.onUpdate(d);
-        },
-        onVerticalDragEnd: (d) {
-          if (_accepting) {
-            widget.onEnd(d);
-            if (swipeEntersFullscreen(_dy, d.velocity.pixelsPerSecond.dy)) {
-              widget.onSwipeUp();
-            }
-          }
-          _accepting = false;
-        },
-        onVerticalDragCancel: () => _accepting = false,
-        child: widget.child,
-      ),
-    );
-  }
-}
-
-/// Stand-in for the video surface in the browser preview, where the native
-/// player plugin does not exist.
-class _PreviewSurface extends StatelessWidget {
-  const _PreviewSurface();
-
-  @override
-  Widget build(BuildContext context) {
-    final video = context.watch<PlaybackController>().current;
-    return Stack(
-      fit: StackFit.expand,
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    // Built only when the page's own data changes. The sheet moves and fades
+    // this subtree as a whole during a drag; nothing here runs per frame.
+    return ListView(
+      padding: EdgeInsets.zero,
+      // Its own controller: the sheet sits outside every content route, and
+      // borrowing the shell route's primary controller would tie this list
+      // to whatever else attaches to it.
+      primary: false,
+      physics: const ClampingScrollPhysics(),
       children: [
-        if (video != null)
-          Image.network(
-            video.thumbUrl,
-            fit: BoxFit.cover,
-            errorBuilder: (_, _, _) => const ColoredBox(color: Colors.black),
-          ),
-        const ColoredBox(color: Colors.black54),
-        const Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.play_circle_outline, size: 48, color: Colors.white70),
-              SizedBox(height: 8),
-              Text(
-                'Playback is not available in the browser preview',
-                style: TextStyle(color: Colors.white70, fontSize: 12),
-              ),
-              Text(
-                'Video plays on iOS and Android',
-                style: TextStyle(color: Colors.white38, fontSize: 11),
-              ),
-            ],
-          ),
+        _Header(
+          video: _video,
+          details: _details,
+          onSeek: (to) => context.read<PlaybackController>().seek(to),
         ),
-      ],
-    );
-  }
-}
-
-class _PlaybackError extends StatelessWidget {
-  const _PlaybackError({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(20),
-    child: Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        const Icon(Icons.cloud_off_outlined, color: Colors.white54, size: 30),
+        _PillRow(video: _video, likeCount: _details?.engagement.likeCount),
         const SizedBox(height: 8),
-        Text(
-          message,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white70, fontSize: 12),
-          maxLines: 4,
-          overflow: TextOverflow.ellipsis,
-        ),
-        const SizedBox(height: 10),
-        TextButton(onPressed: onRetry, child: const Text('Try again')),
+        if (!YtRepository.isPreview) CommentsPreview(videoId: _video.id),
+        const Divider(height: 24),
+        if (_loadingDetails && _related.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(32),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (_related.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(24),
+            child: Text(
+              'No suggestions available for this video.',
+              textAlign: TextAlign.center,
+            ),
+          )
+        // Phones get full-width cards with no heading, as YouTube draws its
+        // watch-page feed; a tablet's wider page keeps compact rows, where a
+        // card would be absurdly large.
+        else if (MediaQuery.sizeOf(context).width < 600) ...[
+          for (final video in _related)
+            VideoCard(
+              video: video,
+              onTap: () => _openRelated(video),
+              onMenu: () => showVideoMenu(context, video),
+            ),
+        ] else ...[
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
+            child: Text(
+              'Up next',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          for (final video in _related)
+            VideoRow(
+              video: video,
+              onTap: () => _openRelated(video),
+              onMenu: () => showVideoMenu(context, video),
+            ),
+        ],
+        SizedBox(height: 32 + bottomInset),
       ],
-    ),
-  );
+    );
+  }
 }
 
 class _Header extends StatelessWidget {
@@ -1222,6 +821,7 @@ class _PillRow extends StatelessWidget {
     required bool downloaded,
   }) async {
     final result = await showModalBottomSheet<bool>(
+      useRootNavigator: true,
       context: context,
       showDragHandle: true,
       builder: (sheet) => SafeArea(

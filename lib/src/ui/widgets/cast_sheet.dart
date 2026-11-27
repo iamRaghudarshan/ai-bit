@@ -16,6 +16,7 @@ import '../../player/playback_controller.dart';
 /// the multicast that DLNA discovery needs behind an entitlement.
 Future<void> showCastSheet(BuildContext context) {
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,

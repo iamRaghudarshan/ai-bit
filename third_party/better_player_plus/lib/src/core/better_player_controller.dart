@@ -1051,15 +1051,29 @@ class BetterPlayerController {
           "Can't arm automatic PiP yet: the player has no RenderBox.");
       return;
     }
-    final Offset position = renderBox.localToGlobal(Offset.zero);
+    // PATCH: the on-screen rect, transforms included (PATCHES.md #31).
+    final Rect rect = _pipSourceRect(renderBox);
     await videoPlayerController?.setAutomaticPictureInPicture(
       enabled: true,
-      left: position.dx,
-      top: position.dy,
-      width: renderBox.size.width,
-      height: renderBox.size.height,
+      left: rect.left,
+      top: rect.top,
+      width: rect.width,
+      height: rect.height,
     );
   }
+
+  /// PATCH (PATCHES.md #31): where the player actually is on screen.
+  ///
+  /// `localToGlobal(Offset.zero)` with `size` mixes two spaces: the origin is
+  /// transformed but the size is the untransformed layout size. A host that
+  /// shows the player under a `Transform.scale` (AI BIT's mini player) then
+  /// sent a full-width rect starting at the scaled origin, and the native
+  /// side laid its PiP layer out over the bar and off the bottom of the
+  /// screen. Transforming the whole box keeps both halves in screen space.
+  Rect _pipSourceRect(RenderBox renderBox) => MatrixUtils.transformRect(
+        renderBox.getTransformTo(null),
+        Offset.zero & renderBox.size,
+      );
 
   ///Enable Picture in Picture (PiP) mode. [betterPlayerGlobalKey] is required
   ///to open PiP mode in iOS. When device is not supported, PiP mode won't be
@@ -1094,12 +1108,13 @@ class BetterPlayerController {
           );
           return 'The player is not on screen.';
         }
-        final Offset position = renderBox.localToGlobal(Offset.zero);
+        // PATCH: the on-screen rect, transforms included (PATCHES.md #31).
+        final Rect rect = _pipSourceRect(renderBox);
         return videoPlayerController?.enablePictureInPicture(
-          left: position.dx,
-          top: position.dy,
-          width: renderBox.size.width,
-          height: renderBox.size.height,
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
         );
       } else {
         BetterPlayerUtils.log('Unsupported PiP in current platform.');

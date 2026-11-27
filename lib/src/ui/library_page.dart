@@ -127,6 +127,7 @@ class LibraryPageState extends State<LibraryPage> {
 
   void _historyMenu(HistoryEntry entry) {
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Column(

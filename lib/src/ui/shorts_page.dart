@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
+import '../core/app_navigator.dart';
 import '../core/format.dart';
 import '../data/comments_client.dart';
 import '../data/db.dart';
@@ -206,10 +207,71 @@ class ShortsPageState extends State<ShortsPage> {
 
   bool get _standalone => widget.initial != null;
 
+  /// The tab only: the shell has this tab selected (between [onTabOpened]
+  /// and [onTabClosed]).
+  bool _tabSelected = false;
+
+  /// What [_onScreen] last said, so a change is acted on once.
+  bool _wasOnScreen = false;
+
+  /// The route this page is built in — the pushed `ShortsRoute` for the
+  /// standalone page.
+  ModalRoute<dynamic>? _route;
+
+  /// Whether this Shorts surface is the thing on screen, and so the only
+  /// thing that may start a Short or keep one playing.
+  ///
+  /// One notion for every start and stop, because each place that decided
+  /// for itself got it wrong somewhere: a channel page opened from a Short
+  /// and left through the navigation bar restarted the Short under Home, a
+  /// feed that finished loading after the tab was left started one there,
+  /// and a page pushed over Shorts from a menu or a shared link left it
+  /// playing — all with no player on screen, since the sheet never shows a
+  /// Short presented by the Shorts player.
+  ///
+  /// The tab is on screen while it is selected with nothing pushed over the
+  /// tabs; the standalone page while its own route is the top content page.
+  bool get _onScreen {
+    if (!mounted) return false;
+    if (_standalone) return contentRouteStack.isTop(_route);
+    return _tabSelected && contentRouteStack.atRoot;
+  }
+
+  void _onTopChanged() {
+    // Deferred: the observer reports from inside the Navigator's push or
+    // pop, and the shell's tab switch that follows a popUntil runs after it
+    // in the same call — so only once that has settled is the answer real.
+    scheduleMicrotask(_syncOnScreen);
+  }
+
+  void _syncOnScreen() {
+    if (!mounted) return;
+    final now = _onScreen;
+    if (now == _wasOnScreen) return;
+    _wasOnScreen = now;
+    if (now) {
+      // Back on top: the Short in view plays again, as on arrival.
+      if (_activated && _shorts.isNotEmpty) _startCurrent(force: true);
+    } else {
+      // Covered by a pushed page: stopped, not paused — the sheet does not
+      // show a Short the Shorts player presents, so nothing could stop it.
+      _settleFallback?.cancel();
+      _stopIfOurs();
+      _startedIndex = -1;
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _route = ModalRoute.of(context);
+  }
+
   @override
   void initState() {
     super.initState();
     _playback = context.read<PlaybackController>();
+    contentRouteStack.top.addListener(_onTopChanged);
     final initial = widget.initial;
     if (initial != null && initial.isNotEmpty) {
       _shorts = [for (final s in initial) s.isShort ? s : s.asShort()];
@@ -222,6 +284,7 @@ class ShortsPageState extends State<ShortsPage> {
     if (_standalone) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        _wasOnScreen = _onScreen;
         _prefetchAhead();
         _startCurrent(force: true);
         if (_index >= _shorts.length - 3) _appendMore();
@@ -231,17 +294,22 @@ class ShortsPageState extends State<ShortsPage> {
 
   @override
   void dispose() {
+    contentRouteStack.top.removeListener(_onTopChanged);
     _settleFallback?.cancel();
     // Leaving the route stops the Short rather than pausing it: a Short in
     // the mini player is not something YouTube ever shows.
     // Deferred: stop() notifies listeners at once, and dispose runs while the
     // tree is locked, where a rebuild request is an assertion failure.
+    //
+    // Only if this page still owns what is playing. Matching by id stopped
+    // the tab's Short ~180ms after the tab started it, whenever the Short
+    // was also in this route's list — tapping the Shorts tab pops the route
+    // and starts the tab before the route's exit transition ends.
     if (_standalone) {
-      final ours = {for (final s in _shorts) s.id};
       final playback = _playback;
+      final self = this;
       Future.microtask(() {
-        final current = playback.current;
-        if (current != null && current.isShort && ours.contains(current.id)) {
+        if (identical(playback.shortsOwner, self)) {
           unawaited(playback.stop());
         }
       });
@@ -252,6 +320,8 @@ class ShortsPageState extends State<ShortsPage> {
 
   /// Called by the shell when the tab is selected.
   Future<void> onTabOpened() async {
+    _tabSelected = true;
+    _wasOnScreen = _onScreen;
     final kids = context.read<SettingsService>().kidsMode;
     if (_activated && kids == _loadedKids && _shorts.isNotEmpty) {
       // Returning to the tab starts whatever is on screen again.
@@ -268,6 +338,8 @@ class ShortsPageState extends State<ShortsPage> {
   /// Called by the shell when leaving the tab. The Short is stopped, not
   /// paused, so it does not reappear in the mini player under the Home feed.
   void onTabClosed() {
+    _tabSelected = false;
+    _wasOnScreen = false;
     _settleFallback?.cancel();
     _stopIfOurs();
     _startedIndex = -1;
@@ -282,10 +354,10 @@ class ShortsPageState extends State<ShortsPage> {
     await _load();
   }
 
+  /// Stops what is playing if this surface started it — by ownership, not by
+  /// id, since the tab and a pushed Shorts player can hold the same Short.
   void _stopIfOurs() {
-    final current = _playback.current;
-    if (current == null || !current.isShort) return;
-    if (!_shorts.any((s) => s.id == current.id)) return;
+    if (!identical(_playback.shortsOwner, this)) return;
     unawaited(_playback.stop());
   }
 
@@ -321,6 +393,10 @@ class ShortsPageState extends State<ShortsPage> {
   void _startCurrent({bool force = false}) {
     _settleFallback?.cancel();
     if (_shorts.isEmpty || !mounted) return;
+    // Every start goes through here, so this one check is what keeps a
+    // Short from starting behind another tab or under a pushed page — a
+    // feed that finished loading late, a settle timer, a scroll end.
+    if (!_onScreen) return;
     final video = _shorts[_index];
     if (!force &&
         _startedIndex == _index &&
@@ -331,7 +407,7 @@ class ShortsPageState extends State<ShortsPage> {
     _ShortsTiming.settled(video.id);
     debugPrint('AI BIT start: ${video.id} shorts swipe settled');
     unawaited(
-      _playback.play(video, shortsSurface: true).then((_) {
+      _playback.play(video, shortsSurface: true, shortsOwner: this).then((_) {
         if (!mounted || _playback.current?.id != video.id) return;
         // After this one has started, so pre-buffering never competes with it.
         final ahead = [
@@ -399,12 +475,12 @@ class ShortsPageState extends State<ShortsPage> {
 
   Future<void> _openChannel(VideoBrief video) async {
     if (video.channelId.isEmpty) return;
-    // Stopped rather than paused: the channel page would otherwise paint the
-    // now-playing bar with this Short in it.
     _settleFallback?.cancel();
-    await _playback.stop();
-    _startedIndex = -1;
-    if (!mounted) return;
+    // No stop here and no restart after: the push covers this surface, and
+    // [_syncOnScreen] stops the Short then and starts it again only when
+    // this surface is back on top. Restarting when the push completed was
+    // wrong whenever the channel was left through the navigation bar — the
+    // Short started under Home with nothing on screen to stop it.
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ChannelPage(
@@ -413,7 +489,6 @@ class ShortsPageState extends State<ShortsPage> {
         ),
       ),
     );
-    if (mounted) _startCurrent(force: true);
   }
 
   Future<void> _openComments(
@@ -484,6 +559,7 @@ class ShortsPageState extends State<ShortsPage> {
         onPageChanged: _onPageChanged,
         itemBuilder: (context, i) => _ShortView(
           video: _shorts[i],
+          owner: this,
           isActive: i == _index,
           clean: _clean,
           commentsOpen: _commentsOpen,
@@ -570,6 +646,7 @@ class _KidsTimeUp extends StatelessWidget {
 class _ShortView extends StatefulWidget {
   const _ShortView({
     required this.video,
+    required this.owner,
     required this.isActive,
     required this.clean,
     required this.commentsOpen,
@@ -580,6 +657,10 @@ class _ShortView extends StatefulWidget {
   });
 
   final VideoBrief video;
+
+  /// The `ShortsPageState` this page belongs to; see
+  /// [PlaybackController.shortsOwner].
+  final Object owner;
   final bool isActive;
   final bool clean;
   final bool commentsOpen;
@@ -800,6 +881,7 @@ class _ShortViewState extends State<_ShortView> {
   Future<void> _openMenu() async {
     final playback = context.read<PlaybackController>();
     final choice = await showModalBottomSheet<String>(
+      useRootNavigator: true,
       context: context,
       builder: (sheet) => SafeArea(
         child: Column(
@@ -855,7 +937,8 @@ class _ShortViewState extends State<_ShortView> {
 
         // Only the active short watches the player, so its per-frame rebuilds
         // are confined to this one page instead of every visible page.
-        if (widget.isActive) _ActiveShortPlayer(video: widget.video),
+        if (widget.isActive)
+          _ActiveShortPlayer(video: widget.video, owner: widget.owner),
 
         // Taps, double-taps and hold-for-2x, here rather than on the player
         // surface so they work while the Short is still loading. Vertical
@@ -989,9 +1072,10 @@ class _Burst {
 /// The player surface for the Short on screen. Fades in on its first frame
 /// over the poster rather than cutting to it.
 class _ActiveShortPlayer extends StatefulWidget {
-  const _ActiveShortPlayer({required this.video});
+  const _ActiveShortPlayer({required this.video, required this.owner});
 
   final VideoBrief video;
+  final Object owner;
 
   @override
   State<_ActiveShortPlayer> createState() => _ActiveShortPlayerState();
@@ -1038,10 +1122,14 @@ class _ActiveShortPlayerState extends State<_ActiveShortPlayer> {
   Widget build(BuildContext context) {
     final playback = context.watch<PlaybackController>();
     final onThis = playback.current?.id == widget.video.id;
+    // Only the owning page mounts the player. The kept-alive tab and a
+    // pushed ShortsRoute can both be on the same Short, and both mounting
+    // BetterPlayer(key: playerKey) is a duplicate GlobalKey.
     final ready = onThis &&
         !kIsWeb &&
         playback.player != null &&
         playback.onShortsSurface &&
+        identical(playback.shortsOwner, widget.owner) &&
         !playback.isLoading;
     final started =
         ready && (playback.isPlaying || playback.position > Duration.zero);

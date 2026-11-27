@@ -1087,10 +1087,11 @@ UI affordance, and nothing held the device awake across it.
 
 **Smoothness, the cheap half.** `main()` asks for the panel's highest refresh
 rate (`flutter_displaymode`): Xiaomi and other skins keep a Flutter app at
-60Hz on a 90/120Hz screen unless it asks, and YouTube asks. The watch page's
-drag-to-minimise moves a prebuilt sheet through a `ValueNotifier` instead of
-`setState` on the whole page per pointer move, and the `Opacity` fade over the
-video texture is gone (a saveLayer per frame). Home `select`s the two
+60Hz on a 90/120Hz screen unless it asks, and YouTube asks. The player sheet's
+drag moves prebuilt children through one `AnimationController` instead of
+`setState` on the whole page per pointer move, and nothing fades the video
+texture with an `Opacity` (a saveLayer per frame) — only the page and the mini
+bar beside it fade, each through its own `FadeTransition`. Home `select`s the two
 settings it reads instead of watching every setter; the audio-mode blur is
 its own layer on a small source; the Shorts source swap waits 250ms so it
 lands after the page snap. The remaining gap — YouTube pre-buffers the next
@@ -1812,7 +1813,8 @@ A cross-cutting `kIsWeb` concern threads through several files. In a browser:
   browsers block youtube.com, so `YtRepository.isPreview` serves hardcoded rows
   from `lib/src/data/preview_data.dart`.
 - `PlaybackController.play()` returns early — there is no native player plugin.
-- `WatchPage` renders a placeholder surface instead of `BetterPlayer`.
+- `PlayerSheet`'s video surface (`_PlayerSurface` in `player_sheet.dart`)
+  renders a placeholder instead of `BetterPlayer`.
 - `main.dart` wraps the app in a 390×844 iPhone frame with overridden
   `MediaQuery` insets, so layout matches a real phone instead of stretching.
 - `AppDatabase.open()` swaps in `databaseFactoryFfiWeb`.
@@ -1822,40 +1824,52 @@ and the web branch clearly subordinate.
 
 ### Navigation
 
-`RootShell` keeps three tabs alive in an `IndexedStack`. Because every tab is
-built once at startup, anything that should happen "on arrival" must be driven
-from `_onTabSelected` via a `GlobalKey` — `SearchPage.focusInput()` and
-`LibraryPage.reload()` both work this way. Do not use `initState` for it.
+**One continuous player, like YouTube's Android app** (`player_sheet.dart`,
+`player_sheet_controller.dart`, `root_shell.dart`). The watch page is not a
+route. `RootShell`'s body is three layers: a **content `Navigator`**
+(`contentNavigatorKey`) whose first route is the four tabs in an
+`IndexedStack`; the `NavigationBar`, which slides out as the player expands;
+and the `PlayerSheet` on top. `PlayerSheetController.animation` runs 0 (mini
+player docked above the bar) to 1 (watch page); a drag moves it 1:1, release
+is a spring, and `settlesExpanded`, `miniDismisses`, `sheetVideoRect` and
+`sheetBackAction` are the pure, tested rules.
 
-The watch screen is a non-opaque route that slides up, so the feed stays visible
-while the player is dragged down to minimise into the mini player.
+- **`BetterPlayer(key: playerKey)` is mounted exactly once**, in the sheet,
+  and only scaled and moved between the two ends — the mini player shows the
+  live video, not a thumbnail. Never mount it anywhere else; the Shorts page's
+  copy is mounted only while `onShortsSurface`, the one condition the sheet's
+  copy is not, so the two cannot coexist.
+- `WatchPage.open/openQueue/reopen` keep their signatures: they start playback
+  and expand the sheet (`open` completes on the next collapse, which is when
+  callers refresh). The sheet mounts one `WatchPage` body per video id, so
+  autoplay and skips arrive as a fresh page.
+- **Pages open UNDER the player.** `Navigator.of(context)` inside a tab is the
+  content navigator; anything that can run from the sheet or a root sheet
+  (`ChannelPage.open`, `PlaylistPage.open`, `SearchPage.open`, `ShortsRoute`)
+  goes through `pushContent`, which also collapses the sheet.
+- **Everything that must cover the player goes on the ROOT navigator**:
+  dialogs (default), every `showModalBottomSheet` (`useRootNavigator: true` —
+  keep it on new ones, or the sheet opens under the mini player and the bar),
+  the plugin's fullscreen route, the PIN pads, the update screen. Snackbars
+  show on RootShell's root Scaffold above an invisible spacer as tall as the
+  bar plus mini player.
+- Back: fullscreen → collapse the sheet → pop the content page → system.
+- Hidden on the Shorts tab and while `ShortsRoute` (now a content page, named
+  `AppRoutes.shorts`) is on top; `ContentRouteObserver` reports both.
+- The screen wakelock is not held while docked (`setMinimised`); the video
+  controls draw nothing while `PlayerSheetController.compact`.
 
-**The now-playing bar is on every route, not only the four tabs.** It used to
-live in `RootShell.bottomNavigationBar`, which is exactly as far as it reached:
-opening a channel, a playlist, search, history or settings pushed a route over
-the shell and the bar — the only handle back to what was playing — disappeared
-while the audio carried on. YouTube does not have this problem because its
-channel and playlist screens render *inside* the tab shell; matching that would
-mean a nested `Navigator` per tab and re-testing every push in the app,
-including the watch page's non-opaque route.
+Because every tab is built once at startup, anything that should happen "on
+arrival" must be driven from `_onTabSelected` via a `GlobalKey` —
+`LibraryPage.reload()` and `ShortsPageState.onTabOpened()` work this way. Do not
+use `initState` for it. Tapping a tab while a page is pushed pops to the tabs
+first.
 
-`NowPlayingOverlay` takes the shorter path to the same visible behaviour: it
-paints the bar over whatever route is on top, from `MaterialApp.builder` — the
-same place `_AppLockGate` sits and for the same reason, that a builder wraps the
-Navigator. It goes **inside** the lock shield, because a bar showing artwork and
-a title must not be visible over a locked app.
-
-It only paints on *pushed* routes; on the root tabs the shell's own bar is
-already there and laid out above the navigation bar rather than over it, which
-is the better arrangement where it is available. `MaterialApp.builder` runs
-outside the Navigator it wraps, so there is no route to ask about from in
-there — `RouteStackObserver`, installed via `navigatorObservers`, is how it
-knows. Two details with tests: the condition is "the watch route is **nowhere
-in the stack**" rather than "is not on top", because the player pushes its
-fullscreen route *above* the watch page and a mini player floating over a
-fullscreen video is absurd; and routes are removed **by name** rather than by
-dropping the last entry, because `popUntil` and dialogs do not pop in push
-order and a stack left out of step shows up as a bar that never comes back.
+The old design — a pushed non-opaque watch route plus a `NowPlayingOverlay`
+bar painted from `MaterialApp.builder` and a `RouteStackObserver` — is gone;
+it existed only because pages covered the shell's bar, which the content
+navigator makes impossible. The app lock still wraps the root navigator, so
+it covers the sheet too.
 
 ### Settings that override each other say so
 

@@ -22,6 +22,7 @@ import 'src/data/ranker_trainer.dart';
 import 'src/data/settings.dart';
 import 'src/data/storage_service.dart';
 import 'src/data/yt_repository.dart';
+import 'src/player/floating_player.dart';
 import 'src/player/playback_controller.dart';
 import 'src/data/models.dart';
 import 'src/ui/app_lock_page.dart';
@@ -29,12 +30,10 @@ import 'src/ui/playlist_page.dart';
 import 'src/ui/root_shell.dart';
 import 'src/ui/update_prompt.dart';
 import 'src/ui/watch_page.dart';
-import 'src/ui/widgets/now_playing_overlay.dart';
 
-// The navigator key and route observer live in src/core/app_navigator.dart:
-// the now-playing bar needs them too, and it is built outside the Navigator.
+// The root navigator key lives in src/core/app_navigator.dart, beside the
+// content navigator's: code all over the app needs to tell the two apart.
 final _navigatorKey = appNavigatorKey;
-final _routeStack = appRouteStack;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -103,6 +102,8 @@ Future<void> _openIncomingLink(String text) async {
 
   final playlistId = YtRepository.parsePlaylistId(reference);
   if (playlistId != null) {
+    // Pushed over Shorts, this stops the Short through ShortsPage's own
+    // "am I on screen" listener, and back returns to it; no leaveShorts.
     await PlaylistPage.openById(context, playlistId);
     return;
   }
@@ -110,6 +111,8 @@ Future<void> _openIncomingLink(String text) async {
   if (videoId != null) {
     try {
       final details = await repo.videoDetails(videoId);
+      // The player sheet is hidden while Shorts fill the screen.
+      await RootShell.leaveShorts();
       // Re-read after the await rather than reused: the lookup took a network
       // round trip and the Navigator may have been rebuilt meanwhile.
       final ctx = _navigatorKey.currentContext;
@@ -312,15 +315,23 @@ class AiBitApp extends StatelessWidget {
         // Declared after the four above so context.read finds them: a provider
         // can only read providers listed before it in the same MultiProvider.
         ChangeNotifierProvider<PlaybackController>(
-          create: (context) => PlaybackController(
-            repository: context.read<YtRepository>(),
-            database: context.read<AppDatabase>(),
-            settings: context.read<SettingsService>(),
-            kidsGuard: context.read<KidsGuard>(),
-            batteryService: context.read<BatteryService>(),
-            networkService: context.read<NetworkService>(),
-            dataUsage: context.read<DataUsageService>(),
-          ),
+          create: (context) {
+            final playback = PlaybackController(
+              repository: context.read<YtRepository>(),
+              database: context.read<AppDatabase>(),
+              settings: context.read<SettingsService>(),
+              kidsGuard: context.read<KidsGuard>(),
+              batteryService: context.read<BatteryService>(),
+              networkService: context.read<NetworkService>(),
+              dataUsage: context.read<DataUsageService>(),
+            );
+            // Automatic PiP is reported by the Activity, not the plugin; the
+            // wakelock needs to know (see setInPictureInPicture).
+            FloatingPlayer.watchPictureInPicture(
+              playback.setInPictureInPicture,
+            );
+            return playback;
+          },
         ),
         ChangeNotifierProvider<DownloadManager>(
           create: (context) => DownloadManager(
@@ -346,7 +357,6 @@ class AiBitApp extends StatelessWidget {
           title: 'AI BIT',
           debugShowCheckedModeBanner: false,
           navigatorKey: _navigatorKey,
-          navigatorObservers: [_routeStack],
           themeMode: settings.themeMode,
           theme: buildTheme(
             Brightness.light,
@@ -358,16 +368,10 @@ class AiBitApp extends StatelessWidget {
             amoled: settings.amoledBlack,
           ),
           builder: (context, child) {
-            // The now-playing bar goes on first, so it is inside the lock
-            // shield: a bar showing what is playing — with artwork and a title
-            // — must not be visible over a locked app.
-            final withBar = NowPlayingOverlay(
-              routes: _routeStack,
-              child: child ?? const SizedBox.shrink(),
-            );
-            // The gate wraps the Navigator, so the shield hides whatever route
-            // is on top rather than only the feed underneath it.
-            final gated = _AppLockGate(child: withBar);
+            // The gate wraps the root Navigator, so the shield hides whatever
+            // route is on top — and the player sheet with its mini player,
+            // which live inside RootShell, the root navigator's first page.
+            final gated = _AppLockGate(child: child ?? const SizedBox.shrink());
             // In a browser the app would otherwise stretch across a desktop
             // window, which is nothing like how it looks on a phone. The frame
             // stays outermost so the shield appears inside the bezel.

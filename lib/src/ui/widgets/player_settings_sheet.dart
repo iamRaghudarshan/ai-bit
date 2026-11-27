@@ -20,6 +20,7 @@ Future<void> showPlayerSettingsSheet(BuildContext context) {
   final settings = context.read<SettingsService>();
   final host = context;
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
@@ -141,6 +142,7 @@ class _SettingsRow extends StatelessWidget {
 Future<void> showAudioTrackSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     builder: (sheetContext) => SafeArea(
@@ -193,6 +195,7 @@ Future<void> showPlayerMoreSheet(BuildContext context) {
   final settings = context.read<SettingsService>();
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     builder: (sheetContext) => SafeArea(

@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../data/app_lock_service.dart';
 import '../data/settings.dart';
-import 'widgets/now_playing_overlay.dart' show RouteStackObserver;
+import '../core/app_navigator.dart';
 
 /// Which stored PIN this screen is working with.
 ///
@@ -57,11 +57,11 @@ class AppLockPage extends StatefulWidget {
     // sits above the Navigator, so a pad pushed under it was invisible and
     // the app could not be unlocked at all — and an animated route would
     // let the app behind show through for the length of the slide.
-    final unlocked = await Navigator.of(context).push<bool>(
+    // The root navigator, above the player and the navigation bar: the PIN
+    // pad covers the whole app.
+    final unlocked = await Navigator.of(context, rootNavigator: true).push<bool>(
       PageRouteBuilder<bool>(
-        settings: const RouteSettings(
-          name: RouteStackObserver.appLockRouteName,
-        ),
+        settings: const RouteSettings(name: AppRoutes.appLock),
         opaque: true,
         transitionDuration: Duration.zero,
         reverseTransitionDuration: Duration.zero,
@@ -90,7 +90,7 @@ class AppLockPage extends StatefulWidget {
   static Future<bool> confirmKidsPin(BuildContext context) async {
     final settings = context.read<SettingsService>();
     if (settings.kidsPinHash.isEmpty) return true;
-    final ok = await Navigator.of(context).push<bool>(
+    final ok = await Navigator.of(context, rootNavigator: true).push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => const AppLockPage._(_PinTarget.kids, _PinMode.verify),
       ),
@@ -99,7 +99,7 @@ class AppLockPage extends StatefulWidget {
   }
 
   static Future<void> _create(BuildContext context, _PinTarget target) async {
-    await Navigator.of(context).push<bool>(
+    await Navigator.of(context, rootNavigator: true).push<bool>(
       MaterialPageRoute<bool>(
         builder: (_) => AppLockPage._(target, _PinMode.create),
       ),

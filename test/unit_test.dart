@@ -33,7 +33,8 @@ import 'package:ai_bit/src/ui/widgets/responsive_feed.dart';
 import 'package:ai_bit/src/data/dash_manifest.dart';
 import 'package:ai_bit/src/data/hls_manifest.dart';
 import 'package:ai_bit/src/data/browse_client.dart';
-import 'package:ai_bit/src/ui/widgets/now_playing_overlay.dart';
+import 'package:ai_bit/src/core/app_navigator.dart';
+import 'package:ai_bit/src/ui/player_sheet_controller.dart';
 import 'package:ai_bit/src/ui/shorts_page.dart'
     show shortPosterUrls, shortsCountLabel;
 import 'package:flutter/widgets.dart';
@@ -4436,146 +4437,474 @@ Some blurb about the video.
     });
   });
 
-  // ------------------------------------------------- the now-playing bar
+  // ------------------------------------------- the continuous player sheet
   //
-  // Where the persistent mini player is allowed to paint. The bar used to live
-  // in the tab shell, so it vanished the moment anything was pushed over it —
-  // a channel, a playlist, search, settings — while the audio kept playing.
+  // The watch page and the mini player are two ends of one draggable sheet
+  // above a content navigator. These pin the pure parts: what the content
+  // stack reports, where the video sits along the drag, where a release
+  // settles, when a swipe closes the mini player, and what back does.
 
-  group('RouteStackObserver', () {
-    final shell = _FakeRoute(null);
+  group('ContentRouteObserver', () {
+    final tabs = _FakeRoute(null);
     Route<dynamic> route(String? name) => _FakeRoute(name);
 
-    test('nothing to paint over on a root tab', () {
-      // The shell draws its own bar, above the navigation bar rather than over
-      // it, so a second one here would double it up.
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      expect(o.wantsNowPlayingBar, isFalse);
+    test('the tabs alone have nothing for back to pop', () {
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
+      expect(o.canPop, isFalse);
+      expect(o.atRoot, isTrue);
+      expect(o.shortsOnTop, isFalse);
     });
 
-    test('appears once a route is pushed, and goes again on pop', () {
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
+    test('a pushed page can be popped, and the stack follows the pop', () {
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
       final channel = route('channel');
-      o.didPush(channel, shell);
-      expect(o.wantsNowPlayingBar, isTrue);
-      o.didPop(channel, shell);
-      expect(o.wantsNowPlayingBar, isFalse);
+      o.didPush(channel, tabs);
+      expect(o.canPop, isTrue);
+      expect(o.atRoot, isFalse);
+      o.didPop(channel, tabs);
+      expect(o.canPop, isFalse);
     });
 
-    test('never over the watch page', () {
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      o.didPush(route(RouteStackObserver.watchRouteName), shell);
-      expect(o.wantsNowPlayingBar, isFalse);
-    });
-
-    test('never over fullscreen, which sits ABOVE the watch page', () {
-      // The condition is "the watch page is nowhere in the stack", not "is not
-      // on top": the player pushes its own fullscreen route over the watch
-      // page, and a mini player floating over a fullscreen video is absurd.
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      final watch = route(RouteStackObserver.watchRouteName);
-      o.didPush(watch, shell);
-      o.didPush(route(RouteStackObserver.fullscreenRouteName), watch);
-      expect(o.wantsNowPlayingBar, isFalse);
-    });
-
-    test('shows over a page opened FROM the watch page', () {
-      // Tapping the channel name puts the channel page over the watch page.
-      // The rule used to be "no watch page anywhere in the stack", so the bar
-      // vanished there while the video played on — nothing to reopen it or
-      // close it with.
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      final watch = route(RouteStackObserver.watchRouteName);
-      o.didPush(watch, shell);
+    test('the full-screen Shorts player is recognised only while on top', () {
+      // The player sheet hides under it; a channel opened from a Short is an
+      // ordinary page again, with the sheet back.
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
+      final shorts = route(AppRoutes.shorts);
+      o.didPush(shorts, tabs);
+      expect(o.shortsOnTop, isTrue);
       final channel = route('channel');
-      o.didPush(channel, watch);
-      expect(o.wantsNowPlayingBar, isTrue);
-      expect(o.watchRoutes, [watch]);
-      o.didRemove(watch, shell);
-      expect(o.watchRoutes, isEmpty);
-      expect(o.wantsNowPlayingBar, isTrue);
-      o.didPop(channel, shell);
-      expect(o.wantsNowPlayingBar, isFalse);
+      o.didPush(channel, shorts);
+      expect(o.shortsOnTop, isFalse);
+      o.didPop(channel, shorts);
+      expect(o.shortsOnTop, isTrue);
     });
 
-    test('comes back after the watch page is dismissed over a channel', () {
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      final channel = route('channel');
-      o.didPush(channel, shell);
-      final watch = route(RouteStackObserver.watchRouteName);
-      o.didPush(watch, channel);
-      expect(o.wantsNowPlayingBar, isFalse);
-      o.didPop(watch, channel);
-      expect(o.wantsNowPlayingBar, isTrue);
+    test('menus and dialogs are not pages', () {
+      // A sheet over the tabs must not make back "pop a page" that is not
+      // there, nor hide the Shorts state underneath it.
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
+      final popup = _FakePopup();
+      o.didPush(popup, tabs);
+      expect(o.canPop, isFalse);
+      o.didPop(popup, tabs);
+      expect(o.canPop, isFalse);
     });
 
-    test('routes popped out of order do not strand the stack', () {
-      // popUntil, or a dialog dismissed behind a page transition, can pop in
-      // an order the pushes did not predict. Removing the wrong entry would
-      // leave the stack permanently out of step, which shows up as a bar that
-      // never comes back.
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
+    test('routes leaving out of order do not strand the stack', () {
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
       final a = route('a');
       final b = route('b');
-      o.didPush(a, shell);
+      o.didPush(a, tabs);
       o.didPush(b, a);
-      o.didPop(a, shell);
-      o.didPop(b, shell);
-      expect(o.wantsNowPlayingBar, isFalse);
-    });
-
-    test('a menu or dialog is drawn over the bar, not under it', () {
-      // The bar covered the last rows of every bottom sheet opened from a
-      // tab — "Not interested" could not be reached. A sheet over a pushed
-      // page hides the bar while it is open, and the bar comes back after.
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
-      final sheetOverTab = _FakePopup();
-      o.didPush(sheetOverTab, shell);
-      expect(o.wantsNowPlayingBar, isFalse);
-      o.didPop(sheetOverTab, shell);
-      final channel = route('channel');
-      o.didPush(channel, shell);
-      expect(o.wantsNowPlayingBar, isTrue);
-      final sheetOverPage = _FakePopup();
-      o.didPush(sheetOverPage, channel);
-      expect(o.wantsNowPlayingBar, isFalse);
-      o.didPop(sheetOverPage, channel);
-      expect(o.wantsNowPlayingBar, isTrue);
+      o.didRemove(a, tabs);
+      o.didPop(b, tabs);
+      expect(o.canPop, isFalse);
     });
 
     test('a replacement keeps the depth', () {
-      final o = RouteStackObserver();
-      o.didPush(shell, null);
+      final o = ContentRouteObserver();
+      o.didPush(tabs, null);
       final a = route('a');
-      o.didPush(a, shell);
-      o.didReplace(newRoute: route('b'), oldRoute: a);
-      expect(o.wantsNowPlayingBar, isTrue);
+      o.didPush(a, tabs);
+      o.didReplace(newRoute: route(AppRoutes.shorts), oldRoute: a);
+      expect(o.canPop, isTrue);
+      expect(o.shortsOnTop, isTrue);
     });
 
-    test('notifies only when the answer changes', () {
-      // didPush and didPop fire on every navigation and most of them do not
-      // alter whether the bar belongs on screen.
-      final o = RouteStackObserver();
+    test('notifies only when an answer changes', () {
+      final o = ContentRouteObserver();
       var notifications = 0;
       o.addListener(() => notifications++);
-      o.didPush(shell, null);
+      o.didPush(tabs, null);
+      expect(notifications, 0);
       final a = route('a');
-      o.didPush(a, shell);
+      o.didPush(a, tabs);
       expect(notifications, 1);
       final b = route('b');
       o.didPush(b, a);
-      expect(notifications, 1, reason: 'still on a pushed route');
+      expect(notifications, 1, reason: 'still a page to pop');
       o.didPop(b, a);
-      o.didPop(a, shell);
+      o.didPop(a, tabs);
       expect(notifications, 2);
+    });
+  });
+
+  group('content route stack: which page is on top', () {
+    Route<void> page(String name) => PageRouteBuilder<void>(
+          settings: RouteSettings(name: name),
+          pageBuilder: (_, _, _) => const SizedBox(),
+        );
+
+    test('the top page is tracked, one Shorts player over another included',
+        () {
+      // Shorts -> channel -> its Shorts: canPop and shortsOnTop end where
+      // they started, so only the top page says the first player is covered.
+      final o = ContentRouteObserver();
+      final tabs = page('tabs');
+      o.didPush(tabs, null);
+      final first = page(AppRoutes.shorts);
+      o.didPush(first, tabs);
+      expect(o.isTop(first), isTrue);
+      final channel = page('channel');
+      o.didPush(channel, first);
+      final second = page(AppRoutes.shorts);
+      o.didPush(second, channel);
+      expect(o.shortsOnTop, isTrue);
+      expect(o.isTop(first), isFalse);
+      expect(o.isTop(second), isTrue);
+      expect(o.top.value, same(second));
+      o.didPop(second, channel);
+      o.didPop(channel, first);
+      expect(o.isTop(first), isTrue);
+    });
+
+    test('the top notifier fires on every change of top page', () {
+      final o = ContentRouteObserver();
+      var changes = 0;
+      o.top.addListener(() => changes++);
+      final tabs = page('tabs');
+      o.didPush(tabs, null);
+      final a = page('a');
+      final b = page('b');
+      o.didPush(a, tabs);
+      o.didPush(b, a);
+      expect(changes, 3);
+      // Popups are not pages and do not move the top.
+      o.didPush(_FakePopup(), b);
+      expect(changes, 3);
+    });
+
+    test('with nothing observed, any page counts as on top', () {
+      // No shell (tests, a fallback push): a Shorts page must not believe it
+      // is covered for ever and refuse to play.
+      expect(ContentRouteObserver().isTop(null), isTrue);
+    });
+  });
+
+  group('player sheet geometry', () {
+    const expanded = Rect.fromLTWH(0, 24, 360, 202.5);
+
+    test('the mini video keeps the expanded aspect ratio', () {
+      final mini = miniVideoRect(expanded: expanded, top: 600, height: 64);
+      expect(mini.top, 600);
+      expect(mini.left, 0);
+      expect(mini.height, 64);
+      expect(mini.width / mini.height, closeTo(16 / 9, 1e-9));
+    });
+
+    test('ends of the drag are exactly the two rects', () {
+      final mini = miniVideoRect(expanded: expanded, top: 600, height: 64);
+      expect(
+        sheetVideoRect(progress: 0, expanded: expanded, mini: mini),
+        mini,
+      );
+      expect(
+        sheetVideoRect(progress: 1, expanded: expanded, mini: mini),
+        expanded,
+      );
+    });
+
+    test('every rect along the way scales uniformly', () {
+      // A squashed picture mid-drag is what a per-axis lerp of two rects
+      // with different aspects would give.
+      final mini = miniVideoRect(expanded: expanded, top: 600, height: 64);
+      for (final t in [0.1, 0.25, 0.5, 0.75, 0.9]) {
+        final r = sheetVideoRect(progress: t, expanded: expanded, mini: mini);
+        expect(r.width / r.height, closeTo(16 / 9, 1e-9), reason: 't=$t');
+        expect(r.top, inExclusiveRange(expanded.top, mini.top));
+      }
+    });
+
+    test('progress outside 0..1 is clamped', () {
+      final mini = miniVideoRect(expanded: expanded, top: 600, height: 64);
+      expect(
+        sheetVideoRect(progress: 1.4, expanded: expanded, mini: mini),
+        expanded,
+      );
+      expect(
+        sheetVideoRect(progress: -0.2, expanded: expanded, mini: mini),
+        mini,
+      );
+    });
+
+    test('a landscape (height-capped) box docks unsquashed', () {
+      const wide = Rect.fromLTWH(0, 0, 800, 223.2);
+      final mini = miniVideoRect(expanded: wide, top: 300, height: 64);
+      expect(mini.width / mini.height, closeTo(800 / 223.2, 1e-9));
+    });
+
+    test('docked sideways, the picture and not its black box is in the bar',
+        () {
+      // 800x360: the box is capped at 223.2 tall, the 16:9 picture inside
+      // it is 396.8 wide, and the old bar reserved the whole scaled box
+      // (229dp) for a 114dp picture.
+      const wide = Rect.fromLTWH(0, 0, 800, 223.2);
+      final mini = miniVideoRect(expanded: wide, top: 300, height: 64);
+      final picture = miniPictureWidth(expanded: wide, height: 64);
+      expect(picture, closeTo(64 * 16 / 9, 1e-9));
+      // The picture's left edge, not the box's, lands at x = 0.
+      final scale = 64 / 223.2;
+      final margin = (800 - 223.2 * 16 / 9) / 2;
+      expect(mini.left + margin * scale, closeTo(0, 1e-9));
+      // All of the margin clipped docked, none of it expanded.
+      expect(
+        sheetPictureInset(progress: 0, expanded: wide),
+        closeTo(margin, 1e-9),
+      );
+      expect(sheetPictureInset(progress: 1, expanded: wide), 0);
+    });
+
+    test('a portrait phone is untouched by the picture rule', () {
+      final mini = miniVideoRect(expanded: expanded, top: 600, height: 64);
+      expect(
+        miniPictureWidth(expanded: expanded, height: 64),
+        closeTo(mini.width, 1e-9),
+      );
+      expect(sheetPictureInset(progress: 0, expanded: expanded), 0);
+    });
+  });
+
+  group('player sheet drag under the scale transform', () {
+    test('a drag begun at full size is reported as it was', () {
+      expect(
+        screenDragVelocity(
+          localVelocity: 900,
+          screenTravel: 120,
+          localTravel: 120,
+        ),
+        900,
+      );
+    });
+
+    test('a drag begun mid-transition is scaled back to the screen', () {
+      // At scale 0.5 the recogniser reports twice the finger's speed.
+      expect(
+        screenDragVelocity(
+          localVelocity: 1600,
+          screenTravel: 50,
+          localTravel: 100,
+        ),
+        800,
+      );
+      expect(
+        screenDragVelocity(
+          localVelocity: -1600,
+          screenTravel: -50,
+          localTravel: -100,
+        ),
+        -800,
+        reason: 'the direction is kept',
+      );
+    });
+
+    test('no travel leaves the velocity alone', () {
+      expect(
+        screenDragVelocity(localVelocity: 700, screenTravel: 0, localTravel: 0),
+        700,
+      );
+    });
+  });
+
+  group('player sheet open requests', () {
+    test('settled when the player reaches the requested video', () {
+      expect(
+        requestSettled(requestedId: 'B', currentAtRequest: 'A', currentId: 'B'),
+        isTrue,
+      );
+    });
+
+    test('kept while the player is still on the old video', () {
+      expect(
+        requestSettled(requestedId: 'B', currentAtRequest: 'A', currentId: 'A'),
+        isFalse,
+      );
+    });
+
+    test('superseded by any other video, or by nothing', () {
+      expect(
+        requestSettled(requestedId: 'B', currentAtRequest: 'A', currentId: 'C'),
+        isTrue,
+      );
+      expect(
+        requestSettled(requestedId: 'B', currentAtRequest: 'A', currentId: null),
+        isTrue,
+      );
+      // The first video of a session: stopping must clear it too.
+      expect(
+        requestSettled(requestedId: 'B', currentAtRequest: null, currentId: null),
+        isFalse,
+        reason: 'still waiting: nothing has moved yet',
+      );
+    });
+
+    VideoBrief brief(String id) =>
+        VideoBrief(id: id, title: id, author: '', channelId: '');
+
+    testWidgets('a request fulfilled synchronously does not pin the sheet', (tester) async {
+      // open() first, then play() moves the player and notifies at once:
+      // the request is fulfilled, so a later return to A shows A.
+      final sheet = PlayerSheetController(vsync: const TestVSync());
+      sheet.open(brief('B'), currentId: 'A');
+      expect(sheet.requested?.id, 'B');
+      sheet.playerMoved('B');
+      expect(sheet.requested, isNull);
+      sheet.playerMoved('A');
+      expect(sheet.requested, isNull);
+      // Inside the body: the expand animation must not outlive the test.
+      sheet.dispose();
+    });
+
+    testWidgets('reopening what is playing makes no request', (tester) async {
+      final sheet = PlayerSheetController(vsync: const TestVSync());
+      sheet.open(brief('A'), currentId: 'A');
+      expect(sheet.requested, isNull);
+      // Inside the body: the expand animation must not outlive the test.
+      sheet.dispose();
+    });
+
+    testWidgets('a request waiting behind a slow load survives until it lands', (tester) async {
+      final sheet = PlayerSheetController(vsync: const TestVSync());
+      sheet.open(brief('B'), currentId: 'A');
+      sheet.playerMoved('A');
+      expect(sheet.requested?.id, 'B');
+      sheet.playerMoved('B');
+      expect(sheet.requested, isNull);
+      // Inside the body: the expand animation must not outlive the test.
+      sheet.dispose();
+    });
+  });
+
+  group('player sheet release', () {
+    test('a slow release settles to the nearer end', () {
+      expect(settlesExpanded(progress: 0.7, velocity: 0), isTrue);
+      expect(settlesExpanded(progress: 0.3, velocity: 0), isFalse);
+      expect(settlesExpanded(progress: 0.5, velocity: 100), isTrue);
+    });
+
+    test('a fling decides by direction, wherever the sheet is', () {
+      // Down is positive: a fast flick down from near the top still docks.
+      expect(settlesExpanded(progress: 0.9, velocity: 900), isFalse);
+      expect(settlesExpanded(progress: 0.1, velocity: -900), isTrue);
+    });
+
+    test('the fling threshold is exclusive', () {
+      expect(
+        settlesExpanded(progress: 0.2, velocity: -sheetFlingVelocity),
+        isFalse,
+      );
+    });
+  });
+
+  group('mini player swipe to dismiss', () {
+    test('past 40% of the width closes it', () {
+      expect(
+        miniDismisses(offset: 150, extent: 360, velocity: 0),
+        isTrue,
+      );
+      expect(
+        miniDismisses(offset: -150, extent: 360, velocity: 0),
+        isTrue,
+      );
+    });
+
+    test('short of it springs back', () {
+      expect(
+        miniDismisses(offset: 100, extent: 360, velocity: 200),
+        isFalse,
+      );
+    });
+
+    test('a fast flick closes it from a short distance', () {
+      expect(
+        miniDismisses(offset: 30, extent: 360, velocity: 1200),
+        isTrue,
+      );
+    });
+
+    test('a flick back towards rest never closes it', () {
+      expect(
+        miniDismisses(offset: 200, extent: 360, velocity: -1500),
+        isFalse,
+      );
+    });
+
+    test('no movement is not a dismissal', () {
+      expect(miniDismisses(offset: 0, extent: 360, velocity: 0), isFalse);
+    });
+
+    test('down only: back at rest and flung up never closes it', () {
+      // A downward swipe taken back to rest (offset clamped to 0) and then
+      // flicked up used to read as a fast fling and stop playback.
+      expect(
+        miniDismisses(
+          offset: 0,
+          extent: 80,
+          velocity: -1200,
+          bothWays: false,
+        ),
+        isFalse,
+      );
+      // Sideways keeps both directions.
+      expect(
+        miniDismisses(offset: 0, extent: 360, velocity: -1200),
+        isTrue,
+      );
+    });
+
+    test('down only: a downward flick still closes it', () {
+      expect(
+        miniDismisses(offset: 0, extent: 80, velocity: 1200, bothWays: false),
+        isTrue,
+      );
+      expect(
+        miniDismisses(offset: 40, extent: 80, velocity: 0, bothWays: false),
+        isTrue,
+      );
+    });
+  });
+
+  group('system back with the player sheet', () {
+    test('fullscreen goes first', () {
+      expect(
+        sheetBackAction(fullscreen: true, expanded: true, contentCanPop: true),
+        SheetBackAction.exitFullscreen,
+      );
+    });
+
+    test('an expanded sheet collapses rather than popping a page', () {
+      // Back from the watch page lands on the page it was opened over, with
+      // the video still playing in the mini player — not on the page before.
+      expect(
+        sheetBackAction(fullscreen: false, expanded: true, contentCanPop: true),
+        SheetBackAction.collapse,
+      );
+    });
+
+    test('docked, back pops the content page under the mini player', () {
+      expect(
+        sheetBackAction(
+          fullscreen: false,
+          expanded: false,
+          contentCanPop: true,
+        ),
+        SheetBackAction.popContent,
+      );
+    });
+
+    test('at the tabs with nothing expanded, the platform decides', () {
+      expect(
+        sheetBackAction(
+          fullscreen: false,
+          expanded: false,
+          contentCanPop: false,
+        ),
+        SheetBackAction.system,
+      );
     });
   });
 
@@ -5829,18 +6158,6 @@ Some blurb about the video.
         ),
         isFalse,
       );
-    });
-
-    test('the full-screen Shorts player gets no now-playing bar', () {
-      final o = RouteStackObserver();
-      final shell = _FakeRoute(null);
-      o.didPush(shell, null);
-      final shorts = _FakeRoute(RouteStackObserver.shortsRouteName);
-      o.didPush(shorts, shell);
-      expect(o.wantsNowPlayingBar, isFalse);
-      // A channel opened from a Short is an ordinary page again.
-      o.didPush(_FakeRoute('channel'), shorts);
-      expect(o.wantsNowPlayingBar, isTrue);
     });
   });
 }

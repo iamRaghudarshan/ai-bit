@@ -547,14 +547,27 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// controls off and its own tap layer in charge. Kept across a [rebuild] —
   /// an HD upgrade or an audio toggle is the same screen — and cleared by any
   /// other play, so a long-form video never inherits the Shorts presentation.
+  ///
+  /// [shortsOwner] names WHICH Shorts surface asked — the tab and a pushed
+  /// `ShortsRoute` are two `ShortsPage`s that can sit on the same Short at
+  /// once, and only the owner may mount the player (see [shortsOwner]).
   Future<void> play(
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
     bool rebuild = false,
     bool shortsSurface = false,
+    Object? shortsOwner,
   }) async {
-    if (!rebuild) _shortsSurface = shortsSurface && video.isShort;
+    var surfaceChanged = false;
+    if (!rebuild) {
+      final shorts = shortsSurface && video.isShort;
+      final owner = shorts ? shortsOwner : null;
+      surfaceChanged =
+          shorts != _shortsSurface || !identical(owner, _shortsOwner);
+      _shortsSurface = shorts;
+      _shortsOwner = owner;
+    }
     // Supersede whatever is loading now, before waiting for it: the older load
     // checks this token after each step and stands down, instead of finishing
     // a resolve and an attach for a video nobody wants any more.
@@ -585,6 +598,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         upNext: upNext,
         recordHistory: recordHistory,
         rebuild: rebuild,
+        surfaceChanged: surfaceChanged,
       );
     } finally {
       if (identical(_pendingLoad, completer.future)) _pendingLoad = null;
@@ -607,12 +621,22 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
     bool rebuild = false,
+    bool surfaceChanged = false,
   }) async {
     final token = ++_playToken;
     if (!rebuild &&
         _current?.id == video.id &&
         _player != null &&
         _error == null) {
+      // The same video moved between the sheet and the Shorts player (a
+      // Short opened long-form, then tapped in a Shorts grid). Its fit,
+      // aspect and controls belong to the screen it left, so they are put
+      // right for the new one, and the surfaces told at once — the sheet
+      // unmounts its player and the Shorts page mounts its own.
+      if (surfaceChanged) {
+        _applyPresentation(_player!, video);
+        notifyListeners();
+      }
       // Re-tapping the currently loaded video should just resume it.
       await _player!.play();
       return;
@@ -899,6 +923,18 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// True while the source is presented by the Shorts player: full-bleed,
   /// looping, with the shared [VideoControls] switched off.
   bool get onShortsSurface => _shortsSurface;
+
+  Object? _shortsOwner;
+
+  /// The Shorts surface (a `ShortsPage` state) that started what is playing,
+  /// or null when the Shorts player is not presenting it.
+  ///
+  /// The Shorts tab is kept alive under every pushed page, so it and a
+  /// `ShortsRoute` can both have the same Short "active" at once — and both
+  /// then mounted `BetterPlayer(key: playerKey)`, a duplicate GlobalKey.
+  /// Only the owner mounts the player, and only the owner stops it on the way
+  /// out, so a surface that is leaving can never stop the one taking over.
+  Object? get shortsOwner => _shortsOwner;
 
   /// Whether the current Short has wrapped round at least once this sitting.
   bool _shortLooped = false;
@@ -2420,7 +2456,25 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Stops playback and takes the now-playing bar off the screen.
+  /// Disposes a player an attach created after [stop] had already run.
+  void _discardOrphanPlayer() {
+    final player = _player;
+    _player = null;
+    _playing = false;
+    if (player == null) return;
+    debugPrint('AI BIT: dropping a player that started after close');
+    try {
+      player.videoPlayerController?.removeListener(_onValueChanged);
+      player.removeEventsListener(_onPlayerEvent);
+      player.dispose(forceDispose: true);
+    } catch (e) {
+      debugPrint('AI BIT: could not dispose the orphan player — $e');
+    }
+    notifyListeners();
+  }
+
+  /// Stops playback and takes the player sheet — the mini player or the
+  /// expanded watch page — off the screen.
   ///
   /// Ordered so that **nothing can stop the bar going away**, which is the one
   /// thing the user is asking for by pressing the button. It was reported as
@@ -2441,23 +2495,6 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// So the state is cleared and listeners are notified in the middle, with
   /// the fallible work on either side wrapped. Bookkeeping still goes first,
   /// because both calls read fields that are about to be cleared.
-  /// Disposes a player an attach created after [stop] had already run.
-  void _discardOrphanPlayer() {
-    final player = _player;
-    _player = null;
-    _playing = false;
-    if (player == null) return;
-    debugPrint('AI BIT: dropping a player that started after close');
-    try {
-      player.videoPlayerController?.removeListener(_onValueChanged);
-      player.removeEventsListener(_onPlayerEvent);
-      player.dispose(forceDispose: true);
-    } catch (e) {
-      debugPrint('AI BIT: could not dispose the orphan player — $e');
-    }
-    notifyListeners();
-  }
-
   Future<void> stop() async {
     final player = _player;
 
@@ -2491,6 +2528,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     _watchTickAt = null;
     _player = null;
     _current = null;
+    _shortsOwner = null;
     _sources = null;
     _position = Duration.zero;
     _duration = Duration.zero;
@@ -2549,7 +2587,43 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       _playing &&
       !isAudioOnly &&
       !_droppedVideo &&
-      _foreground;
+      _foreground &&
+      // Docked in the mini player the video is a thumbnail-sized companion
+      // to browsing, and YouTube lets the screen sleep there. Fullscreen and
+      // Picture in Picture always count as watching.
+      (!_minimised || _inPictureInPicture || (_player?.isFullScreen ?? false));
+
+  /// True while the Activity is in Picture-in-Picture mode (Android).
+  ///
+  /// Not derivable from the plugin: `value.isPip` is only set by the explicit
+  /// `enablePictureInPicture` path, while *automatic* PiP — armed with
+  /// `setAutoEnterEnabled`, entered by leaving the app — reports nothing, and
+  /// a PiP Activity is merely `inactive`, which [didChangeAppLifecycleState]
+  /// deliberately ignores. Entered from the docked mini player, the screen
+  /// was therefore let sleep under a video the user had just floated.
+  /// `MainActivity.onPictureInPictureModeChanged` reports it instead, over
+  /// the floating-player channel (see `FloatingPlayer.watchPictureInPicture`).
+  bool _inPictureInPicture = false;
+
+  /// Called with the Activity's Picture-in-Picture state as it changes.
+  void setInPictureInPicture(bool inPip) {
+    if (_inPictureInPicture == inPip) return;
+    _inPictureInPicture = inPip;
+    _syncWakelock();
+  }
+
+  /// True while the player sheet is docked as the mini player. Set by
+  /// `PlayerSheet`; see [setMinimised].
+  bool _minimised = false;
+
+  /// Tells the controller whether the player is presented as the docked mini
+  /// player (true) or the expanded watch page / anything else (false), which
+  /// decides whether the screen is held awake. Cheap to call on every build.
+  void setMinimised(bool minimised) {
+    if (_minimised == minimised) return;
+    _minimised = minimised;
+    _syncWakelock();
+  }
 
   /// Tracks the foreground/background state the wakelock decision needs.
   /// `didChangeAppLifecycleState` already runs here for the screen-off track

@@ -51,8 +51,9 @@ class FeedPreviewCoordinator extends ChangeNotifier {
   /// preview that finished setting up inside that window started, took audio
   /// focus, and Android answered by stopping the video the user had just
   /// opened for good — reported as "videos don't play until I minimise and
-  /// reopen". The watch page is a see-through route over the feed, so the
-  /// feed's cards stay "visible" underneath it and nothing else stops them.
+  /// reopen". The watch page is the expanded player sheet drawn over the
+  /// feed, not a route, so the feed's cards stay "visible" underneath it and
+  /// nothing else stops them.
   void _onPlayback() {
     if (_playback.isLoading || _playback.isPlaying) {
       if (_activeId != null || _pendingId != null || _player != null) stop();

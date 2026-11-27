@@ -1,6 +1,7 @@
 package com.personal.aibit.ai_bit
 
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -28,6 +29,9 @@ class MainActivity : FlutterActivity() {
 
         /** Dart-side method name for a failure that surfaced after `start`. */
         const val ON_FAILED = "onFailed"
+
+        /** Dart-side method name for entering or leaving Picture in Picture. */
+        const val ON_PIP_CHANGED = "onPictureInPictureChanged"
 
         /** Dart-side method name for a link that arrived while running. */
         const val ON_LINK = "onLink"
@@ -218,6 +222,28 @@ class MainActivity : FlutterActivity() {
 
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    /**
+     * Tells Dart when the Activity enters or leaves Picture in Picture.
+     *
+     * The player plugin only reports PiP it started itself; automatic PiP
+     * (armed with setAutoEnterEnabled, entered by leaving the app) is a
+     * system transition nobody else hears. A PiP Activity is only paused, so
+     * Flutter's lifecycle says "inactive", which the wakelock logic ignores
+     * — and from the docked mini player the screen was let sleep under the
+     * floated video. PlaybackController.setInPictureInPicture is the reader.
+     */
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        try {
+            channel?.invokeMethod(ON_PIP_CHANGED, isInPictureInPictureMode)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not report the picture-in-picture change", e)
         }
     }
 

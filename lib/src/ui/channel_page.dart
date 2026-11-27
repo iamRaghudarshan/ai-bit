@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/app_navigator.dart';
 import '../core/theme.dart';
 import '../data/browse_client.dart';
 import '../data/db.dart';
@@ -39,7 +40,10 @@ class ChannelPage extends StatefulWidget {
     String channelId, {
     String? title,
   }) {
-    return Navigator.of(context).push(
+    // Onto the content navigator, under the player: opened from the watch
+    // page it minimises the video, as YouTube does.
+    return pushContent(
+      context,
       MaterialPageRoute<void>(
         builder: (_) => ChannelPage(channelId: channelId, initialTitle: title),
       ),
@@ -346,6 +350,7 @@ class _ChannelPageState extends State<ChannelPage>
     final info = _info;
     if (info == null) return;
     showModalBottomSheet<void>(
+      useRootNavigator: true,
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -810,6 +815,7 @@ class _SubscribePillState extends State<SubscribePill> {
 
   Future<void> _manage() async {
     final unsubscribe = await showModalBottomSheet<bool>(
+      useRootNavigator: true,
       context: context,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(

@@ -34,6 +34,7 @@ Widget _sheetHeader(BuildContext context, String title) => Padding(
 Future<void> showSpeedSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     // With the drag handle, eight 56dp rows no longer fit the default
     // 9/16-height sheet on a small phone; scroll-controlled with 48dp rows
@@ -63,6 +64,7 @@ Future<void> showSpeedSheet(BuildContext context) {
 Future<void> showSleepTimerSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     // With the drag handle, eight 56dp rows no longer fit the default
     // 9/16-height sheet on a small phone; scroll-controlled with 48dp rows
@@ -133,6 +135,7 @@ Future<void> showQualitySheet(BuildContext context) {
   final settings = context.read<SettingsService>();
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     // A full HLS ladder is nine entries, more than a half-height sheet fits.
     isScrollControlled: true,
@@ -204,6 +207,7 @@ Future<void> showCaptionsSheet(BuildContext context) {
   unawaited(playback.loadCaptions());
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     // A video can carry many caption languages, more than a half-sheet fits.
     isScrollControlled: true,
@@ -268,6 +272,7 @@ Future<void> showCaptionsSheet(BuildContext context) {
 Future<void> showSaveToPlaylistSheet(BuildContext context, VideoBrief video) {
   final db = context.read<AppDatabase>();
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     builder: (context) => _SaveToPlaylistSheet(db: db, video: video),
@@ -470,6 +475,7 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
   final downloads = context.read<DownloadManager>();
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     // A tall video can offer eight renditions plus the footer, more than a
     // half-height sheet fits. Without this the list overflowed and dragging it
@@ -582,6 +588,7 @@ Future<void> showVideoMenu(
   final downloads = context.read<DownloadManager>();
 
   return showModalBottomSheet<void>(
+    useRootNavigator: true,
     context: context,
     isScrollControlled: true,
     useSafeArea: true,

@@ -326,6 +326,18 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    route asks for is still chosen from the video's ratio in
    `better_player.dart`, unchanged.
 
+31. Both iOS PiP paths (`enablePictureInPicture` and
+   `setAutomaticPictureInPicture`) measured the player as
+   `localToGlobal(Offset.zero)` plus the untransformed `renderBox.size`.
+   AI BIT's player sheet draws the one player under a `Transform.scale` in
+   the mini player, so PiP started from there sent a full-width 16:9 rect
+   from the mini bar's top, and `usePlayerLayer` laid the video layer over
+   the bar and off the bottom of the screen. Both now send
+   `MatrixUtils.transformRect(getTransformTo(null), Offset.zero & size)`,
+   the box as it really is on screen (`_pipSourceRect` in
+   `lib/src/core/better_player_controller.dart`). Identical to the old
+   arithmetic for an untransformed player.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

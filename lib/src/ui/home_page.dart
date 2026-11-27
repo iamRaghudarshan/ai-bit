@@ -472,6 +472,7 @@ class HomePageState extends State<HomePage>
   /// Long-press on a custom chip: rename, change the topics, or delete.
   Future<void> _editCustomFeed(CustomFeed feed) async {
     final action = await showModalBottomSheet<String>(
+      useRootNavigator: true,
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Column(
