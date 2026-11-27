@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:better_player_plus/better_player_plus.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:visibility_detector/visibility_detector.dart';
@@ -381,6 +382,22 @@ class FeedPreviewSurface extends StatelessWidget {
                       final remaining = previewRemaining(value.position, total);
                       return Stack(
                         children: [
+                          // The thumbnail stays over the player until the first
+                          // frame has actually played. The player is mounted
+                          // as soon as play() returns, which is before any
+                          // frame is decoded, so the card went black for a
+                          // second or two (seen on AIBitPhone). YouTube keeps
+                          // the still until the picture moves.
+                          if (value.position == Duration.zero)
+                            Positioned.fill(
+                              child: CachedNetworkImage(
+                                imageUrl: video.thumbUrl,
+                                fit: BoxFit.cover,
+                                memCacheWidth: 720,
+                                errorWidget: (_, _, _) =>
+                                    const SizedBox.shrink(),
+                              ),
+                            ),
                           if (remaining != null && !video.isLive)
                             Positioned(
                               right: 8,
