@@ -186,9 +186,11 @@ class _VideoControlsState extends State<VideoControls> {
                   : playback.audioOnlyFromSettings
                   ? 'Audio only (on in Settings)'
                   : 'Audio only',
-              // A video with no picture cannot be switched back to one.
-              onShowVideo: playback.isOfflineAudio || playback.isAudioFallback
-                  ? null
+              // A sound-only download streams the picture instead, and a sound-
+              // only answer from YouTube is asked again: neither used to offer
+              // a way back, so the video stayed audio until it was reopened.
+              onShowVideo: playback.canShowVideo
+                  ? playback.showVideoAnyway
                   : () => playback.setAudioOnly(false),
             ),
           ),

@@ -2,6 +2,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../core/app_navigator.dart';
 import '../../core/theme.dart';
 import '../../player/playback_controller.dart';
 import '../watch_page.dart';
@@ -28,7 +29,7 @@ class MiniPlayer extends StatelessWidget {
           ? AppColors.darkElevated
           : AppColors.lightSurface,
       child: InkWell(
-        onTap: () => WatchPage.open(context, video),
+        onTap: () => WatchPage.reopen(context, video),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -96,12 +97,12 @@ class MiniPlayer extends StatelessWidget {
                   if (playback.hasNext)
                     IconButton(
                       icon: const Icon(Icons.skip_next),
-                      tooltip: 'Next',
+                      tooltip: tooltipIfPossible(context, 'Next'),
                       onPressed: playback.playNext,
                     ),
                   IconButton(
                     icon: const Icon(Icons.close),
-                    tooltip: 'Stop',
+                    tooltip: tooltipIfPossible(context, 'Close'),
                     onPressed: playback.stop,
                   ),
                 ],

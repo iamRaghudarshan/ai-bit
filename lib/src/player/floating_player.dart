@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_navigator.dart';
 import 'playback_controller.dart';
 
 /// Pops what is playing out of the app, so it survives switching to another
@@ -225,8 +226,13 @@ class FloatingPlayer {
 
     if (!await hasPermission()) {
       if (!context.mounted) return;
+      // The navigator's own context: this button also sits in the bar painted
+      // over pushed screens, which is above the Navigator, and a dialog
+      // asked for from there threw instead of opening.
+      final dialogHost = navigatorFor(context)?.context;
+      if (dialogHost == null) return;
       final go = await showDialog<bool>(
-        context: context,
+        context: dialogHost,
         builder: (dialogContext) => AlertDialog(
           title: const Text('Allow floating player'),
           content: const Text(
@@ -328,9 +334,10 @@ class FloatingPlayerButton extends StatelessWidget {
     return IconButton(
       iconSize: size,
       icon: const Icon(Icons.picture_in_picture_alt_outlined),
-      tooltip: FloatingPlayer.isSupported
-          ? 'Float over other apps'
-          : 'Picture in picture',
+      tooltip: tooltipIfPossible(
+        context,
+        FloatingPlayer.isSupported ? 'Float over other apps' : 'Picture in picture',
+      ),
       onPressed: () => FloatingPlayer.popOut(context),
     );
   }

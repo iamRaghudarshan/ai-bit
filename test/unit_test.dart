@@ -4344,7 +4344,27 @@ Some blurb about the video.
       o.didPush(shell, null);
       final watch = route(RouteStackObserver.watchRouteName);
       o.didPush(watch, shell);
-      o.didPush(route(null), watch);
+      o.didPush(route(RouteStackObserver.fullscreenRouteName), watch);
+      expect(o.wantsNowPlayingBar, isFalse);
+    });
+
+    test('shows over a page opened FROM the watch page', () {
+      // Tapping the channel name puts the channel page over the watch page.
+      // The rule used to be "no watch page anywhere in the stack", so the bar
+      // vanished there while the video played on — nothing to reopen it or
+      // close it with.
+      final o = RouteStackObserver();
+      o.didPush(shell, null);
+      final watch = route(RouteStackObserver.watchRouteName);
+      o.didPush(watch, shell);
+      final channel = route('channel');
+      o.didPush(channel, watch);
+      expect(o.wantsNowPlayingBar, isTrue);
+      expect(o.watchRoutes, [watch]);
+      o.didRemove(watch, shell);
+      expect(o.watchRoutes, isEmpty);
+      expect(o.wantsNowPlayingBar, isTrue);
+      o.didPop(channel, shell);
       expect(o.wantsNowPlayingBar, isFalse);
     });
 

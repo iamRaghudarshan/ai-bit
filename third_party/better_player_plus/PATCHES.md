@@ -308,6 +308,12 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    (`lib/src/core/captions.dart`), which is the actual fix; this is the
    guard behind it.
 
+29. The fullscreen route was pushed with an empty `RouteSettings()`, so the
+   host could not tell it from any of its own unnamed pages. AI BIT's
+   now-playing bar has to hide over the player's fullscreen but show over a
+   channel page opened from the watch page; the route is now named
+   `better-player-fullscreen` (`lib/src/core/better_player.dart`).
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

@@ -1274,6 +1274,55 @@ class YtRepository {
   /// pause has lapsed — can try again instead of being pinned to 360p for the
   /// stream cache's lifetime. Checks `_hdUnlockWorthTrying` at call time, not
   /// at resolve time, so a video resolved during the pause is not written off.
+  /// Asks for a picture again after [_resolveNow] could only find sound.
+  ///
+  /// The player clients one at a time, with time between, rather than the
+  /// fast parallel ask that just failed: the usual cause is a request refused
+  /// or cut short, and the cure is simply asking again. A progressive stream
+  /// or a YouTube ladder is cached for the reload the controller does next.
+  Future<PlaybackSources?> Function() _pictureRetry(
+    String key,
+    String videoId,
+  ) {
+    Future<PlaybackSources?>? inFlight;
+    return () => inFlight ??= () async {
+          for (final wait in const [Duration(seconds: 1), Duration(seconds: 5)]) {
+            await Future<void>.delayed(wait);
+            try {
+              final streams = await _player.fetch(videoId, parallel: false);
+              if (streams == null) continue;
+              if (streams.hlsUrl != null) {
+                debugPrint('AI BIT start: $videoId picture found on retry (HLS)');
+                return _cache(key, PlaybackSources(
+                  url: streams.hlsUrl!,
+                  qualities: const {},
+                  audioOnlyUrl: streams.audioUrl,
+                  isHls: true,
+                  isLive: streams.isLive,
+                ));
+              }
+              final muxed = streams.muxedUrl;
+              if (muxed != null) {
+                debugPrint('AI BIT start: $videoId picture found on retry');
+                return _cache(key, PlaybackSources(
+                  url: muxed,
+                  qualities: streams.muxedQualities,
+                  audioOnlyUrl: streams.audioUrl,
+                  upgrade: canUseDash || canUseGeneratedHls
+                      ? _lazyUpgrade(key, videoId, streams,
+                          probeOrdinary: streams.adaptiveFormats.isNotEmpty)
+                      : null,
+                ));
+              }
+            } catch (e) {
+              debugPrint('AI BIT: picture retry failed for $videoId — $e');
+            }
+          }
+          debugPrint('AI BIT start: $videoId still sound only after retries');
+          return null;
+        }();
+  }
+
   Future<PlaybackSources?> Function() _lazyUpgrade(
     String key,
     String videoId,
@@ -1743,12 +1792,22 @@ class YtRepository {
     }
 
     if (audioFallback != null) {
-      return _cache(key, PlaybackSources(
+      // Not cached, and not final. Nearly every time this is reached the video
+      // HAS a picture: the request that would have carried it was refused,
+      // throttled or timed out — more likely now that cards are resolved
+      // while they sit on screen. Cached, that one bad answer was served for
+      // two hours, so the video opened as sound only every time it was
+      // tapped. Now the sound starts and the picture is asked for again
+      // behind it; the controller switches over when it arrives.
+      debugPrint('AI BIT start: $videoId answered with sound only — '
+          'retrying for the picture');
+      return PlaybackSources(
         url: audioFallback,
         qualities: const {},
         audioOnlyUrl: audioFallback,
         videoUnavailable: true,
-      ));
+        upgrade: _pictureRetry(key, videoId),
+      );
     }
     throw StreamResolutionException(videoId, lastError);
   }

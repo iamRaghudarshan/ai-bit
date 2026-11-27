@@ -182,7 +182,9 @@ class _BetterPlayerState extends State<BetterPlayer> with WidgetsBindingObserver
 
   Future<dynamic> _pushFullScreenWidget(BuildContext context) async {
     final TransitionRoute<void> route = PageRouteBuilder<void>(
-      settings: const RouteSettings(),
+      // PATCH: named, so the host app's route observer can tell the player's
+      // fullscreen from its own pages (PATCHES.md #29).
+      settings: const RouteSettings(name: 'better-player-fullscreen'),
       pageBuilder: _fullScreenRoutePageBuilder,
     );
 

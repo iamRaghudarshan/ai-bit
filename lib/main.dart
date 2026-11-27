@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import 'dart:async';
 
+import 'src/core/app_navigator.dart';
 import 'src/core/incoming_links.dart';
 import 'src/core/theme.dart';
 import 'src/data/attestation/attestation_service.dart';
@@ -30,20 +31,10 @@ import 'src/ui/update_prompt.dart';
 import 'src/ui/watch_page.dart';
 import 'src/ui/widgets/now_playing_overlay.dart';
 
-/// The app-wide navigator, held here rather than inside [AiBitApp] because the
-/// app-lock gate needs it.
-///
-/// The gate lives in [MaterialApp.builder], which wraps the Navigator instead
-/// of sitting under it — that is what lets the shield cover the watch page and
-/// every other pushed route, but it also means the gate has no Navigator
-/// ancestor and cannot push the PIN screen through its own context.
-/// `Navigator.of` accepts the navigator's own element, so this key's context is
-/// a valid argument to [AppLockPage.unlock].
-final _navigatorKey = GlobalKey<NavigatorState>();
-
-/// Tracks the navigation stack so the now-playing bar can be painted over
-/// pushed routes. See [NowPlayingOverlay].
-final _routeStack = RouteStackObserver();
+// The navigator key and route observer live in src/core/app_navigator.dart:
+// the now-playing bar needs them too, and it is built outside the Navigator.
+final _navigatorKey = appNavigatorKey;
+final _routeStack = appRouteStack;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

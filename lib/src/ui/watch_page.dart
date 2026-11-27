@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
+import '../core/app_navigator.dart';
 import '../core/chapters.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
@@ -68,6 +69,24 @@ class WatchPage extends StatefulWidget {
         ),
       ),
     );
+  }
+
+  /// Brings the playing video back from the now-playing bar.
+  ///
+  /// Two ways this used to fail, both reported as "tapping the minimised video
+  /// does nothing". The bar painted over pushed screens is built in
+  /// `MaterialApp.builder`, *outside* the Navigator, so `Navigator.of` threw
+  /// there and the tap was lost — the app's own navigator is used instead. And
+  /// a watch page left underneath a channel or playlist opened from it would
+  /// have had a second one stacked on top; it is removed first, so there is
+  /// only ever one watch page and it shows what is actually playing.
+  static Future<void> reopen(BuildContext context, VideoBrief video) {
+    final navigator = navigatorFor(context);
+    if (navigator == null) return Future.value();
+    for (final buried in appRouteStack.watchRoutes) {
+      if (buried.isActive && !buried.isCurrent) navigator.removeRoute(buried);
+    }
+    return open(navigator.context, video);
   }
 
   /// Starts [videos] at [startAt] and queues everything after it, so a channel
@@ -164,7 +183,21 @@ class _WatchPageState extends State<WatchPage>
     }
 
     final current = _playback?.current;
-    if (!mounted || current == null) return;
+    if (!mounted) return;
+    if (current == null) {
+      // Closed from the now-playing bar while this page sat underneath a
+      // channel or playlist opened from it. Left in place, backing out of that
+      // page landed on a dead player for a video nobody is watching.
+      final route = ModalRoute.of(context);
+      if (route != null && route.isActive && !route.isCurrent) {
+        Future.microtask(() {
+          if (route.isActive && !route.isCurrent) {
+            route.navigator?.removeRoute(route);
+          }
+        });
+      }
+      return;
+    }
     if (current.id == _video.id) {
       // The player is on our video: anything after this is a real move.
       _following = true;
@@ -1385,12 +1418,15 @@ class _ActionRow extends StatelessWidget {
                               : 'Picture comes back when you return to the app',
                         ),
                         value: playback.isAudioOnly,
-                        // A video with no picture to show cannot be switched.
-                        onChanged:
-                            playback.isAudioFallback || playback.isOfflineAudio
-                            ? null
-                            : (v) {
-                                playback.setAudioOnly(v);
+                        // Off with no setting behind the missing picture
+                        // (a sound-only download, or YouTube answering with
+                        // sound only) means "get me the picture".
+                        onChanged: (v) {
+                                if (!v && playback.canShowVideo) {
+                                  playback.showVideoAnyway();
+                                } else {
+                                  playback.setAudioOnly(v);
+                                }
                                 // Close on the tap, so the change is seen
                                 // rather than hidden behind the sheet.
                                 Navigator.pop(sheetContext);

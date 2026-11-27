@@ -264,6 +264,31 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// the player can say so instead of leaving it a mystery.
   bool get audioOnlyFromSettings => _config.audioOnly;
 
+  /// The viewer asked for no picture — Settings, the watch page's switch, or
+  /// audio-only on mobile data — as opposed to the video having none.
+  bool get _userWantsNoPicture =>
+      _config.audioOnly || _sessionAudio || _mobileAudio;
+
+  /// A video whose sound-only download should be bypassed for the stream.
+  String? _streamOverFile;
+
+  /// Whether "Show video" can do anything for what is playing: a sound-only
+  /// download (stream it instead) or a video YouTube answered with sound only
+  /// (ask again — usually a refused or throttled request, not a video that
+  /// has no picture).
+  bool get canShowVideo =>
+      _current != null && (_offlineAudio || isAudioFallback);
+
+  /// "Show video" on the audio-only pill, for the two cases [setAudioOnly]
+  /// cannot help with because no setting is the reason for the missing
+  /// picture.
+  Future<void> showVideoAnyway() async {
+    final video = _current;
+    if (video == null || !canShowVideo) return;
+    if (_offlineAudio) _streamOverFile = video.id;
+    await reloadCurrent();
+  }
+
   /// Audio only, switched on from the watch page.
   ///
   /// Not the Settings default. The watch page used to write the global
@@ -525,7 +550,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // Supersede whatever is loading now, before waiting for it: the older load
     // checks this token after each step and stands down, instead of finishing
     // a resolve and an attach for a video nobody wants any more.
-    _playToken++;
+    final ticket = ++_playToken;
     // Wait for any load already running, so two never touch the player at once
     // — but not forever. A load stuck on a dead connection used to hold every
     // later tap behind it, so no video at all would start until the app was
@@ -538,6 +563,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         // Its own caller reported it, or it is stuck; either way this one
         // carries on.
       }
+      // Closed, or replaced by a newer tap, while it waited. Carrying on here
+      // was how a video came back after the mini player's X: a tap queued
+      // behind a slow load started *after* the close, with a fresh token of
+      // its own, and played with no bar left on screen to stop it.
+      if (ticket != _playToken) return;
     }
     final completer = Completer<void>();
     _pendingLoad = completer.future;
@@ -665,10 +695,40 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     try {
       // A finished download always wins: it plays instantly, costs no data and
       // works with no network at all.
-      final offlinePath = await _offlineFile(video.id);
+      var offlinePath = await _offlineFile(video.id);
       debugPrint('AI BIT start: ${video.id} offline check '
           '${startTimer.elapsedMilliseconds}ms');
-      final sources = offlinePath != null
+      PlaybackSources? streamed;
+      // Except a sound-only download, when the picture can be had. Saving a
+      // video's audio is a choice about listening offline, not a choice to
+      // lose the picture for ever — but the file used to win every time, so
+      // that video opened as sound only from the feed, search and history
+      // alike, which is one of the ways "some videos open in audio mode".
+      // Offline, or with a saving mode on, the file is still used.
+      if (offlinePath != null &&
+          (_streamOverFile == video.id ||
+              (!_userWantsNoPicture &&
+                  !_config.dataSaver &&
+                  !_mobileSaving)) &&
+          await _db.isAudioDownload(video.id)) {
+        try {
+          // Bounded: with no network this must not hold the file hostage for
+          // a whole request timeout before playing it.
+          final online = await _repo
+              .resolve(video.id)
+              .timeout(const Duration(seconds: 4));
+          if (!online.videoUnavailable) {
+            streamed = online;
+            offlinePath = null;
+          }
+        } catch (e) {
+          debugPrint('AI BIT: ${video.id} has no stream, playing the audio '
+              'download - $e');
+        }
+        if (token != _playToken) return;
+      }
+      final sources = streamed ??
+          (offlinePath != null
           ? PlaybackSources(url: offlinePath, qualities: const {})
           // Resolved in full even in audio mode.
           //
@@ -682,7 +742,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
           //
           // Audio mode is a player-side concern: same stream as video, lowest
           // rendition, picture covered.
-          : await _repo.resolve(video.id);
+          : await _repo.resolve(video.id));
       _sources = sources;
       _isOffline = offlinePath != null;
       _offlineAudio =
@@ -1375,7 +1435,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       if (token != _playToken || _current?.id != video.id) return;
       if (_isOffline || !identical(_sources, sources)) return;
       // Audio mode plays the lowest rendition on purpose; HD is no upgrade.
-      if (isAudioOnly) return;
+      // An audio *fallback* is the exception — that upgrade is the picture
+      // arriving, which is the whole point of it.
+      if (_userWantsNoPicture || _offlineAudio) return;
       // Not when the video is about to finish, has finished, or is counting
       // down to the next one. The rebuild cancels the countdown and the
       // outgoing player's STATE_ENDED is suppressed as teardown noise, so an
@@ -1418,7 +1480,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         recordHistory: false,
         rebuild: true,
       );
-      if (resumeAt > const Duration(seconds: 3)) await seek(resumeAt);
+      if (resumeAt > const Duration(seconds: 3) && _current?.id == video.id) {
+        await seek(resumeAt);
+      }
       if (_current?.id == video.id) {
         _chapters = chapters;
         _unshuffledQueue = unshuffled;

@@ -49,17 +49,22 @@ class NowPlayingOverlay extends StatelessWidget {
         final hasVideo = context.select<PlaybackController, bool>(
           (playback) => playback.current != null,
         );
-        if (!hasVideo || !routes.wantsNowPlayingBar) return child!;
-
+        // Always the same Stack, with the bar in or out of it. Returning the
+        // bare child in one case and a Stack around it in the other changed
+        // the shape of the tree above the Navigator every time the bar came
+        // or went, which tears down and rebuilds everything between them.
         return Stack(
+          // Tight, as the bare child used to be given.
+          fit: StackFit.expand,
           children: [
             child!,
-            const Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: _Bar(),
-            ),
+            if (hasVideo && routes.wantsNowPlayingBar)
+              const Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: _Bar(),
+              ),
           ],
         );
       },
@@ -112,30 +117,47 @@ class _Bar extends StatelessWidget {
 /// on every navigation and most of them do not alter whether the bar belongs
 /// on screen.
 class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
-  /// Names of the routes currently on the stack, innermost last.
-  final _stack = <String?>[];
+  /// The routes currently on the stack above the shell, innermost last.
+  /// Routes rather than names, so a pop removes exactly the route that went.
+  final _stack = <Route<dynamic>>[];
 
   /// Whether the now-playing bar should be painted over the current route.
   ///
-  /// Two conditions, and both matter:
-  ///
   ///   * **Something is pushed.** On a root tab the shell draws its own bar in
   ///     a better position, so painting a second one would double it up.
-  ///   * **The watch page is nowhere in the stack.** Not merely "is not on
-  ///     top": the player's own fullscreen route is pushed *above* the watch
-  ///     page, and a mini player floating over a fullscreen video is absurd.
-  ///     Asking about the whole stack covers fullscreen, picture-in-picture
-  ///     and anything else the watch page opens, without having to name them.
-  bool get wantsNowPlayingBar =>
-      _popups == 0 &&
-      _stack.isNotEmpty &&
-      !_stack.contains(watchRouteName) &&
-      // Nor over the app-lock PIN pad: a bar with the playing video's title
-      // and artwork on the lock screen gives away exactly what the lock hides.
-      _stack.last != appLockRouteName;
+  ///   * **The top route is not the player's own screen** — the watch page or
+  ///     the fullscreen route the player pushes above it.
+  ///
+  /// This used to say "the watch page is nowhere in the stack", and that hid
+  /// the bar on every screen opened *from* the watch page: tap the channel
+  /// name, a playlist or a hashtag and the page went over the watch page, the
+  /// video kept playing, and there was no bar anywhere to reopen or close it
+  /// from — reported as "the minimised video will not show and will not
+  /// close". The fullscreen route is named now (PATCHES.md #29), so asking
+  /// about the top route is enough.
+  bool get wantsNowPlayingBar {
+    if (_popups != 0 || _stack.isEmpty) return false;
+    final top = _stack.last.settings.name;
+    return top != watchRouteName &&
+        top != fullscreenRouteName &&
+        // Nor over the app-lock PIN pad: a bar with the playing video's title
+        // and artwork on the lock screen gives away exactly what the lock
+        // hides.
+        top != appLockRouteName;
+  }
+
+  /// Watch pages still on the stack — buried under something opened from
+  /// them, since the bar is only shown when none is on top.
+  List<Route<dynamic>> get watchRoutes => [
+        for (final r in _stack)
+          if (r.settings.name == watchRouteName) r,
+      ];
 
   /// Route name given to the watch page, so it can be recognised here.
   static const watchRouteName = 'watch';
+
+  /// Route name the vendored player gives its fullscreen route.
+  static const fullscreenRouteName = 'better-player-fullscreen';
 
   /// Route name given to the app-lock PIN pad.
   static const appLockRouteName = 'app-lock';
@@ -164,7 +186,7 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
     // The first route is the shell itself and is not "pushed" for this
     // purpose; everything above it is.
     if (previousRoute == null) return;
-    _update(() => _stack.add(route.settings.name));
+    _update(() => _stack.add(route));
   }
 
   @override
@@ -173,7 +195,7 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
       _update(() => _popups = _popups > 0 ? _popups - 1 : 0);
       return;
     }
-    _update(() => _removeLast(route.settings.name));
+    _update(() => _remove(route));
   }
 
   @override
@@ -182,30 +204,29 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
       _update(() => _popups = _popups > 0 ? _popups - 1 : 0);
       return;
     }
-    _update(() => _removeLast(route.settings.name));
+    _update(() => _remove(route));
   }
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
     _update(() {
-      _removeLast(oldRoute?.settings.name);
-      if (newRoute != null) _stack.add(newRoute.settings.name);
+      final index = oldRoute == null ? -1 : _stack.indexOf(oldRoute);
+      if (index >= 0) {
+        if (newRoute != null) {
+          _stack[index] = newRoute;
+        } else {
+          _stack.removeAt(index);
+        }
+      } else if (newRoute != null) {
+        _stack.add(newRoute);
+      }
     });
   }
 
-  /// Removes the topmost entry matching [name].
-  ///
-  /// By name rather than blindly dropping the last element: routes do not
-  /// always pop in the order they were pushed — a `popUntil`, or a dialog
-  /// dismissed behind a page transition, can interleave them — and dropping
-  /// the wrong entry would leave the stack permanently out of step with
-  /// reality, which shows up as a bar that never comes back.
-  void _removeLast(String? name) {
-    final index = _stack.lastIndexOf(name);
-    if (index >= 0) {
-      _stack.removeAt(index);
-    } else if (_stack.isNotEmpty) {
-      _stack.removeLast();
-    }
-  }
+  /// Removes exactly [route]. Routes do not always leave in the order they
+  /// came — a `popUntil`, a `removeRoute`, a dialog dismissed behind a page
+  /// transition — and dropping the wrong entry would leave the stack out of
+  /// step with reality, which shows up as a bar that never comes back. The
+  /// shell's own route is not in the list, so a miss is simply ignored.
+  void _remove(Route<dynamic> route) => _stack.remove(route);
 }
