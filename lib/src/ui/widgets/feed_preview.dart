@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
+import '../../core/format.dart';
 import '../../core/settings_rules.dart';
 import '../../data/battery_service.dart';
 import '../../data/models.dart';
@@ -12,6 +13,7 @@ import '../../data/network_service.dart';
 import '../../data/settings.dart';
 import '../../data/yt_repository.dart';
 import '../../player/playback_controller.dart';
+import 'video_tile.dart';
 
 /// Muted previews of the feed card you pause on, the way the YouTube app does.
 ///
@@ -100,6 +102,24 @@ class FeedPreviewCoordinator extends ChangeNotifier {
 
   bool _scrolling = false;
   VideoBrief? _pendingVideo;
+
+  /// Previews start muted, as YouTube's do; the speaker button on the
+  /// preview flips it, and the choice carries to the next preview for the
+  /// rest of this screen's life rather than resetting on every card.
+  bool _muted = true;
+  bool get muted => _muted;
+
+  Future<void> toggleMute() async {
+    _muted = !_muted;
+    notifyListeners();
+    final player = _player;
+    if (player == null) return;
+    try {
+      await player.setVolume(_muted ? 0 : 1);
+    } catch (e) {
+      debugPrint('AI BIT: preview volume not applied - $e');
+    }
+  }
 
   /// Told by the feed when a drag or fling starts and when it settles.
   ///
@@ -197,7 +217,7 @@ class FeedPreviewCoordinator extends ChangeNotifier {
               const BetterPlayerNotificationConfiguration(showNotification: false),
         ),
       );
-      await controller.setVolume(0);
+      await controller.setVolume(_muted ? 0 : 1);
       // A muted preview must never take audio focus. Every player in the
       // vendored plugin asks for it (PATCHES.md, so a call pauses the video),
       // and focus is exclusive: a preview starting while the real video loads
@@ -317,6 +337,11 @@ class FeedPreviewSlot extends StatelessWidget {
 }
 
 /// The preview surface, drawn over a card's thumbnail while it is playing.
+///
+/// YouTube's preview chrome: a speaker button top-right, a thin accent line
+/// along the bottom for how far the preview has got, and the duration badge
+/// counting down — the moving picture covers the thumbnail's own badge, so
+/// without one here the length of the video vanishes the moment it previews.
 class FeedPreviewSurface extends StatelessWidget {
   const FeedPreviewSurface({
     super.key,
@@ -336,15 +361,97 @@ class FeedPreviewSurface extends StatelessWidget {
         if (coordinator.activeId != video.id || player == null) {
           return const SizedBox.shrink();
         }
+        final progress = player.videoPlayerController;
         return Positioned.fill(
-          // Ignores pointers so the card's own tap still opens the video: a
-          // preview you have to dismiss before you can watch is worse than no
-          // preview.
-          child: IgnorePointer(
-            child: BetterPlayer(controller: player),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Ignores pointers so the card's own tap still opens the video:
+              // a preview you have to dismiss before you can watch is worse
+              // than no preview.
+              IgnorePointer(child: BetterPlayer(controller: player)),
+              if (progress != null)
+                IgnorePointer(
+                  child: ListenableBuilder(
+                    listenable: progress,
+                    builder: (context, _) {
+                      final value = progress.value;
+                      final total = value.duration ?? video.duration;
+                      final fraction = previewFraction(value.position, total);
+                      final remaining = previewRemaining(value.position, total);
+                      return Stack(
+                        children: [
+                          if (remaining != null && !video.isLive)
+                            Positioned(
+                              right: 8,
+                              bottom: 8 + 2,
+                              child: ThumbBadge(label: clockLabel(remaining)),
+                            ),
+                          Align(
+                            alignment: Alignment.bottomCenter,
+                            child: ResumeBar(progress: fraction, height: 2),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              Positioned(
+                top: 4,
+                right: 4,
+                child: _MuteButton(
+                  muted: coordinator.muted,
+                  onPressed: coordinator.toggleMute,
+                ),
+              ),
+            ],
           ),
         );
       },
     );
   }
+}
+
+class _MuteButton extends StatelessWidget {
+  const _MuteButton({required this.muted, required this.onPressed});
+
+  final bool muted;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.6),
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(
+            muted ? Icons.volume_off : Icons.volume_up,
+            size: 20,
+            color: Colors.white,
+            semanticLabel: muted ? 'Unmute preview' : 'Mute preview',
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// How far through [total] a preview at [position] is, 0..1; zero when the
+/// length is unknown.
+double previewFraction(Duration position, Duration? total) {
+  if (total == null || total <= Duration.zero) return 0;
+  return (position.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0);
+}
+
+/// Time left for the counting-down badge, or null when the length is
+/// unknown. Never negative: a position a tick past a rounded duration is
+/// common, and "-0:01" on a badge would look like a bug.
+Duration? previewRemaining(Duration position, Duration? total) {
+  if (total == null || total <= Duration.zero) return null;
+  final left = total - position;
+  return left.isNegative ? Duration.zero : left;
 }

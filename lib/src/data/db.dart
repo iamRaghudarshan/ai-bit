@@ -512,7 +512,7 @@ class AppDatabase {
   /// Separate from [recentSearches], which orders by hit count because the
   /// feed wants your strongest interests. A history list wants the most
   /// recent thing you typed at the top.
-  Future<List<String>> searchHistory({int limit = 15}) async {
+  Future<List<String>> searchHistory({int limit = 25}) async {
     final rows = await _db.query(
       'searches',
       columns: ['query'],
@@ -659,12 +659,27 @@ class AppDatabase {
   Future<void> trimHistory() => _trimHistory();
 
   /// Cheap position-only write, called every few seconds while playing.
-  Future<void> savePosition(String videoId, Duration position) async {
-    await _db.update(
-      'history',
-      {'position_ms': position.inMilliseconds},
-      where: 'video_id = ?',
-      whereArgs: [videoId],
+  ///
+  /// A Short's row (`is_short = 1`) keeps the furthest position ever written
+  /// rather than the latest. Shorts loop, so the latest is wherever the
+  /// viewer happened to swipe away — two seconds into a fourth viewing reads
+  /// as a bail-out, and the Shorts ranker then penalised what was liked most.
+  /// [duration] fills in a missing `duration_ms` (Shorts from search carry
+  /// none), without which completion cannot be worked out at all.
+  Future<void> savePosition(
+    String videoId,
+    Duration position, {
+    Duration? duration,
+  }) async {
+    final ms = position.inMilliseconds;
+    await _db.rawUpdate(
+      'UPDATE history SET '
+      'position_ms = CASE WHEN is_short = 1 '
+      'THEN MAX(COALESCE(position_ms, 0), ?) ELSE ? END, '
+      'duration_ms = CASE WHEN duration_ms IS NULL OR duration_ms <= 0 '
+      'THEN COALESCE(?, duration_ms) ELSE duration_ms END '
+      'WHERE video_id = ?',
+      [ms, ms, duration?.inMilliseconds, videoId],
     );
   }
 
@@ -684,6 +699,36 @@ class AppDatabase {
     if (ms < 10000) return null;
     if (total != null && ms > total - 15000) return null;
     return Duration(milliseconds: ms);
+  }
+
+  /// Watched fraction (0..1) for each of [videoIds] that has a history row
+  /// with some playback recorded — the red resume bar on feed cards.
+  ///
+  /// One query per 500 ids rather than one per card: a feed is a hundred-odd
+  /// rows, and a lookup per card on every rebuild would queue a hundred
+  /// queries behind each scroll. Ids with no row, or no position, are absent.
+  Future<Map<String, double>> watchProgress(Iterable<String> videoIds) async {
+    final ids = videoIds.toSet().toList();
+    final out = <String, double>{};
+    const chunk = 500; // well under SQLite's bound-variable limit
+    for (var i = 0; i < ids.length; i += chunk) {
+      final part = ids.sublist(i, (i + chunk).clamp(0, ids.length));
+      final rows = await _db.query(
+        'history',
+        columns: ['video_id', 'position_ms', 'duration_ms'],
+        where: 'position_ms > 0 AND video_id IN '
+            '(${List.filled(part.length, '?').join(',')})',
+        whereArgs: part,
+      );
+      for (final row in rows) {
+        final fraction = watchedFraction(
+          row['position_ms'] as int?,
+          row['duration_ms'] as int?,
+        );
+        if (fraction > 0) out[row['video_id'] as String] = fraction;
+      }
+    }
+    return out;
   }
 
   /// Partly-watched regular videos, newest first, for a "Continue watching"
@@ -1480,6 +1525,43 @@ class AppDatabase {
     return rows.map(VideoBrief.fromMap).toList();
   }
 
+  /// Persists a dragged order for a local playlist: [videoIds] top to
+  /// bottom, as [playlistItems] should return them.
+  ///
+  /// Rewrites `added_at` rather than adding a position column, because
+  /// `added_at DESC` already *is* the list's order everywhere it is read —
+  /// the playlist page, the cover, backups — so no reader has to change and
+  /// no schema bump is needed. The values stay near the original times so
+  /// "newest first" sorting elsewhere is not thrown decades off. Ids not in
+  /// the playlist are ignored; items not named keep their place below.
+  Future<void> reorderPlaylist(int playlistId, List<String> videoIds) async {
+    if (videoIds.isEmpty) return;
+    final top = DateTime.now().millisecondsSinceEpoch;
+    await _db.transaction((txn) async {
+      for (var i = 0; i < videoIds.length; i++) {
+        await txn.update(
+          'playlist_items',
+          {'added_at': top - i},
+          where: 'playlist_id = ? AND video_id = ?',
+          whereArgs: [playlistId, videoIds[i]],
+        );
+      }
+    });
+  }
+
+  /// How many history rows each channel has — regular videos only, not Kids
+  /// mode — for ordering the Manage subscriptions list by relevance.
+  Future<Map<String, int>> channelWatchCounts() async {
+    final rows = await _db.rawQuery('''
+      SELECT channel_id, COUNT(*) AS n FROM history
+      WHERE is_kids = 0 AND channel_id != ''
+      GROUP BY channel_id
+    ''');
+    return {
+      for (final r in rows) r['channel_id']! as String: r['n'] as int? ?? 0,
+    };
+  }
+
   /// Playlist ids that already contain [videoId] — drives the checkmarks in
   /// the "Save to…" sheet.
   Future<Set<int>> playlistsContaining(String videoId) async {
@@ -1490,6 +1572,56 @@ class AppDatabase {
       whereArgs: [videoId],
     );
     return rows.map((r) => r['playlist_id']! as int).toSet();
+  }
+
+  // ------------------------------------------------------------------ likes
+
+  /// The playlist a Like goes into.
+  ///
+  /// A like is stored as membership of an ordinary playlist rather than a new
+  /// table or column, for three reasons: it needs no schema bump; the Library
+  /// shows it, backs it up and restores it with no new code, as YouTube shows
+  /// "Liked videos"; and [endorsedChannels] already reads `playlist_items`, so
+  /// a like floors the channel's satisfaction exactly as a save does — which
+  /// is what a like is, the lighter cousin of a save.
+  static const likedPlaylistName = 'Liked videos';
+
+  /// The id of [likedPlaylistName], created on first use when [create].
+  Future<int?> likedPlaylistId({bool create = false}) async {
+    final rows = await _db.query(
+      'playlists',
+      columns: ['id'],
+      where: 'name = ?',
+      whereArgs: [likedPlaylistName],
+      orderBy: 'id ASC',
+      limit: 1,
+    );
+    if (rows.isNotEmpty) return rows.first['id']! as int;
+    if (!create) return null;
+    return createPlaylist(likedPlaylistName);
+  }
+
+  Future<bool> isLiked(String videoId) async {
+    final id = await likedPlaylistId();
+    if (id == null) return false;
+    final rows = await _db.query(
+      'playlist_items',
+      columns: ['video_id'],
+      where: 'playlist_id = ? AND video_id = ?',
+      whereArgs: [id, videoId],
+      limit: 1,
+    );
+    return rows.isNotEmpty;
+  }
+
+  Future<void> setLiked(VideoBrief video, bool liked) async {
+    if (liked) {
+      final id = await likedPlaylistId(create: true);
+      await addToPlaylist(id!, video);
+    } else {
+      final id = await likedPlaylistId();
+      if (id != null) await removeFromPlaylist(id, video.id);
+    }
   }
 
   // ------------------------------------------------------------- data usage
@@ -1618,4 +1750,16 @@ class DataUsageRow {
   final String channelTitle;
   final int bytes;
   final String kind;
+}
+
+/// Watched fraction of a history row, 0..1, for the feed's resume bar.
+///
+/// Zero when either side is missing or nonsensical — an unknown duration
+/// cannot be drawn as a fraction of anything, and a bar guessed from it would
+/// be a red line that means nothing. Clamped because a position saved a tick
+/// past a slightly-short reported duration is common and harmless.
+double watchedFraction(int? positionMs, int? durationMs) {
+  if (positionMs == null || durationMs == null) return 0;
+  if (positionMs <= 0 || durationMs <= 0) return 0;
+  return (positionMs / durationMs).clamp(0.0, 1.0);
 }

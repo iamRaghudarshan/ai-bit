@@ -140,6 +140,9 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
     final top = _stack.last.settings.name;
     return top != watchRouteName &&
         top != fullscreenRouteName &&
+        // Nor over the full-screen Shorts player: it is its own player
+        // screen, and a bar there would cover the Short's caption and rail.
+        top != shortsRouteName &&
         // Nor over the app-lock PIN pad: a bar with the playing video's title
         // and artwork on the lock screen gives away exactly what the lock
         // hides.
@@ -158,6 +161,9 @@ class RouteStackObserver extends NavigatorObserver with ChangeNotifier {
 
   /// Route name the vendored player gives its fullscreen route.
   static const fullscreenRouteName = 'better-player-fullscreen';
+
+  /// Route name given to the full-screen Shorts player (`ShortsRoute`).
+  static const shortsRouteName = 'shorts';
 
   /// Route name given to the app-lock PIN pad.
   static const appLockRouteName = 'app-lock';

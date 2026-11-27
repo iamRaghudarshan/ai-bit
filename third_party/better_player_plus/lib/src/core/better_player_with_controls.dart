@@ -68,7 +68,20 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
 
     double? aspectRatio;
     if (betterPlayerController.isFullScreen) {
-      if (betterPlayerController.betterPlayerConfiguration.autoDetectFullscreenDeviceOrientation ||
+      // PATCH: with autoDetectFullscreenDeviceOrientation the fullscreen box
+      // used to be sized to the VIDEO's aspect ratio, so it could never be
+      // anything but letterboxed: BoxFit.cover and contain filled the same
+      // box identically and pinch-to-fill did nothing. The box now takes the
+      // screen's shape and the fit decides — contain still letterboxes, and
+      // the host's controls span the whole screen as YouTube's do.
+      // PATCHES.md #30. (The device orientation is still chosen from the
+      // video's ratio in better_player.dart, unchanged.)
+      final screen = MediaQuery.sizeOf(context);
+      if (betterPlayerController.betterPlayerConfiguration.autoDetectFullscreenDeviceOrientation &&
+          screen.width > 0 &&
+          screen.height > 0) {
+        aspectRatio = screen.width / screen.height;
+      } else if (betterPlayerController.betterPlayerConfiguration.autoDetectFullscreenDeviceOrientation ||
           betterPlayerController.betterPlayerConfiguration.autoDetectFullscreenAspectRatio) {
         aspectRatio = betterPlayerController.videoPlayerController?.value.aspectRatio ?? 1.0;
       } else {

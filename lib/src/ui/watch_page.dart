@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
@@ -11,25 +14,19 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../core/app_navigator.dart';
 import '../core/chapters.dart';
 import '../core/format.dart';
+import '../core/seek_session.dart' show swipeEntersFullscreen;
 import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/download_manager.dart';
 import '../data/models.dart';
 import '../data/preview_data.dart';
 import '../data/ranker_trainer.dart';
-import '../data/settings.dart';
 import '../data/yt_repository.dart';
 import '../player/playback_controller.dart';
 import 'channel_page.dart';
 import 'widgets/comments_sheet.dart';
-import 'widgets/end_screen.dart';
-import 'widgets/stats_overlay.dart';
-import 'widgets/cast_button.dart';
-import 'widgets/cast_sheet.dart';
 import 'widgets/description_sheet.dart';
 import 'widgets/now_playing_overlay.dart';
-import 'widgets/player_gestures.dart';
-import 'widgets/queue_sheet.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
@@ -110,7 +107,7 @@ class WatchPage extends StatefulWidget {
 }
 
 class _WatchPageState extends State<WatchPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   /// How far down the sheet must travel before releasing minimises it.
   static const _dismissDistance = 130.0;
   static const _dismissVelocity = 700.0;
@@ -150,6 +147,92 @@ class _WatchPageState extends State<WatchPage>
     _start();
     // Follow the player when it moves on by itself.
     _playback = context.read<PlaybackController>()..addListener(_followPlayer);
+    WidgetsBinding.instance.addObserver(this);
+    _wasLandscape = _viewIsLandscape();
+  }
+
+  // ------------------------------------------------------------ rotation
+
+  /// True while fullscreen is one that turning the phone opened, which is
+  /// the only kind turning it back closes. Fullscreen from the button keeps
+  /// landscape however the phone is held — the plugin locks the orientation
+  /// for it — which is YouTube's behaviour too.
+  bool _fullscreenByRotation = false;
+  bool? _wasLandscape;
+
+  /// From the view rather than `MediaQuery`, because this runs from
+  /// [didChangeMetrics], and on the binding's schedule rather than a build's.
+  static ui.FlutterView? get _view {
+    final views = WidgetsBinding.instance.platformDispatcher.views;
+    return views.isEmpty ? null : views.first;
+  }
+
+  static bool? _viewIsLandscape() {
+    final size = _view?.physicalSize;
+    if (size == null || size.isEmpty) return null;
+    return size.width > size.height;
+  }
+
+  @override
+  void didChangeMetrics() {
+    final landscape = _viewIsLandscape();
+    if (landscape == null) return;
+    final was = _wasLandscape;
+    _wasLandscape = landscape;
+    // Only a real turn counts. Metrics also change when the system bars come
+    // and go around fullscreen, and reacting to "is landscape" rather than
+    // "became landscape" would re-enter fullscreen the moment the user left
+    // it while still holding the phone sideways.
+    if (was == null || was == landscape) return;
+    _onRotated(landscape);
+  }
+
+  void _onRotated(bool landscape) {
+    final playback = _playback;
+    final player = playback?.player;
+    if (!mounted || playback == null || player == null) return;
+    if (!landscape) {
+      if (_fullscreenByRotation && player.isFullScreen) player.exitFullScreen();
+      _fullscreenByRotation = false;
+      return;
+    }
+    if (player.isFullScreen) return;
+    _fullscreenByRotation = false;
+    final current = playback.current;
+    if (current == null || current.id != _video.id || current.isShort) return;
+    if (playback.error != null || playback.isLoading) return;
+    if (!(ModalRoute.of(context)?.isCurrent ?? false)) return;
+    // A tablet has the room for the page beside the video; turning one is
+    // not a request for fullscreen.
+    final view = _view;
+    if (view != null &&
+        view.physicalSize.shortestSide / view.devicePixelRatio >= 600) {
+      return;
+    }
+    _fullscreenByRotation = true;
+    player.enterFullScreen();
+    // The plugin locks a fullscreen route to landscape once it has pushed
+    // it. Reopen portrait afterwards, or turning the phone back could never
+    // be seen and so could never close what turning it opened.
+    Future.delayed(const Duration(milliseconds: 700), () {
+      if (_fullscreenByRotation && player.isFullScreen) {
+        SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      }
+    });
+  }
+
+  /// An upward swipe on the inline video.
+  void _enterFullscreen() {
+    final playback = _playback;
+    final player = playback?.player;
+    if (player == null || player.isFullScreen) return;
+    if (playback?.current?.id != _video.id) return;
+    _fullscreenByRotation = false;
+    player.enterFullScreen();
   }
 
   /// Adopts whatever the player switched to.
@@ -207,7 +290,15 @@ class _WatchPageState extends State<WatchPage>
     // Opening another video pushes a second watch page over this one; only the
     // page on top should adopt the change, or the one underneath refetches
     // details nobody is looking at.
-    if (!(ModalRoute.of(context)?.isCurrent ?? true)) return;
+    //
+    // "On top" includes having the player's own fullscreen route above it:
+    // autoplay and the end screen's Play now both move on while fullscreen,
+    // and the page underneath must still adopt the new video, or leaving
+    // fullscreen landed on the previous video's details.
+    if (!(ModalRoute.of(context)?.isCurrent ?? true) &&
+        !(_playback?.player?.isFullScreen ?? false)) {
+      return;
+    }
     setState(() {
       _video = current;
       _details = null;
@@ -377,6 +468,7 @@ class _WatchPageState extends State<WatchPage>
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _playback?.removeListener(_followPlayer);
     _settle.dispose();
     _drag.dispose();
@@ -445,16 +537,10 @@ class _WatchPageState extends State<WatchPage>
         bottom: false,
         child: Column(
           children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onVerticalDragUpdate: _onDragUpdate,
-              onVerticalDragEnd: _onDragEnd,
-              child: _GrabHandle(
-                onClose: () => Navigator.of(context).maybePop(),
-              ),
-            ),
-            // Dragging the video itself minimises too, which is how the real
-            // app behaves — reaching for a small handle first is not.
+            // The video sits directly under the status bar, as in the real
+            // app. There used to be a grab-handle strip above it; dragging
+            // the video itself minimises, and the minimise chevron is in the
+            // player's own top bar.
             //
             // The bottom strip is excluded because that is where the seek bar
             // lives: putting the whole player in a vertical-drag detector meant
@@ -463,6 +549,7 @@ class _WatchPageState extends State<WatchPage>
             _DragToMinimise(
               onUpdate: _onDragUpdate,
               onEnd: _onDragEnd,
+              onSwipeUp: _enterFullscreen,
               child: _PlayerSurface(showPlayer: isCurrent),
             ),
             Expanded(
@@ -480,7 +567,7 @@ class _WatchPageState extends State<WatchPage>
                     video: _video,
                     likeCount: _details?.engagement.likeCount,
                   ),
-                  const _ActionRow(),
+                  const SizedBox(height: 8),
                   if (!YtRepository.isPreview)
                     CommentsPreview(videoId: _video.id),
                   const Divider(height: 24),
@@ -497,7 +584,17 @@ class _WatchPageState extends State<WatchPage>
                         textAlign: TextAlign.center,
                       ),
                     )
-                  else ...[
+                  // Phones get full-width cards with no heading, as YouTube
+                  // draws its watch-page feed; a tablet's wider page keeps
+                  // compact rows, where a card would be absurdly large.
+                  else if (MediaQuery.sizeOf(context).width < 600) ...[
+                    for (final video in _related)
+                      VideoCard(
+                        video: video,
+                        onTap: () => _openRelated(video),
+                        onMenu: () => showVideoMenu(context, video),
+                      ),
+                  ] else ...[
                     const Padding(
                       padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
                       child: Text(
@@ -534,11 +631,21 @@ class _PlayerSurface extends StatelessWidget {
     final playback = context.watch<PlaybackController>();
     final player = playback.player;
 
-    return AspectRatio(
-      aspectRatio: 16 / 9,
+    // 16:9 at full width — except on a phone held sideways outside
+    // fullscreen (the user left fullscreen without turning back), where a
+    // full-width 16:9 box is taller than the screen and pushed the rest of
+    // the page off it. Capped, and centred on black.
+    final screen = MediaQuery.sizeOf(context);
+    final height = math.min(screen.width * 9 / 16, screen.height * 0.62);
+    return SizedBox(
+      width: double.infinity,
+      height: height,
       child: ColoredBox(
         color: Colors.black,
-        child: Builder(
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Builder(
           builder: (context) {
             if (playback.error != null) {
               return _PlaybackError(
@@ -570,48 +677,22 @@ class _PlayerSurface extends StatelessWidget {
                 ],
               );
             }
-            return Stack(
-              fit: StackFit.expand,
-              children: [
-                // Always mounted, including in audio mode.
-                //
-                // Returning the artwork *instead* of this widget left iOS with
-                // no render surface to attach to, so the native player failed
-                // every audio-only load with "Failed to load video: unknown
-                // error". The artwork is painted over the player, never in
-                // place of it.
-                BetterPlayer(key: playback.playerKey, controller: player),
-                // Above the player, not below it. Underneath, every pointer was
-                // claimed by the controls before this layer saw it.
-                PlayerGestures(onSeekBy: playback.skip),
-                // Refreshes with the clock, so buffer health actually moves.
-                if (playback.showStats)
-                  ValueListenableBuilder<Duration>(
-                    valueListenable: playback.ticker,
-                    builder: (context, _, _) => StatsOverlay(
-                      stats: playback.stats,
-                      onClose: playback.toggleStats,
-                    ),
-                  ),
-                // Over everything else: a finished video used to freeze on its
-                // last frame with no sign that anything came next.
-                if (playback.showEndScreen)
-                  Positioned.fill(
-                    child: EndScreen(
-                      suggestions: playback.endScreenSuggestions,
-                      countdown: playback.autoplayCountdown,
-                      onReplay: playback.replay,
-                      onCancel: playback.cancelAutoplay,
-                      onDismiss: playback.dismissEndScreen,
-                      onPlay: (video) {
-                        playback.dismissEndScreen();
-                        WatchPage.open(context, video);
-                      },
-                    ),
-                  ),
-              ],
-            );
+            // Always mounted, including in audio mode.
+            //
+            // Returning the artwork *instead* of this widget left iOS with
+            // no render surface to attach to, so the native player failed
+            // every audio-only load with "Failed to load video: unknown
+            // error". The artwork is painted by the controls, never in place
+            // of the player.
+            //
+            // Nothing else is stacked here any more. The gestures, the stats
+            // panel and the end screen are drawn by VideoControls, which the
+            // plugin builds inline and in its fullscreen route alike; layered
+            // here they existed only inline.
+            return BetterPlayer(key: playback.playerKey, controller: player);
           },
+            ),
+          ),
         ),
       ),
     );
@@ -629,11 +710,18 @@ class _DragToMinimise extends StatefulWidget {
     required this.child,
     required this.onUpdate,
     required this.onEnd,
+    required this.onSwipeUp,
   });
 
   final Widget child;
   final void Function(DragUpdateDetails) onUpdate;
   final void Function(DragEndDetails) onEnd;
+
+  /// An upward swipe past 80dp or 600dp/s: enter fullscreen, as on YouTube.
+  /// Handled here, on the same recogniser as minimising, rather than by a
+  /// second vertical-drag detector inside the player — two would fight over
+  /// every vertical drag and the inner one would win, killing minimise.
+  final VoidCallback onSwipeUp;
 
   @override
   State<_DragToMinimise> createState() => _DragToMinimiseState();
@@ -652,6 +740,10 @@ class _DragToMinimiseState extends State<_DragToMinimise> {
   /// minimises, and only scrubbing is carved out.
   bool _accepting = false;
 
+  /// Net vertical travel of the current drag; negative is upwards. The sheet
+  /// itself clamps at zero, so an upward drag moves nothing until released.
+  double _dy = 0;
+
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
@@ -660,12 +752,20 @@ class _DragToMinimiseState extends State<_DragToMinimise> {
         behavior: HitTestBehavior.translucent,
         onVerticalDragDown: (d) {
           _accepting = d.localPosition.dy < box.maxHeight - _controlsZone;
+          _dy = 0;
         },
         onVerticalDragUpdate: (d) {
-          if (_accepting) widget.onUpdate(d);
+          if (!_accepting) return;
+          _dy += d.delta.dy;
+          widget.onUpdate(d);
         },
         onVerticalDragEnd: (d) {
-          if (_accepting) widget.onEnd(d);
+          if (_accepting) {
+            widget.onEnd(d);
+            if (swipeEntersFullscreen(_dy, d.velocity.pixelsPerSecond.dy)) {
+              widget.onSwipeUp();
+            }
+          }
           _accepting = false;
         },
         onVerticalDragCancel: () => _accepting = false,
@@ -674,50 +774,6 @@ class _DragToMinimiseState extends State<_DragToMinimise> {
     );
   }
 }
-
-/// The pill and close button above the video, hinting that the sheet can be
-/// dragged away.
-class _GrabHandle extends StatelessWidget {
-  const _GrabHandle({required this.onClose});
-
-  final VoidCallback onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    final tint = Theme.of(context).colorScheme.onSurface;
-    return SizedBox(
-      height: 34,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Container(
-            width: 38,
-            height: 4,
-            decoration: BoxDecoration(
-              color: tint.withValues(alpha: 0.28),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: IconButton(
-              icon: const Icon(Icons.keyboard_arrow_down, size: 26),
-              tooltip: 'Minimise',
-              visualDensity: VisualDensity.compact,
-              onPressed: onClose,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// What the player area shows in audio-only mode.
-///
-/// An audio asset has no video track, so the player surface is simply black.
-/// Blurred artwork with the thumbnail on top makes it obvious that something is
-/// playing, and matches what every music player does.
 
 /// Stand-in for the video surface in the browser preview, where the native
 /// player plugin does not exist.
@@ -805,72 +861,79 @@ class _Header extends StatelessWidget {
     final theme = Theme.of(context);
     final description = details?.description ?? '';
     final likes = details?.engagement.likeCount;
+    final muted = theme.colorScheme.onSurface.withValues(alpha: 0.6);
+
+    // The title and the line under it are one tap target that opens the
+    // description, as on YouTube; the separate grey description card is
+    // gone. The exact upload date and the like count moved into the sheet,
+    // where there is room for them — the line here is the short form.
+    void openDescription() => showDescriptionSheet(
+      context,
+      title: video.title,
+      description: description,
+      onSeek: onSeek,
+      stats: [
+        if (video.viewCount != null) '${compactCount(video.viewCount)} views',
+        if (likes != null) '${compactCount(likes)} likes',
+        uploadLabel(video.uploadDate, raw: video.uploadRaw),
+      ],
+    );
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            video.title,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-              height: 1.3,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            metaLine([
-              if (video.viewCount != null) '${compactCount(video.viewCount)} views',
-              if (likes != null) '${compactCount(likes)} likes',
-              // The exact date and time, with the relative age after it.
-              uploadLabel(video.uploadDate, raw: video.uploadRaw),
-            ]),
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-          const SizedBox(height: 12),
-          _ChannelRow(video: video),
-          if (description.trim().isNotEmpty) ...[
-            const SizedBox(height: 12),
-            // A card that opens a sheet, rather than expanding inline: a long
-            // description otherwise pushes the whole page out of reach.
-            Material(
-              color: theme.colorScheme.onSurface.withValues(alpha: 0.05),
-              borderRadius: BorderRadius.circular(12),
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap: () => showDescriptionSheet(
-                  context,
-                  title: video.title,
-                  description: description,
-                  onSeek: onSeek,
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        description,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(height: 1.4),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        '...more',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
+          InkWell(
+            onTap: openDescription,
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    video.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      height: 1.3,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 4),
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: metaLine([
+                            if (video.viewCount != null)
+                              '${compactCount(video.viewCount)} views',
+                            timeAgo(video.uploadDate, raw: video.uploadRaw),
+                          ]),
+                        ),
+                        TextSpan(
+                          text: '  ...more',
+                          style: TextStyle(
+                            color: theme.colorScheme.onSurface,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(color: muted),
+                  ),
+                ],
               ),
             ),
-          ],
+          ),
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: _ChannelRow(video: video),
+          ),
         ],
       ),
     );
@@ -1090,14 +1153,11 @@ class _PillRow extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
       child: Row(
         children: [
-          _Pill(
-            icon: Icons.thumb_up_outlined,
-            label: _likeLabel(context),
-            onTap: () => _explainSignIn(context, 'Liking'),
-          ),
-          _Pill(
-            icon: Icons.thumb_down_outlined,
-            onTap: () => _explainSignIn(context, 'Disliking'),
+          // One segmented pill, [like | dislike], as YouTube draws it.
+          _LikeDislikePill(
+            likeLabel: _likeLabel(context),
+            onLike: () => _explainSignIn(context, 'Liking'),
+            onDislike: () => _explainSignIn(context, 'Disliking'),
           ),
           _Pill(
             icon: Icons.reply_outlined,
@@ -1202,6 +1262,126 @@ class _PillRow extends StatelessWidget {
   }
 }
 
+/// Like and dislike as one rounded pill split by a hairline.
+///
+/// Voting needs a signed-in account this app does not have, so both halves
+/// explain that on tap — but the icon still bounces, because a control that
+/// does not acknowledge a press reads as broken before the message is read.
+class _LikeDislikePill extends StatelessWidget {
+  const _LikeDislikePill({
+    required this.likeLabel,
+    required this.onLike,
+    required this.onDislike,
+  });
+
+  final String likeLabel;
+  final VoidCallback onLike;
+  final VoidCallback onDislike;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Material(
+        color: scheme.onSurface.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _BounceTap(
+              onTap: onLike,
+              padding: const EdgeInsets.fromLTRB(14, 9, 12, 9),
+              icon: Icons.thumb_up_outlined,
+              label: likeLabel,
+            ),
+            Container(
+              width: 1,
+              height: 22,
+              color: scheme.onSurface.withValues(alpha: 0.2),
+            ),
+            _BounceTap(
+              onTap: onDislike,
+              padding: const EdgeInsets.fromLTRB(12, 9, 14, 9),
+              icon: Icons.thumb_down_outlined,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _BounceTap extends StatefulWidget {
+  const _BounceTap({
+    required this.onTap,
+    required this.padding,
+    required this.icon,
+    this.label,
+  });
+
+  final VoidCallback onTap;
+  final EdgeInsets padding;
+  final IconData icon;
+  final String? label;
+
+  @override
+  State<_BounceTap> createState() => _BounceTapState();
+}
+
+class _BounceTapState extends State<_BounceTap>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _bounce = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 260),
+  );
+  late final Animation<double> _scale = TweenSequence<double>([
+    TweenSequenceItem(tween: Tween(begin: 1, end: 1.25), weight: 1),
+    TweenSequenceItem(tween: Tween(begin: 1.25, end: 1), weight: 1),
+  ]).animate(CurvedAnimation(parent: _bounce, curve: Curves.easeOut));
+
+  @override
+  void dispose() {
+    _bounce.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.onSurface;
+    return InkWell(
+      onTap: () {
+        _bounce.forward(from: 0);
+        widget.onTap();
+      },
+      child: Padding(
+        padding: widget.padding,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ScaleTransition(
+              scale: _scale,
+              child: Icon(widget.icon, size: 19, color: color),
+            ),
+            if (widget.label != null) ...[
+              const SizedBox(width: 7),
+              Text(
+                widget.label!,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: color,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _Pill extends StatelessWidget {
   const _Pill({
     required this.icon,
@@ -1253,365 +1433,6 @@ class _Pill extends StatelessWidget {
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-/// Speed / quality / sleep timer / PiP / save — the "premium" controls.
-class _ActionRow extends StatelessWidget {
-  const _ActionRow();
-
-  @override
-  Widget build(BuildContext context) {
-    final playback = context.watch<PlaybackController>();
-    final settings = context.watch<SettingsService>();
-
-    // The four most-used controls stay inline; everything else is one tap
-    // away under "More", the way YouTube keeps its player settings in an
-    // overflow rather than a long scrolling row.
-    // The most-used controls stay inline; everything else is one tap away
-    // under "More", the way YouTube keeps its player settings in an overflow
-    // rather than a long scrolling row. Wrap, not a Row, so a narrow screen
-    // flows the chips to a second line instead of overflowing.
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 14, 8, 0),
-      child: Wrap(
-        children: [
-          _ActionChip(
-            icon: Icons.hd_outlined,
-            label: playback.activeQuality ?? settings.preferredQuality,
-            onTap: () => showQualitySheet(context),
-          ),
-          _ActionChip(
-            icon: Icons.speed,
-            label: playback.speed == 1.0 ? 'Speed' : '${playback.speed}x',
-            onTap: () => showSpeedSheet(context),
-          ),
-          _ActionChip(
-            icon: Icons.closed_caption_outlined,
-            label: 'Captions',
-            highlighted: playback.activeCaptions != null,
-            onTap: () => showCaptionsSheet(context),
-          ),
-          _ActionChip(
-            icon: Icons.more_horiz,
-            label: 'More',
-            onTap: () => _showMoreOptions(context),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Everything that used to sit in the sideways-scrolling row, as a tidy
-  /// selectable list — YouTube's player overflow.
-  /// Dub / alternate audio-track picker, shown when a video carries more than
-  /// one audio track.
-  void _showAudioTracks(BuildContext context) {
-    final playback = context.read<PlaybackController>();
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: AnimatedBuilder(
-          animation: playback,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                child: Text(
-                  'Audio track',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ),
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  padding: EdgeInsets.zero,
-                  children: [
-                    for (final track in playback.audioTracks)
-                      ListTile(
-                        title: Text(
-                          track.label ?? track.language ?? 'Track ${track.id}',
-                        ),
-                        trailing: playback.activeAudioTrack?.id == track.id
-                            ? const Icon(Icons.check)
-                            : null,
-                        onTap: () {
-                          playback.setAudioTrack(track);
-                          Navigator.pop(sheetContext);
-                        },
-                      ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showMoreOptions(BuildContext context) {
-    final playback = context.read<PlaybackController>();
-    final settings = context.read<SettingsService>();
-    final video = playback.current;
-
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetContext) => SafeArea(
-        child: AnimatedBuilder(
-          animation: Listenable.merge([playback, settings]),
-          builder: (context, _) {
-            final sleep = playback.sleepRemaining;
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                  child: Text(
-                    'Options',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ),
-                Flexible(
-                  child: ListView(
-                    shrinkWrap: true,
-                    padding: EdgeInsets.zero,
-                    children: [
-                      ListTile(
-                        leading: const Icon(Icons.bedtime_outlined),
-                        title: const Text('Sleep timer'),
-                        trailing: sleep == null
-                            ? null
-                            : Text(clockLabel(sleep)),
-                        onTap: () {
-                          Navigator.pop(sheetContext);
-                          showSleepTimerSheet(context);
-                        },
-                      ),
-                      if (playback.audioTracks.length > 1)
-                        ListTile(
-                          leading: const Icon(Icons.multitrack_audio),
-                          title: const Text('Audio track'),
-                          subtitle: Text(
-                            playback.activeAudioTrack?.label ??
-                                playback.activeAudioTrack?.language ??
-                                'Default',
-                          ),
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            _showAudioTracks(context);
-                          },
-                        ),
-                      SwitchListTile(
-                        secondary: const Icon(Icons.headphones_outlined),
-                        title: const Text('Audio only'),
-                        subtitle: Text(
-                          settings.audioOnly
-                              ? 'Always on — set in Settings'
-                              : 'Picture comes back when you return to the app',
-                        ),
-                        value: playback.isAudioOnly,
-                        // Off with no setting behind the missing picture
-                        // (a sound-only download, or YouTube answering with
-                        // sound only) means "get me the picture".
-                        onChanged: (v) {
-                                if (!v && playback.canShowVideo) {
-                                  playback.showVideoAnyway();
-                                } else {
-                                  playback.setAudioOnly(v);
-                                }
-                                // Close on the tap, so the change is seen
-                                // rather than hidden behind the sheet.
-                                Navigator.pop(sheetContext);
-                              },
-                      ),
-                      SwitchListTile(
-                        secondary: const Icon(Icons.playlist_play),
-                        title: const Text('Autoplay next'),
-                        value: settings.autoplayNext,
-                        onChanged: (v) => settings.autoplayNext = v,
-                      ),
-                      ListTile(
-                        leading: Icon(switch (playback.repeatMode) {
-                          PlaybackRepeat.one => Icons.repeat_one,
-                          _ => Icons.repeat,
-                        }),
-                        title: const Text('Repeat'),
-                        trailing: Text(switch (playback.repeatMode) {
-                          PlaybackRepeat.off => 'Off',
-                          PlaybackRepeat.one => 'This video',
-                          PlaybackRepeat.all => 'Queue',
-                        }),
-                        onTap: playback.cycleRepeatMode,
-                      ),
-                      ListTile(
-                        leading: Icon(
-                          playback.hasLoop
-                              ? Icons.repeat_on
-                              : Icons.compare_arrows,
-                        ),
-                        title: const Text('Loop A–B'),
-                        subtitle: Text(
-                          playback.hasLoop
-                              ? 'Looping ${clockLabel(playback.loopA)} – '
-                                    '${clockLabel(playback.loopB)}'
-                              : playback.loopA != null
-                                  ? 'Start ${clockLabel(playback.loopA)} — '
-                                        'set the end point'
-                                  : 'Repeat a section between two points',
-                        ),
-                        trailing: playback.hasLoop || playback.loopA != null
-                            ? TextButton(
-                                onPressed: playback.clearLoop,
-                                child: const Text('Clear'),
-                              )
-                            : null,
-                        onTap: () {
-                          if (playback.loopA == null) {
-                            playback.setLoopStart();
-                          } else if (playback.loopB == null) {
-                            playback.setLoopEnd();
-                          } else {
-                            playback.clearLoop();
-                          }
-                        },
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.queue_music),
-                        title: const Text('Queue'),
-                        trailing: playback.queue.isEmpty
-                            ? null
-                            : Text('${playback.queue.length}'),
-                        onTap: () {
-                          Navigator.pop(sheetContext);
-                          showQueueSheet(context);
-                        },
-                      ),
-                      ListTile(
-                        leading: const Icon(
-                          Icons.picture_in_picture_alt_outlined,
-                        ),
-                        title: const Text('Picture in picture'),
-                        onTap: () async {
-                          // Captured before the await: the sheet's context is
-                          // gone by the time the reason comes back.
-                          final messenger = ScaffoldMessenger.of(context);
-                          Navigator.pop(sheetContext);
-                          final failure =
-                              await playback.enterPictureInPicture();
-                          if (failure != null) {
-                            messenger.showSnackBar(
-                              SnackBar(content: Text(failure)),
-                            );
-                          }
-                        },
-                      ),
-                      if (CastButton.isSupported)
-                        ListTile(
-                          leading: const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: Center(child: CastButton(size: 22)),
-                          ),
-                          title: const Text('Cast / AirPlay'),
-                          // iOS puts a native AirPlay route picker in the
-                          // leading slot and that platform view owns its own
-                          // taps, so the row stays inert there. Everywhere else
-                          // the leading widget is an ordinary icon, and once
-                          // CastButton.isSupported widened past iOS this row
-                          // started appearing on Android with only its 22dp
-                          // icon live - tapping the words did nothing. Give the
-                          // whole row the action the icon already has.
-                          onTap: CastButton.isAirPlay
-                              ? null
-                              : () {
-                                  Navigator.pop(sheetContext);
-                                  showCastSheet(context);
-                                },
-                        ),
-                      SwitchListTile(
-                        secondary: const Icon(Icons.analytics_outlined),
-                        title: const Text('Stats for nerds'),
-                        value: playback.showStats,
-                        onChanged: (_) {
-                          playback.toggleStats();
-                          Navigator.pop(sheetContext);
-                        },
-                      ),
-                      if (video != null)
-                        ListTile(
-                          leading: const Icon(Icons.playlist_add),
-                          title: const Text('Save to playlist'),
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            showSaveToPlaylistSheet(context, video);
-                          },
-                        ),
-                      if (video != null)
-                        ListTile(
-                          leading: const Icon(Icons.share_outlined),
-                          title: const Text('Share'),
-                          onTap: () {
-                            Navigator.pop(sheetContext);
-                            SharePlus.instance.share(
-                              ShareParams(
-                                uri: Uri.parse('https://youtu.be/${video.id}'),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      ),
-    );
-  }
-}
-
-
-
-class _ActionChip extends StatelessWidget {
-  const _ActionChip({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.highlighted = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool highlighted;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: ActionChip(
-        avatar: Icon(
-          icon,
-          size: 18,
-          color: highlighted ? Colors.white : theme.colorScheme.onSurface,
-        ),
-        label: Text(label),
-        backgroundColor: highlighted ? AppColors.brand : null,
-        labelStyle: TextStyle(
-          fontSize: 13,
-          color: highlighted ? Colors.white : theme.colorScheme.onSurface,
-        ),
-        onPressed: onTap,
       ),
     );
   }

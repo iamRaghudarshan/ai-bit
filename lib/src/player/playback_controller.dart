@@ -20,6 +20,7 @@ import '../data/network_service.dart';
 import '../data/settings.dart';
 import '../data/sponsorblock_client.dart';
 import '../data/yt_repository.dart';
+import '../ui/widgets/end_screen.dart' show kAutoplayCountdownSeconds;
 import '../ui/widgets/video_controls.dart';
 import 'remote_commands.dart';
 
@@ -541,12 +542,19 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   /// attach waits for the native player to report the source ready.
   static const _loadWaitLimit = Duration(seconds: 15);
 
+  /// [shortsSurface] says the Shorts player (the tab or `ShortsRoute`) is the
+  /// screen asking: the source is then presented full-bleed with the shared
+  /// controls off and its own tap layer in charge. Kept across a [rebuild] —
+  /// an HD upgrade or an audio toggle is the same screen — and cleared by any
+  /// other play, so a long-form video never inherits the Shorts presentation.
   Future<void> play(
     VideoBrief video, {
     List<VideoBrief> upNext = const [],
     bool recordHistory = true,
     bool rebuild = false,
+    bool shortsSurface = false,
   }) async {
+    if (!rebuild) _shortsSurface = shortsSurface && video.isShort;
     // Supersede whatever is loading now, before waiting for it: the older load
     // checks this token after each step and stands down, instead of finishing
     // a resolve and an attach for a video nobody wants any more.
@@ -679,7 +687,14 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
         _db.recordWatch(_config.kidsMode ? video.asKids() : video),
       );
     }
-    if (!rebuild) _loadSponsorSegments(video.id);
+    // A Short is a minute at most and SponsorBlock almost never has segments
+    // for one, so the lookup is a request spent on the start of every swipe.
+    if (!rebuild && !video.isShort) _loadSponsorSegments(video.id);
+    if (!rebuild) {
+      _segments = const [];
+      _shortLooped = false;
+      _shortFurthest = Duration.zero;
+    }
 
     // The browser preview has no native player plugin. Stop after recording
     // the selection so every screen still renders and can be reviewed.
@@ -757,7 +772,12 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       if (token != _playToken) return;
       debugPrint('AI BIT start: ${video.id} sources ready '
           '${startTimer.elapsedMilliseconds}ms');
-      final resumeAt = await _db.resumePosition(video.id);
+      // A Short always starts from the top, as on YouTube — and for a Short
+      // the stored position is its furthest point (see _persistPosition), so
+      // resuming from it would be wrong as well as a database read spent on
+      // every swipe.
+      final resumeAt =
+          video.isShort ? null : await _db.resumePosition(video.id);
       // Closed or replaced while the position was read.
       if (token != _playToken) return;
       await _attach(video, sources, startAt: resumeAt);
@@ -821,6 +841,10 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_syncAutomaticPip());
     } else {
       final player = _player!;
+      // Before the source as well as after it: a surface already on screen
+      // (the watch page, after a Short) rebuilds on the setup's own events,
+      // and must read the right fit and controls when it does.
+      _applyPresentation(player, video);
       await _setup(player, dataSource);
       // stop() may have run while the source was being set up.
       if (!identical(_player, player)) return;
@@ -838,6 +862,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // default. Applied here so it takes effect the moment the video loads.
     final channelSpeed = _config.speedForChannel(video.channelId);
     await player.setSpeed(channelSpeed ?? _config.playbackSpeed);
+    _speedHeld = false;
+
+    _applyPresentation(player, video);
 
     _cancelCountdown();
     _endScreen = false;
@@ -864,6 +891,232 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // setup and finding an empty list.
     unawaited(_applyPreferredQualityWhenReady());
   }
+
+  // ------------------------------------------------------------- Shorts
+
+  bool _shortsSurface = false;
+
+  /// True while the source is presented by the Shorts player: full-bleed,
+  /// looping, with the shared [VideoControls] switched off.
+  bool get onShortsSurface => _shortsSurface;
+
+  /// Whether the current Short has wrapped round at least once this sitting.
+  bool _shortLooped = false;
+
+  /// The furthest point reached in the current Short before any loop.
+  Duration _shortFurthest = Duration.zero;
+
+  /// How many times the current Short has wrapped round. For the UI only.
+  int _shortLoops = 0;
+  int get shortLoops => _shortLoops;
+
+  /// Session-only mute for Shorts, as YouTube's paused-Short speaker toggle.
+  bool _shortsMuted = false;
+  bool get shortsMuted => _shortsMuted;
+
+  /// True while a hold-for-2x is in force.
+  bool _speedHeld = false;
+  bool get speedHeld => _speedHeld;
+
+  /// Configures [player] for whichever screen is presenting [video].
+  ///
+  /// The Shorts player and the watch page share one native player, so the
+  /// presentation has to be put back for long-form every time, not only set
+  /// for Shorts: a Short leaves the fit at cover and the controls off, and the
+  /// next long-form video would otherwise inherit both.
+  void _applyPresentation(BetterPlayerController player, VideoBrief video) {
+    final shorts = _shortsSurface && video.isShort;
+    try {
+      // Off for Shorts: VideoControls' opaque tap detector sat over the
+      // surface and swallowed every tap meant for the Shorts page, so a Short
+      // could not be paused. VideoControls renders nothing while disabled.
+      player.setControlsEnabled(!shorts);
+      if (shorts) {
+        final view = WidgetsBinding.instance.platformDispatcher.views.first;
+        final size = view.physicalSize;
+        final portrait = size.height > 0 && size.width > 0
+            ? size.width / size.height
+            : 9 / 16;
+        player.setOverriddenAspectRatio(portrait);
+        player.setOverriddenFit(BoxFit.cover);
+      } else {
+        player.setOverriddenAspectRatio(16 / 9);
+        player.setOverriddenFit(BoxFit.contain);
+      }
+    } catch (e) {
+      debugPrint('AI BIT: presentation not applied — $e');
+    }
+    // A Short loops natively rather than by seeking from the finished event:
+    // there is no rebuffer at the seam, and the wrap is counted from the
+    // position (see _trackShortLoop). Repeat-one keeps using the same switch.
+    unawaited(
+      player
+          .setLooping(video.isShort || _config.repeatMode == PlaybackRepeat.one)
+          .catchError((Object e) => debugPrint('AI BIT: looping not set — $e')),
+    );
+    unawaited(
+      player
+          .setVolume(shorts && _shortsMuted ? 0 : _volume)
+          .catchError((Object e) => debugPrint('AI BIT: volume not set — $e')),
+    );
+  }
+
+  /// Counts a loop when a Short's position wraps from its tail to its head.
+  void _trackShortLoop(Duration previous, Duration now) {
+    if (!(_current?.isShort ?? false)) return;
+    if (!_shortLooped && now > _shortFurthest) _shortFurthest = now;
+    if (isLoopWrap(previous: previous, now: now, duration: _duration)) {
+      _shortLooped = true;
+      _shortLoops++;
+      // Banked at the wrap, while the "watched it through" is fresh.
+      _persistPosition(force: true);
+    }
+  }
+
+  /// What a Short's history row should say was reached.
+  ///
+  /// The plain position was wrong for a looping Short: overwritten on every
+  /// pass, a Short watched three times and swiped away two seconds into the
+  /// fourth was recorded at two seconds — a bail-out — so the Shorts ranker
+  /// penalised exactly what the viewer had liked most. A loop is a completion;
+  /// before one, the furthest point reached counts, not wherever a scrub
+  /// back left the playhead. The database keeps the maximum across sittings.
+  Duration get _shortReached => shortReached(
+        position: _position,
+        furthest: _shortFurthest,
+        looped: _shortLooped,
+        duration: _duration,
+      );
+
+  /// Pure form of [_shortReached], for the tests.
+  static Duration shortReached({
+    required Duration position,
+    required Duration furthest,
+    required bool looped,
+    required Duration duration,
+  }) {
+    final reached = position > furthest ? position : furthest;
+    if (looped && duration > reached) return duration;
+    return reached;
+  }
+
+  /// Whether a position going from [previous] to [now] is a Short wrapping
+  /// round: from its last stretch back to its first second and a half.
+  static bool isLoopWrap({
+    required Duration previous,
+    required Duration now,
+    required Duration duration,
+  }) {
+    if (duration <= Duration.zero) return false;
+    final nearEnd = duration - previous <= const Duration(milliseconds: 1500) ||
+        previous.inMilliseconds >= duration.inMilliseconds * 0.9;
+    return nearEnd && now <= const Duration(milliseconds: 1500);
+  }
+
+  /// Mute or unmute the Shorts player for this session only.
+  Future<void> setShortsMuted(bool muted) async {
+    _shortsMuted = muted;
+    if (_shortsSurface) await _player?.setVolume(muted ? 0 : _volume);
+    notifyListeners();
+  }
+
+  /// Hold-for-2x: a temporary speed that is never saved, neither globally nor
+  /// for the channel. Releasing puts back whatever the video was playing at.
+  Future<void> holdSpeed(bool held) async {
+    final player = _player;
+    if (player == null || held == _speedHeld) return;
+    _speedHeld = held;
+    final normal = _config.speedForChannel(_current?.channelId ?? '') ??
+        _config.playbackSpeed;
+    await player.setSpeed(held ? 2.0 : normal);
+    notifyListeners();
+  }
+
+  /// Fills in a current Short's channel and counts once its details arrive.
+  ///
+  /// Shorts come out of search as `shortsLockupViewModel`, which carries no
+  /// channel at all, so the history row — and with it the Shorts profile's
+  /// channel affinity and the Subscribe button — had nothing to go on. Only
+  /// fills gaps; never changes which video is current.
+  void enrichCurrent(VideoBrief richer) {
+    final now = _current;
+    if (now == null || now.id != richer.id) return;
+    if (now.channelId.isNotEmpty && now.author.isNotEmpty) return;
+    var merged = VideoBrief(
+      id: now.id,
+      title: now.title.isNotEmpty ? now.title : richer.title,
+      author: now.author.isNotEmpty ? now.author : richer.author,
+      channelId: now.channelId.isNotEmpty ? now.channelId : richer.channelId,
+      duration: now.duration ?? richer.duration,
+      viewCount: now.viewCount ?? richer.viewCount,
+      uploadDate: now.uploadDate ?? richer.uploadDate,
+      uploadRaw: now.uploadRaw ?? richer.uploadRaw,
+      isLive: now.isLive,
+      isShort: now.isShort,
+      isKids: now.isKids,
+      avatarUrl: now.avatarUrl ?? richer.avatarUrl,
+    );
+    _current = merged;
+    if (_duration <= Duration.zero && merged.duration != null) {
+      _duration = merged.duration!;
+    }
+    if (!_config.incognito) {
+      if (_config.kidsMode) merged = merged.asKids();
+      unawaited(
+        _db.recordWatch(merged).catchError((Object e) {
+          debugPrint('AI BIT: enriched watch not recorded — $e');
+        }),
+      );
+    }
+    notifyListeners();
+  }
+
+  /// Pre-buffers the opening bytes of upcoming Shorts, Android only.
+  ///
+  /// Only for a progressive stream: a generated DASH manifest is a `file://`
+  /// document whose segments are separate byte ranges, which the plugin's
+  /// pre-cache cannot address, and iOS plays without the cache at all (see the
+  /// cacheConfiguration note in [_dataSource]). The resolve is shared with
+  /// [YtRepository.prefetch], so this adds no player request of its own.
+  Future<void> preCacheShorts(List<VideoBrief> upcoming) async {
+    if (kIsWeb || !Platform.isAndroid) return;
+    for (final video in upcoming) {
+      try {
+        final sources = await _repo.resolve(video.id);
+        final player = _player;
+        if (player == null) return;
+        if (sources.isDash || sources.isHls || sources.url.startsWith('file:')) {
+          debugPrint('AI BIT start: ${video.id} pre-cache skipped (manifest)');
+          continue;
+        }
+        await player.preCache(_shortsCacheSource(video, sources.url));
+        debugPrint('AI BIT start: ${video.id} pre-cache requested');
+      } catch (e) {
+        debugPrint('AI BIT: pre-cache failed for ${video.id} — $e');
+      }
+    }
+  }
+
+  static const _shortsCache = BetterPlayerCacheConfiguration(
+    useCache: true,
+    maxCacheSize: 96 * 1024 * 1024,
+    maxCacheFileSize: 16 * 1024 * 1024,
+    preCacheSize: 1536 * 1024,
+  );
+
+  BetterPlayerDataSource _shortsCacheSource(VideoBrief video, String url) =>
+      BetterPlayerDataSource(
+        BetterPlayerDataSourceType.network,
+        url,
+        videoExtension: 'mp4',
+        headers: _streamHeaders,
+        cacheConfiguration: _shortsCache,
+      );
+
+  static const _streamHeaders = {
+    'User-Agent':
+        'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
+  };
 
   /// Hands [player] a new source, waiting at most [_loadWaitLimit] for it.
   ///
@@ -963,7 +1216,20 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       // carry expiring query parameters and rely on exact range semantics. It
       // was the cause of "Playback failed" on device while the same URL served
       // HTTP 206 to a plain client. Offline use is served by real downloads.
-      cacheConfiguration: const BetterPlayerCacheConfiguration(),
+      //
+      // The one exception is a progressive Short on Android, where ExoPlayer's
+      // own CacheDataSource is used so the bytes [preCacheShorts] fetched for
+      // the next Short are read from disk instead of the network. Never on
+      // iOS, for the reason above, and never for a manifest.
+      cacheConfiguration: (!kIsWeb &&
+              Platform.isAndroid &&
+              _shortsSurface &&
+              video.isShort &&
+              !_isOffline &&
+              !isHls &&
+              !isDash)
+          ? _shortsCache
+          : const BetterPlayerCacheConfiguration(),
     );
   }
 
@@ -1852,6 +2118,11 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_current?.isShort ?? false) {
+      // Normally unreachable now — a Short loops natively (setLooping in
+      // _applyPresentation) and never reports a finish — and kept as the
+      // fallback for a platform where that switch does not take.
+      _shortLooped = true;
+      _shortLoops++;
       await seek(Duration.zero);
       await _player?.play();
       return;
@@ -1991,7 +2262,7 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_config.autoplayNext && hasNext) {
-      _countdown = 10;
+      _countdown = kAutoplayCountdownSeconds;
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         _countdown--;
         if (_countdown <= 0) {
@@ -2512,7 +2783,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     final value = _player?.videoPlayerController?.value;
     if (value == null) return;
 
+    final before = _position;
     _position = value.position;
+    _trackShortLoop(before, _position);
     final wasPlaying = _playing;
     final hadDuration = _duration;
     if (value.duration != null && value.duration! > Duration.zero) {
@@ -2623,8 +2896,9 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
     // the label wants: early enough that a bail-out is recorded, often enough
     // that the final figure is close to what was really watched.
     if (labelled != null && !_config.incognito && _duration > Duration.zero) {
+      final reached = labelled.isShort ? _shortReached : _position;
       final completion =
-          (_position.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
+          (reached.inMilliseconds / _duration.inMilliseconds).clamp(0.0, 1.0);
       unawaited(
         _db.markExampleOpened(labelled.id, completion).catchError((Object e) {
           debugPrint('AI BIT: ranking label not recorded - $e');
@@ -2671,6 +2945,8 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
   void _persistPosition({bool force = false}) {
     final video = _current;
     if (video == null) return;
+    // The outgoing source's ticks; see _awaitingSource.
+    if (_awaitingSource) return;
     // Incognito leaves no resume trail, for the reason given in _play.
     if (_config.incognito) return;
     final now = DateTime.now();
@@ -2678,6 +2954,17 @@ class PlaybackController extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _lastPositionWrite = now;
+    if (video.isShort) {
+      // Furthest reached, not where the playhead is — see _shortReached.
+      unawaited(
+        _db.savePosition(
+          video.id,
+          _shortReached,
+          duration: _duration > Duration.zero ? _duration : null,
+        ),
+      );
+      return;
+    }
     unawaited(_db.savePosition(video.id, _position));
   }
 

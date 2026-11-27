@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// One top-level comment.
+/// One comment or reply.
 class VideoComment {
   const VideoComment({
     required this.author,
@@ -14,6 +14,10 @@ class VideoComment {
     this.isPinned = false,
     this.isCreator = false,
     this.repliesToken,
+    this.pinnedText,
+    this.isHearted = false,
+    this.heartAvatarUrl,
+    this.authorChannelId,
   });
 
   final String author;
@@ -31,6 +35,18 @@ class VideoComment {
   /// Token that fetches this comment's replies, when it has any.
   final String? repliesToken;
 
+  /// "Pinned by @veritasium", exactly as YouTube words it.
+  final String? pinnedText;
+
+  /// The creator hearted this comment.
+  final bool isHearted;
+
+  /// The creator's avatar, drawn inside the heart badge.
+  final String? heartAvatarUrl;
+
+  /// The commenter's channel, for tapping through.
+  final String? authorChannelId;
+
   VideoComment withReplies(String? token) => VideoComment(
     author: author,
     text: text,
@@ -41,25 +57,46 @@ class VideoComment {
     isPinned: isPinned,
     isCreator: isCreator,
     repliesToken: token,
+    pinnedText: pinnedText,
+    isHearted: isHearted,
+    heartAvatarUrl: heartAvatarUrl,
+    authorChannelId: authorChannelId,
   );
 }
+
+/// One way of ordering the comments ("Top", "Newest"), with the token that
+/// fetches the first page in that order.
+typedef CommentSort = ({String label, String token, bool selected});
 
 class CommentPage {
   const CommentPage({
     required this.comments,
     this.totalLabel,
     this.continuation,
+    this.sorts = const [],
   });
 
   final List<VideoComment> comments;
 
-  /// "1.2K Comments" as YouTube renders it, or null when it declines to say.
+  /// "1.2K Comments" — or just "6.3K" — as YouTube renders it, or null when
+  /// it declines to say.
   final String? totalLabel;
 
   /// Token for the next page, or null at the end.
   final String? continuation;
 
+  /// Top / Newest, in YouTube's order. Only the first page carries them.
+  final List<CommentSort> sorts;
+
   bool get hasMore => continuation != null;
+
+  CommentPage withHeader({String? totalLabel, List<CommentSort>? sorts}) =>
+      CommentPage(
+        comments: comments,
+        totalLabel: this.totalLabel ?? totalLabel,
+        continuation: continuation,
+        sorts: sorts ?? this.sorts,
+      );
 }
 
 /// Reads a video's comments.
@@ -70,7 +107,9 @@ class CommentPage {
 ///
 /// Comments are not in the first response. That one carries a *continuation
 /// token* for the comment section, which has to be posted back to get the
-/// comments themselves — two round trips, by YouTube's design.
+/// comments themselves — two round trips, by YouTube's design. The first
+/// response is also where the Top / Newest menu and the comment count live,
+/// in the comments engagement panel's header.
 ///
 /// The payloads also moved: comments used to live in `commentRenderer` and now
 /// arrive as `commentEntityPayload` entity mutations. Both are read, because
@@ -131,43 +170,126 @@ class YoutubeCommentsClient {
     return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
   }
 
-  /// First page of comments for [videoId].
+  /// First page of comments for [videoId], in YouTube's Top order.
   Future<CommentPage> fetch(String videoId) async {
     final first = await _next({'videoId': videoId});
+    final sorts = commentSortsOf(first);
+    final total = commentCountOf(first);
 
     // Comment sections are the continuation whose token sits alongside the
     // comments header; taking the last candidate avoids the "up next" one,
-    // which appears first.
-    final token = _commentsToken(first);
+    // which appears first. The Top entry of the sort menu is the same
+    // request, so it is preferred when present.
+    final token = sorts.isNotEmpty ? sorts.first.token : _commentsToken(first);
     if (token == null) {
-      return const CommentPage(comments: [], totalLabel: null);
+      return CommentPage(comments: const [], totalLabel: total, sorts: sorts);
     }
-    return _page(await _next({'continuation': token}));
+    return parseCommentPage(
+      await _next({'continuation': token}),
+    ).withHeader(totalLabel: total, sorts: sorts);
+  }
+
+  /// The first page in another order, from a [CommentSort.token]. The sort
+  /// list is carried over, with [selected] marked.
+  Future<CommentPage> sorted(List<CommentSort> sorts, int selected) async {
+    final page = parseCommentPage(
+      await _next({'continuation': sorts[selected].token}),
+    );
+    return page.withHeader(
+      sorts: [
+        for (var i = 0; i < sorts.length; i++)
+          (label: sorts[i].label, token: sorts[i].token, selected: i == selected),
+      ],
+    );
   }
 
   /// A further page, using the token from [CommentPage.continuation].
   Future<CommentPage> more(String continuation) async =>
-      _page(await _next({'continuation': continuation}));
+      parseCommentPage(await _next({'continuation': continuation}));
 
-  CommentPage _page(Map<String, dynamic> json) {
+  /// One page of replies to a comment, from [VideoComment.repliesToken] or a
+  /// previous replies page's [CommentPage.continuation] ("Show more
+  /// replies").
+  Future<CommentPage> repliesPage(String token) async =>
+      parseCommentPage(await _next({'continuation': token}));
+
+  /// Replies for one comment, using [VideoComment.repliesToken].
+  Future<List<VideoComment>> replies(String token) async =>
+      (await repliesPage(token)).comments;
+
+  /// A page of comments or replies out of a continuation response. Pure and
+  /// public so its shapes are tested.
+  ///
+  /// Each comment is assembled from three places that share keys:
+  ///
+  ///   * the thread (`commentThreadRenderer`), whose `commentViewModel`
+  ///     carries `commentKey`, `toolbarStateKey`, `pinnedText`, and whose
+  ///     `replies` carries the replies token;
+  ///   * the `commentEntityPayload` with that `key` — text, author, counts;
+  ///   * the `engagementToolbarStateEntityPayload` with the toolbar key —
+  ///     whether the creator hearted it.
+  ///
+  /// Keying them together replaces a version that paired reply tokens with
+  /// comments by position. That was wrong whenever a comment without replies
+  /// sat before one with them — the token list only has entries for comments
+  /// that have replies, while the index counted every comment — so "13
+  /// replies" opened somebody else's thread. Reply pages have no threads, so
+  /// there the bare `commentViewModel`s are read in document order.
+  static CommentPage parseCommentPage(Map<String, dynamic> json) {
     final payloads = <Map<String, dynamic>>[];
     _collect(json, 'commentEntityPayload', payloads);
+    final byKey = {
+      for (final p in payloads)
+        if (p['key'] is String) p['key'] as String: p,
+    };
+    final states = <Map<String, dynamic>>[];
+    _collect(json, 'engagementToolbarStateEntityPayload', states);
+    final hearted = {
+      for (final s in states)
+        if (s['key'] is String &&
+            s['heartState'] == 'TOOLBAR_HEART_STATE_HEARTED')
+          s['key'] as String,
+    };
 
-    // Reply tokens live in a parallel list of commentRepliesRenderer blocks,
-    // in the same order as the comments themselves — the payloads carry no
-    // token of their own.
-    final replyTokens = _replyTokens(json);
+    VideoComment? assemble(Map<String, dynamic> view, {String? repliesToken}) {
+      final payload = byKey[view['commentKey']];
+      if (payload == null) return null;
+      final props = payload['properties'];
+      final stateKey =
+          view['toolbarStateKey'] ??
+          (props is Map ? props['toolbarStateKey'] : null);
+      return _fromPayload(
+        payload,
+        pinnedText: (view['pinnedText'] as String?)?.nullIfEmpty,
+        hearted: hearted.contains(stateKey),
+        repliesToken: repliesToken,
+      );
+    }
 
     final comments = <VideoComment>[];
-    for (final p in payloads) {
-      final comment = _fromPayload(p);
-      if (comment == null) continue;
-      final index = comments.length;
-      comments.add(
-        comment.replyCount > 0 && index < replyTokens.length
-            ? comment.withReplies(replyTokens[index])
-            : comment,
-      );
+    final threads = <Map<String, dynamic>>[];
+    _collect(json, 'commentThreadRenderer', threads);
+    if (threads.isNotEmpty) {
+      for (final t in threads) {
+        final views = <Map<String, dynamic>>[];
+        _collectViews(t['commentViewModel'], views);
+        if (views.isEmpty) continue;
+        final comment = assemble(views.first, repliesToken: _firstToken(t['replies']));
+        if (comment != null) comments.add(comment);
+      }
+    } else {
+      final views = <Map<String, dynamic>>[];
+      _collectViews(json, views);
+      for (final v in views) {
+        final comment = assemble(v);
+        if (comment != null) comments.add(comment);
+      }
+    }
+
+    // Payloads that no view model named: keep them rather than lose them,
+    // in the order they came.
+    if (comments.isEmpty && payloads.isNotEmpty) {
+      comments.addAll(payloads.map((p) => _fromPayload(p)).whereType<VideoComment>());
     }
 
     // The older renderer shape, only when the new one gave nothing.
@@ -182,12 +304,17 @@ class YoutubeCommentsClient {
 
     return CommentPage(
       comments: comments,
-      totalLabel: _totalLabel(json),
+      totalLabel: _headerCount(json),
       continuation: _nextToken(json),
     );
   }
 
-  static VideoComment? _fromPayload(Map<String, dynamic> p) {
+  static VideoComment? _fromPayload(
+    Map<String, dynamic> p, {
+    String? pinnedText,
+    bool hearted = false,
+    String? repliesToken,
+  }) {
     final props = p['properties'] as Map<String, dynamic>?;
     final author = p['author'] as Map<String, dynamic>?;
     final toolbar = p['toolbar'] as Map<String, dynamic>?;
@@ -196,56 +323,88 @@ class YoutubeCommentsClient {
     if (text is! String || text.isEmpty) return null;
 
     final replies = toolbar?['replyCount'];
+    final like = (toolbar?['likeCountNotliked'] ?? toolbar?['likeCountLiked'])
+        as String?;
+    final pinned =
+        pinnedText ?? (props?['pinnedText'] as String?)?.nullIfEmpty;
     return VideoComment(
       author: (author?['displayName'] as String?) ?? '',
       text: text,
       avatarUrl: author?['avatarThumbnailUrl'] as String?,
-      likeLabel: (toolbar?['likeCountNotliked'] ?? toolbar?['likeCountLiked'])
-          as String?,
+      // YouTube sends a blank or "0" for an unliked comment; either way
+      // there is nothing to print beside the thumb.
+      likeLabel: like == null || like.trim().isEmpty || like.trim() == '0'
+          ? null
+          : like.trim(),
       publishedText: props?['publishedTime'] as String?,
       replyCount: replies is int
           ? replies
-          : int.tryParse(replies?.toString() ?? '') ?? 0,
-      isPinned: (props?['pinnedText'] as String?)?.isNotEmpty ?? false,
+          : int.tryParse(replies?.toString().replaceAll(',', '') ?? '') ?? 0,
+      isPinned: pinned != null,
+      pinnedText: pinned,
       isCreator: author?['isCreator'] == true,
+      isHearted: hearted,
+      heartAvatarUrl: hearted
+          ? (toolbar?['creatorThumbnailUrl'] as String?)
+          : null,
+      authorChannelId: author?['channelId'] as String?,
+      repliesToken: repliesToken,
     );
   }
 
   static VideoComment? _fromRenderer(Map<String, dynamic> r) {
     final text = _text(r['contentText']);
     if (text.isEmpty) return null;
+    final pinned = _text(r['pinnedCommentBadge']);
     return VideoComment(
       author: _text(r['authorText']),
       text: text,
       avatarUrl: _firstUrl(r['authorThumbnail']),
       likeLabel: _text(r['voteCount']).nullIfEmpty,
       publishedText: _text(r['publishedTimeText']).nullIfEmpty,
-      isPinned: _text(r['pinnedCommentBadge']).isNotEmpty,
+      isPinned: pinned.isNotEmpty,
+      pinnedText: pinned.nullIfEmpty,
+      isCreator: r['authorIsChannelOwner'] == true,
     );
   }
 
-  /// Replies for one comment, using [VideoComment.repliesToken].
-  Future<List<VideoComment>> replies(String token) async {
-    final json = await _next({'continuation': token});
-    final payloads = <Map<String, dynamic>>[];
-    _collect(json, 'commentEntityPayload', payloads);
-    return payloads
-        .map(_fromPayload)
-        .whereType<VideoComment>()
-        .toList();
+  /// The Top / Newest menu from a watch (`next`) response.
+  static List<CommentSort> commentSortsOf(Map<String, dynamic> json) {
+    final menus = <Map<String, dynamic>>[];
+    _collect(json, 'sortFilterSubMenuRenderer', menus);
+    for (final m in menus) {
+      final items = m['subMenuItems'];
+      if (items is! List) continue;
+      final out = <CommentSort>[];
+      for (final item in items) {
+        if (item is! Map) continue;
+        final token = _firstToken(item);
+        final label = item['title'];
+        if (token == null || label is! String) continue;
+        out.add((label: label, token: token, selected: item['selected'] == true));
+      }
+      if (out.isNotEmpty) return out;
+    }
+    return const [];
   }
 
-  /// One token per comment that has replies, in document order.
-  static List<String> _replyTokens(Map<String, dynamic> json) {
-    final blocks = <Map<String, dynamic>>[];
-    _collect(json, 'commentRepliesRenderer', blocks);
-    final out = <String>[];
-    for (final b in blocks) {
-      final tokens = <String>[];
-      _collectStrings(b, 'token', tokens);
-      if (tokens.isNotEmpty) out.add(tokens.first);
+  /// The comment count from a watch response: the comments panel's header
+  /// says "6.3K" under `contextualInfo`. The continuation's own header,
+  /// which used to carry "1.2K Comments", now carries no count at all.
+  static String? commentCountOf(Map<String, dynamic> json) {
+    final panels = <Map<String, dynamic>>[];
+    _collect(json, 'engagementPanelSectionListRenderer', panels);
+    for (final p in panels) {
+      final id = '${p['panelIdentifier'] ?? p['targetId'] ?? ''}';
+      if (!id.contains('comment')) continue;
+      final header = p['header'];
+      final title =
+          header is Map ? header['engagementPanelTitleHeaderRenderer'] : null;
+      if (title is! Map) continue;
+      final label = _text(title['contextualInfo']).nullIfEmpty;
+      if (label != null) return label;
     }
-    return out;
+    return null;
   }
 
   /// Token for the comment section, taken from the *last* continuation in the
@@ -262,21 +421,28 @@ class YoutubeCommentsClient {
     return last;
   }
 
-  /// Token for the *next* page of comments.
+  /// Token for the *next* page — of comments, or of replies.
+  ///
+  /// Every thread with replies carries its own `continuationItemRenderer`
+  /// inside `commentRepliesRenderer`, so on a page of twenty comments the
+  /// first such item in the document is almost always a reply thread's. That
+  /// was what this used to return, so scrolling to the bottom of the sheet
+  /// appended the first comment's replies as though they were more comments.
+  /// The page's own item is the one outside every thread; the last such is
+  /// taken. On a replies page it is the "Show more replies" button, whose
+  /// token sits under `button…command`, which [_firstToken] also reaches.
   static String? _nextToken(Map<String, dynamic> json) {
     final items = <Map<String, dynamic>>[];
-    _collect(json, 'continuationItemRenderer', items);
+    _collectOutside(json, 'continuationItemRenderer', 'commentThreadRenderer', items);
+    String? last;
     for (final item in items) {
-      // A "show more" button carries its own token; a reply thread's does not
-      // belong here.
-      final tokens = <String>[];
-      _collectStrings(item, 'token', tokens);
-      if (tokens.isNotEmpty) return tokens.last;
+      final token = _firstToken(item);
+      if (token != null) last = token;
     }
-    return null;
+    return last;
   }
 
-  static String? _totalLabel(Map<String, dynamic> json) {
+  static String? _headerCount(Map<String, dynamic> json) {
     final headers = <Map<String, dynamic>>[];
     _collect(json, 'commentsHeaderRenderer', headers);
     for (final h in headers) {
@@ -287,6 +453,32 @@ class YoutubeCommentsClient {
   }
 
   // ------------------------------------------------------------- helpers
+
+  /// Every `commentViewModel` map that names a comment (has `commentKey`), in
+  /// document order. The key is used both for a wrapper and for the model
+  /// inside it, so only the ones carrying the key are kept.
+  static void _collectViews(dynamic node, List<Map<String, dynamic>> out) {
+    if (node is Map) {
+      if (node['commentKey'] is String) out.add(node.cast<String, dynamic>());
+      for (final v in node.values) {
+        _collectViews(v, out);
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        _collectViews(v, out);
+      }
+    }
+  }
+
+  static String? _firstToken(dynamic node) {
+    final commands = <Map<String, dynamic>>[];
+    _collect(node, 'continuationCommand', commands);
+    for (final c in commands) {
+      final token = c['token'];
+      if (token is String && token.isNotEmpty) return token;
+    }
+    return null;
+  }
 
   static void _collect(
     dynamic node,
@@ -302,6 +494,27 @@ class YoutubeCommentsClient {
     } else if (node is List) {
       for (final v in node) {
         _collect(v, key, out);
+      }
+    }
+  }
+
+  /// [_collect], without descending into anything stored under [skip].
+  static void _collectOutside(
+    dynamic node,
+    String key,
+    String skip,
+    List<Map<String, dynamic>> out,
+  ) {
+    if (node is Map) {
+      final hit = node[key];
+      if (hit is Map<String, dynamic>) out.add(hit);
+      for (final entry in node.entries) {
+        if (entry.key == skip) continue;
+        _collectOutside(entry.value, key, skip, out);
+      }
+    } else if (node is List) {
+      for (final v in node) {
+        _collectOutside(v, key, skip, out);
       }
     }
   }
@@ -326,6 +539,8 @@ class YoutubeCommentsClient {
     if (node is! Map) return '';
     final simple = node['simpleText'];
     if (simple is String) return simple;
+    final content = node['content'];
+    if (content is String) return content;
     final runs = node['runs'];
     if (runs is List) {
       final b = StringBuffer();
@@ -342,6 +557,37 @@ class YoutubeCommentsClient {
     _collectStrings(node, 'url', urls);
     return urls.isEmpty ? null : urls.last;
   }
+}
+
+/// One run of a comment's text: plain, or a timestamp that seeks the video.
+typedef CommentSpan = ({String text, Duration? seekTo});
+
+/// Splits [text] into plain runs and `1:23` / `1:02:03` timestamps.
+///
+/// What it must not take for a timestamp, each pinned by a test: `16:9`
+/// (seconds need two digits), `10:30pm` (a time of day — a word character
+/// right after it), `1:75` (no such second), `1:70:00` (no such minute in an
+/// hours form) and the digits inside a longer number such as `2024:11:05`.
+/// Pure so all of that is testable without a widget.
+List<CommentSpan> splitCommentTimestamps(String text) {
+  final pattern = RegExp(r'(?<![\w:])(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?![\w:])');
+  final out = <CommentSpan>[];
+  var at = 0;
+  for (final m in pattern.allMatches(text)) {
+    final hours = m.group(1) == null ? 0 : int.parse(m.group(1)!);
+    final minutes = int.parse(m.group(2)!);
+    final seconds = int.parse(m.group(3)!);
+    if (seconds > 59) continue;
+    if (m.group(1) != null && minutes > 59) continue;
+    if (m.start > at) out.add((text: text.substring(at, m.start), seekTo: null));
+    out.add((
+      text: m.group(0)!,
+      seekTo: Duration(hours: hours, minutes: minutes, seconds: seconds),
+    ));
+    at = m.end;
+  }
+  if (at < text.length) out.add((text: text.substring(at), seekTo: null));
+  return out;
 }
 
 extension on String {

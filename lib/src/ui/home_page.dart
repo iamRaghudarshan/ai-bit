@@ -20,10 +20,12 @@ import '../data/battery_service.dart';
 import '../data/network_service.dart';
 import '../data/ranker_trainer.dart';
 import '../player/playback_controller.dart';
+import 'widgets/cast_button.dart';
 import 'widgets/feed_impressions.dart';
 import 'widgets/feed_preview.dart';
 import 'widgets/responsive_feed.dart';
 import 'widgets/sheets.dart';
+import 'widgets/shorts_shelf.dart';
 import 'widgets/video_tile.dart';
 
 /// Landing screen — opens straight into a feed, the way the YouTube app does.
@@ -97,6 +99,16 @@ class HomePageState extends State<HomePage>
   /// impression feature. Built here and disposed with the screen so a pending
   /// batch is flushed rather than dropped on the way out.
   FeedImpressionRecorder? _impressions;
+
+  /// The feed's one scroll view, header included — re-tapping Home uses it to
+  /// go back to the top.
+  final _scroll = ScrollController();
+  final _refreshKey = GlobalKey<RefreshIndicatorState>();
+
+  /// Watched fraction per video id, for the red resume bar on each card.
+  /// Read in one query for the whole feed and refreshed on arrival and on
+  /// the way back from a video, rather than looked up per card.
+  Map<String, double> _progress = const {};
 
   @override
   bool get wantKeepAlive => true;
@@ -195,6 +207,7 @@ class HomePageState extends State<HomePage>
   void dispose() {
     _previews?.dispose();
     _impressions?.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -401,7 +414,35 @@ class HomePageState extends State<HomePage>
         _loading = false;
         _error = 'Could not load the feed. Check your connection.';
       });
+    } finally {
+      // Every path above — including its early returns — lands a new feed,
+      // and the resume bars are per video, so they are re-read for it.
+      if (mounted) unawaited(_refreshProgress());
     }
+  }
+
+  /// Re-reads the resume bars for every video in the feed, in one query.
+  Future<void> _refreshProgress() async {
+    final ids = [for (final v in _feed) v.id];
+    if (ids.isEmpty) return;
+    try {
+      final progress = await context.read<AppDatabase>().watchProgress(ids);
+      if (!mounted) return;
+      if (_sameProgress(progress, _progress)) return;
+      setState(() => _progress = progress);
+    } catch (e) {
+      // A missing bar is cosmetic; the feed itself is fine. Logged so a bar
+      // that never appears is traceable.
+      debugPrint('AI BIT: resume bars not read - $e');
+    }
+  }
+
+  static bool _sameProgress(Map<String, double> a, Map<String, double> b) {
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
   }
 
   Future<void> _refresh() async {
@@ -636,6 +677,7 @@ class HomePageState extends State<HomePage>
         _pendingFeatures.addAll(features);
       }
       setState(() => _feed = [..._feed, ...fresh]);
+      if (fresh.isNotEmpty) unawaited(_refreshProgress());
     } catch (e) {
       // Running out is not an error worth a banner: the rows already on
       // screen are fine and the user is mid-scroll. Logged rather than
@@ -705,8 +747,32 @@ class HomePageState extends State<HomePage>
     await _load(reset: true);
   }
 
+  /// Tapping Home while already on Home, YouTube's way: scrolled down, it
+  /// glides back to the top (the floating header comes back with it); already
+  /// at the top, it refreshes in place under the pull-to-refresh spinner —
+  /// the rows stay up while the new ones fetch, rather than wiping to the
+  /// skeleton the way [reloadFeed] does.
+  void onReselected() {
+    if (_scroll.hasClients && _scroll.offset > 0) {
+      _scroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOutCubic,
+      );
+      return;
+    }
+    final indicator = _refreshKey.currentState;
+    if (indicator != null) {
+      indicator.show();
+    } else {
+      _refresh();
+    }
+  }
+
   /// Called by the shell when Home is selected again.
   Future<void> onTabOpened() async {
+    // Something may have been watched from another tab.
+    unawaited(_refreshProgress());
     // Coming back to an empty Subscribed feed is almost always the return trip
     // from a channel page where something was just subscribed to, so refetch
     // that one case. A populated Subscribed feed is left alone: refetching it
@@ -749,6 +815,14 @@ class HomePageState extends State<HomePage>
 
   static bool _loggedMissingGuard = false;
 
+  /// Heights of the pieces under the toolbar, fixed so the floating header
+  /// is a known size — a SliverAppBar's bottom must declare its height up
+  /// front, and the pull-to-refresh spinner is offset by the same total.
+  static const _toolbarHeight = 48.0;
+  static const _chipsHeight = 48.0;
+  static const _kidsBarHeight = 28.0;
+  static const _previewBannerHeight = 32.0;
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -761,222 +835,289 @@ class HomePageState extends State<HomePage>
     // A spent allowance replaces the feed rather than the whole screen, so the
     // mode switch stays reachable for a grown-up with the PIN.
     final timeUp = kids && (guard?.limitReached ?? false);
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 16,
-        title: _ModeSwitch(
-          kids: kids,
-          onChanged: (wantsKids) async {
-            // The one and only write site for kidsMode, so the guard below is
-            // the whole rule and cannot be walked around from elsewhere.
-            //
-            // Turning Kids mode ON is free. Turning it OFF is the move a child
-            // makes to get out of it, so that is the direction the PIN guards.
-            // AppLockPage.confirmKidsPin is the same PIN pad the app lock uses
-            // — a second, free-text prompt for this used to live here, and two
-            // different-looking asks for one action read as a bug. It returns
-            // true when no Kids PIN is set, which is exactly the unguarded
-            // case, so there is no separate branch for it.
-            if (!wantsKids && !await AppLockPage.confirmKidsPin(context)) {
-              // Cancelled or wrong: stay in Kids mode, and say nothing more —
-              // the pad already reported the wrong PIN without dismissing.
-              return;
-            }
-            if (!mounted) return;
-            settings.kidsMode = wantsKids;
-            // Reset to All and reload with the skeleton, so the switch reads as
-            // an instant change rather than a frozen old feed.
-            _category = _CategoryChips.all;
-            _load(reset: true);
-          },
+    final showKidsBar = kids && guard != null && guard.hasLimit && !timeUp;
+
+    final double bottomHeight =
+        (YtRepository.isPreview ? _previewBannerHeight : 0.0) +
+            (showKidsBar ? _kidsBarHeight : 0.0) +
+            (kids ? 0.0 : _chipsHeight);
+
+    final appBar = SliverAppBar(
+      // The bar and the chip row scroll away together on the way down and
+      // snap back whole on the first movement up — YouTube's header. One
+      // scroll view for header and feed is what makes that possible.
+      floating: true,
+      snap: true,
+      // The status bar is kept clear by the SafeArea around the scroll view,
+      // so content never scrolls up underneath the clock.
+      primary: false,
+      toolbarHeight: _toolbarHeight,
+      titleSpacing: 12,
+      title: _ModeSwitch(
+        kids: kids,
+        onChanged: (wantsKids) async {
+          // The one and only write site for kidsMode, so the guard below is
+          // the whole rule and cannot be walked around from elsewhere.
+          //
+          // Turning Kids mode ON is free. Turning it OFF is the move a child
+          // makes to get out of it, so that is the direction the PIN guards.
+          // AppLockPage.confirmKidsPin is the same PIN pad the app lock uses
+          // — a second, free-text prompt for this used to live here, and two
+          // different-looking asks for one action read as a bug. It returns
+          // true when no Kids PIN is set, which is exactly the unguarded
+          // case, so there is no separate branch for it.
+          if (!wantsKids && !await AppLockPage.confirmKidsPin(context)) {
+            // Cancelled or wrong: stay in Kids mode, and say nothing more —
+            // the pad already reported the wrong PIN without dismissing.
+            return;
+          }
+          if (!mounted) return;
+          settings.kidsMode = wantsKids;
+          // Reset to All and reload with the skeleton, so the switch reads as
+          // an instant change rather than a frozen old feed.
+          _category = _CategoryChips.all;
+          _load(reset: true);
+        },
+      ),
+      actions: [
+        if (CastButton.isSupported)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 12),
+            child: Center(child: CastButton(size: 24)),
+          ),
+        IconButton(
+          icon: const Icon(Icons.search),
+          tooltip: 'Search',
+          onPressed: () => SearchPage.open(context),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.search),
-            tooltip: 'Search',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const SearchPage()),
-            ),
+        IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          tooltip: 'Settings',
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
           ),
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            tooltip: 'Settings',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(builder: (_) => const SettingsPage()),
-            ),
-          ),
-          const SizedBox(width: 4),
-        ],
-      ),
-      body: Column(
-        children: [
-          if (YtRepository.isPreview) const _PreviewBanner(),
-          // The countdown is a thin strip, not a dialog: it should be
-          // glanceable without interrupting anything. Hidden once the time is
-          // up, since the panel below then says so in full.
-          if (kids && guard != null && guard.hasLimit && !timeUp)
-            _KidsTimeBar(remainingSeconds: guard.remainingSeconds),
-          // Category chips are meaningless in Kids mode, where the whole feed
-          // is curated.
-          if (!kids) ...[
-            _CategoryChips(
-              selected: _category,
-              customFeeds: decodeCustomFeeds(
-                context.select<SettingsService, String>(
-                  (s) => s.customFeedsRaw,
-                ),
-              ),
-              onCreateFeed: _createCustomFeed,
-              onEditFeed: _editCustomFeed,
-              onSelected: (value) {
-                setState(() => _category = value);
-                _load(reset: true);
-              },
-            ),
-            const Divider(height: 1),
-          ],
-          Expanded(child: timeUp ? const _KidsTimeUp() : _buildFeed()),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFeed() {
-    // Previews follow the scroll: silenced the moment a drag or fling starts
-    // and allowed again only once it has settled. See
-    // FeedPreviewCoordinator.onScrolling.
-    return NotificationListener<ScrollNotification>(
-      onNotification: (n) {
-        if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
-        if (n is ScrollStartNotification) _previews?.onScrolling(true);
-        if (n is ScrollEndNotification) _previews?.onScrolling(false);
-        return false;
-      },
-      child: _buildFeedBody(),
-    );
-  }
-
-  Widget _buildFeedBody() {
-    return RefreshIndicator(
-        onRefresh: _refresh,
-        child: Builder(
-          builder: (context) {
-            if (_loading) return const FeedSkeleton(count: 4);
-            if (_feed.isEmpty) {
-              // Nothing followed yet is not a broken feed, so it gets an
-              // invitation and a way back to All rather than a Retry that
-              // would fetch nothing again.
-              if (_noSubscriptions) {
-                return ListView(
-                  children: [
-                    const SizedBox(height: 80),
-                    EmptyState(
-                      icon: Icons.subscriptions_outlined,
-                      title: 'No subscriptions yet',
-                      message:
-                          'Open any channel and tap Subscribe. Their newest '
-                          'videos will fill this feed.\n\nSubscriptions live '
-                          'on this device only, not in a Google account — this '
-                          'app has no sign-in.',
-                      action: FilledButton(
-                        onPressed: () {
-                          setState(() => _category = _CategoryChips.all);
-                          _load(reset: true);
-                        },
-                        child: const Text('Back to All'),
+        ),
+        const SizedBox(width: 4),
+      ],
+      bottom: bottomHeight == 0
+          ? null
+          : PreferredSize(
+              preferredSize: Size.fromHeight(bottomHeight),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (YtRepository.isPreview)
+                    const SizedBox(
+                      height: _previewBannerHeight,
+                      child: _PreviewBanner(),
+                    ),
+                  // The countdown is a thin strip, not a dialog: it should be
+                  // glanceable without interrupting anything. Hidden once the
+                  // time is up, since the panel below then says so in full.
+                  if (showKidsBar)
+                    SizedBox(
+                      height: _kidsBarHeight,
+                      child: _KidsTimeBar(
+                        remainingSeconds: guard.remainingSeconds,
                       ),
                     ),
-                  ],
-                );
-              }
-              return ListView(
-                children: [
-                  const SizedBox(height: 80),
-                  EmptyState(
-                    icon: Icons.wifi_off_outlined,
-                    title: 'Feed unavailable',
-                    message: _error,
-                    action: FilledButton(
-                      onPressed: _refresh,
-                      child: const Text('Retry'),
+                  // Category chips are meaningless in Kids mode, where the
+                  // whole feed is curated. No divider under them: YouTube's
+                  // chip row sits straight on the feed.
+                  if (!kids)
+                    SizedBox(
+                      height: _chipsHeight,
+                      child: _CategoryChips(
+                        selected: _category,
+                        customFeeds: decodeCustomFeeds(
+                          context.select<SettingsService, String>(
+                            (s) => s.customFeedsRaw,
+                          ),
+                        ),
+                        onCreateFeed: _createCustomFeed,
+                        onEditFeed: _editCustomFeed,
+                        onSelected: (value) {
+                          setState(() => _category = value);
+                          _load(reset: true);
+                        },
+                      ),
                     ),
-                  ),
                 ],
-              );
-            }
-            final hasShelf = _continue.isNotEmpty;
+              ),
+            ),
+    );
 
-            Widget shelf() => _ContinueWatchingShelf(
-                  entries: _continue,
-                  onOpened: () async {
-                    // Refresh the shelf when returning from a video.
-                    final resumeable =
-                        await context.read<AppDatabase>().continueWatching();
-                    if (mounted) setState(() => _continue = resumeable);
-                  },
-                );
-            final previews = _previews;
-            // The rank a card is drawn at is what decides how much a skipped
-            // impression costs, so it has to come from the feed order rather
-            // than be guessed at from the video.
-            final rankOf = <String, int>{
-              for (var i = 0; i < _feed.length; i++) _feed[i].id: i,
-            };
-            Widget card(VideoBrief video, {bool inGrid = false}) {
-              final tile = VideoCard(
-                video: video,
-                inGrid: inGrid,
-                onTap: () {
-                  // Stopped before opening: the watch page is about to take
-                  // the audio session, and two players negotiating it at once
-                  // is how the notification ends up showing the wrong video.
-                  previews?.stop();
-                  WatchPage.open(context, video);
-                },
-                onMenu: () => showVideoMenu(
-                  context,
-                  video,
-                  // Taking the card away is the feedback. A dismissal that
-                  // left the row sitting there reads as the button having
-                  // done nothing, and the next feed load is the soonest it
-                  // would otherwise disappear.
-                  onDismissed: () => _dismissFromFeed(video),
-                ),
-                previewOverlay: previews == null
-                    ? null
-                    : FeedPreviewSurface(video: video, coordinator: previews),
-              );
-              // Always wrapped, even with no preview coordinator: the slot
-              // is also how an impression gets counted, and that has to work
-              // on every platform previews do not.
-              return FeedPreviewSlot(
-                video: video,
-                coordinator: previews,
-                onSeen: _onCardSeen,
-                rank: rankOf[video.id] ?? 0,
-                seenFraction: FeedImpressionRecorder.seenFraction,
-                child: tile,
-              );
-            }
-
-            // Phones keep the single-column list exactly as before; only wider
-            // screens (tablets, foldables, landscape) fan the feed out into a
-            // multi-column grid the way YouTube does on a big screen.
-            return ResponsiveVideoFeed(
-              videos: _feed,
-              header: hasShelf ? shelf() : null,
-              listPadding: const EdgeInsets.only(top: 8),
-              onNearEnd: _category == _CategoryChips.all ? _loadMore : null,
-              footer: _feedFooter(),
-              // No RepaintBoundary on items: ListView.builder already gives
-              // every child one, and a second is pure overhead.
-              listItemBuilder: (context, index) => card(_feed[index]),
-              gridItemBuilder: (context, index) =>
-                  card(_feed[index], inGrid: true),
-            );
+    final scheme = Theme.of(context).colorScheme;
+    return Scaffold(
+      body: SafeArea(
+        bottom: false,
+        // Previews follow the scroll: silenced the moment a drag or fling
+        // starts and allowed again only once it has settled. See
+        // FeedPreviewCoordinator.onScrolling. Depth 0 is the feed's own
+        // scroll view, which now also carries the header; the shelves and
+        // the chip row are horizontal and nested, and are ignored.
+        child: NotificationListener<ScrollNotification>(
+          onNotification: (n) {
+            if (n.depth != 0 || n.metrics.axis != Axis.vertical) return false;
+            if (n is ScrollStartNotification) _previews?.onScrolling(true);
+            if (n is ScrollEndNotification) _previews?.onScrolling(false);
+            return false;
           },
+          child: RefreshIndicator(
+            key: _refreshKey,
+            onRefresh: _refresh,
+            // Drawn under the header rather than over the mode switch.
+            edgeOffset: _toolbarHeight + bottomHeight,
+            // Neutral, as YouTube's is; the accent is for progress, not for
+            // a spinner.
+            color: scheme.onSurface,
+            backgroundColor: scheme.surfaceContainerHigh,
+            notificationPredicate: (n) =>
+                n.depth == 0 && n.metrics.axis == Axis.vertical,
+            child: CustomScrollView(
+              controller: _scroll,
+              // Pull-to-refresh has to work on a short page too — the
+              // skeleton, an error, or a feed of three.
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                appBar,
+                if (timeUp)
+                  const SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: _KidsTimeUp(),
+                  )
+                else
+                  ..._feedSlivers(kids: kids),
+              ],
+            ),
+          ),
+        ),
       ),
     );
+  }
+
+  /// The feed under the header: skeleton, empty state, or the cards.
+  List<Widget> _feedSlivers({required bool kids}) {
+    if (_loading) return const [FeedSkeleton(count: 4, sliver: true)];
+    if (_feed.isEmpty) {
+      // Nothing followed yet is not a broken feed, so it gets an invitation
+      // and a way back to All rather than a Retry that would fetch nothing
+      // again.
+      final empty = _noSubscriptions
+          ? EmptyState(
+              icon: Icons.subscriptions_outlined,
+              title: 'No subscriptions yet',
+              message: 'Open any channel and tap Subscribe. Their newest '
+                  'videos will fill this feed.\n\nSubscriptions live on this '
+                  'device only, not in a Google account — this app has no '
+                  'sign-in.',
+              action: FilledButton(
+                onPressed: () {
+                  setState(() => _category = _CategoryChips.all);
+                  _load(reset: true);
+                },
+                child: const Text('Back to All'),
+              ),
+            )
+          : EmptyState(
+              icon: Icons.wifi_off_outlined,
+              title: 'Feed unavailable',
+              message: _error,
+              action: FilledButton(
+                onPressed: _refresh,
+                child: const Text('Retry'),
+              ),
+            );
+      return [
+        SliverToBoxAdapter(
+          child: Padding(padding: const EdgeInsets.only(top: 80), child: empty),
+        ),
+      ];
+    }
+
+    final previews = _previews;
+    // The rank a card is drawn at is what decides how much a skipped
+    // impression costs, so it has to come from the feed order rather than be
+    // guessed at from the video.
+    final rankOf = <String, int>{
+      for (var i = 0; i < _feed.length; i++) _feed[i].id: i,
+    };
+    Widget card(VideoBrief video, {bool inGrid = false}) {
+      void menu() => showVideoMenu(
+            context,
+            video,
+            // Taking the card away is the feedback. A dismissal that left the
+            // row sitting there reads as the button having done nothing, and
+            // the next feed load is the soonest it would otherwise disappear.
+            onDismissed: () => _dismissFromFeed(video),
+          );
+      final tile = VideoCard(
+        video: video,
+        inGrid: inGrid,
+        progress: _progress[video.id] ?? 0,
+        onTap: () async {
+          // Stopped before opening: the watch page is about to take the audio
+          // session, and two players negotiating it at once is how the
+          // notification ends up showing the wrong video.
+          previews?.stop();
+          await WatchPage.open(context, video);
+          // Back from the video (or minimised it): its resume bar moved.
+          if (mounted) unawaited(_refreshProgress());
+        },
+        onMenu: menu,
+        previewOverlay: previews == null
+            ? null
+            : FeedPreviewSurface(video: video, coordinator: previews),
+      );
+      // Always wrapped, even with no preview coordinator: the slot is also
+      // how an impression gets counted, and that has to work on every
+      // platform previews do not.
+      return FeedPreviewSlot(
+        video: video,
+        coordinator: previews,
+        onSeen: _onCardSeen,
+        rank: rankOf[video.id] ?? 0,
+        seenFraction: FeedImpressionRecorder.seenFraction,
+        child: tile,
+      );
+    }
+
+    final footer = _feedFooter();
+    return [
+      if (_continue.isNotEmpty)
+        SliverToBoxAdapter(
+          child: _ContinueWatchingShelf(
+            entries: _continue,
+            onOpened: () async {
+              // Refresh the shelf when returning from a video.
+              final resumeable =
+                  await context.read<AppDatabase>().continueWatching();
+              if (mounted) setState(() => _continue = resumeable);
+              unawaited(_refreshProgress());
+            },
+          ),
+        ),
+      // Phones keep a single column; wider screens (tablets, foldables,
+      // landscape) fan the feed out into a multi-column grid the way YouTube
+      // does on a big screen.
+      SliverVideoFeed(
+        videos: _feed,
+        onNearEnd: _category == _CategoryChips.all ? _loadMore : null,
+        insert: _shortsShelf(kids: kids),
+        insertAfter: 2,
+        listItemBuilder: (context, index) => card(_feed[index]),
+        gridItemBuilder: (context, index) => card(_feed[index], inGrid: true),
+      ),
+      if (footer != null) SliverToBoxAdapter(child: footer),
+    ];
+  }
+
+  /// The Shorts shelf, on the personalised feed and in Kids mode only — a
+  /// topic chip, Trending and Subscribed are lists the user asked for by
+  /// name, and a row of Shorts in them would be noise.
+  Widget? _shortsShelf({required bool kids}) {
+    if (!kids && _category != _CategoryChips.all) return null;
+    return const ShortsShelf();
   }
 }
 
@@ -995,11 +1136,15 @@ class _ContinueWatchingShelf extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Padding(
-          padding: EdgeInsets.fromLTRB(12, 4, 12, 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
           child: Text(
             'Continue watching',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: AppColors.text(context),
+            ),
           ),
         ),
         SizedBox(
@@ -1013,7 +1158,12 @@ class _ContinueWatchingShelf extends StatelessWidget {
               final entry = entries[i];
               return SizedBox(
                 width: 200,
-                child: GestureDetector(
+                // InkWell rather than a bare GestureDetector, so a press shows
+                // the same flat highlight as every other card.
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  splashFactory: NoSplash.splashFactory,
+                  highlightColor: AppColors.pressHighlight(context),
                   onTap: () async {
                     await WatchPage.open(context, entry.video);
                     await onOpened();
@@ -1027,10 +1177,11 @@ class _ContinueWatchingShelf extends StatelessWidget {
                         entry.video.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12.5,
+                        style: TextStyle(
+                          fontSize: 13,
                           fontWeight: FontWeight.w500,
-                          height: 1.25,
+                          height: 1.3,
+                          color: AppColors.text(context),
                         ),
                       ),
                     ],
@@ -1056,11 +1207,12 @@ class _ModeSwitch extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return DecoratedBox(
+    return Container(
+      // 32dp, the height of YouTube's top-bar pills and chips.
+      height: 32,
       decoration: BoxDecoration(
-        color: scheme.onSurface.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(20),
+        color: AppColors.chip(context),
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1079,7 +1231,7 @@ class _ModeSwitch extends StatelessWidget {
     required bool selected,
     required VoidCallback onTap,
   }) {
-    final scheme = Theme.of(context).colorScheme;
+    final fg = AppColors.text(context);
     // Kids side gets a friendly green; normal side the brand red.
     final activeColor = label == 'Kids' ? const Color(0xFF34A853) : AppColors.brand;
     return GestureDetector(
@@ -1087,15 +1239,16 @@ class _ModeSwitch extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: selected ? activeColor : Colors.transparent,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(16),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 18, color: selected ? Colors.white : scheme.onSurface),
+            Icon(icon, size: 18, color: selected ? Colors.white : fg),
             const SizedBox(width: 5),
             Text(
               label,
@@ -1103,7 +1256,7 @@ class _ModeSwitch extends StatelessWidget {
                 fontSize: 14,
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.3,
-                color: selected ? Colors.white : scheme.onSurface,
+                color: selected ? Colors.white : fg,
               ),
             ),
           ],
@@ -1169,7 +1322,15 @@ class _CategoryChips extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final chipColor = AppColors.chip(context);
+    final selectedColor = AppColors.chipSelected(context);
+    final text = AppColors.text(context);
+    final selectedText = AppColors.chipSelectedText(context);
+    const shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.all(Radius.circular(8)),
+    );
+    const labelPadding = EdgeInsets.symmetric(horizontal: 4);
+    const padding = EdgeInsets.symmetric(horizontal: 8);
 
     // All, then the user's own feeds, then the built-ins, then the + button.
     final entries = <({String key, String label, CustomFeed? custom})>[
@@ -1181,23 +1342,27 @@ class _CategoryChips extends StatelessWidget {
     ];
 
     return SizedBox(
-      height: 46,
+      height: 48,
       child: ListView.separated(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        // 32dp chips centred in the 48dp row.
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         itemCount: entries.length + (onCreateFeed == null ? 0 : 1),
         separatorBuilder: (_, _) => const SizedBox(width: 8),
         itemBuilder: (context, index) {
           if (index == entries.length) {
             return ActionChip(
-              avatar: const Icon(Icons.add, size: 18),
+              avatar: Icon(Icons.add, size: 18, color: text),
               label: const Text('New feed'),
               onPressed: onCreateFeed,
-              backgroundColor: scheme.onSurface.withValues(alpha: 0.08),
+              backgroundColor: chipColor,
+              shape: shape,
+              padding: padding,
+              labelPadding: labelPadding,
               labelStyle: TextStyle(
-                fontSize: 13,
+                fontSize: 14,
                 fontWeight: FontWeight.w500,
-                color: scheme.onSurface,
+                color: text,
               ),
               side: BorderSide.none,
               visualDensity: VisualDensity.compact,
@@ -1214,17 +1379,20 @@ class _CategoryChips extends StatelessWidget {
                 : Icon(
                     Icons.auto_awesome,
                     size: 15,
-                    color: isSelected ? scheme.surface : scheme.onSurface,
+                    color: isSelected ? selectedText : text,
                   ),
             selected: isSelected,
             showCheckmark: false,
             onSelected: (_) => onSelected(entry.key),
-            backgroundColor: scheme.onSurface.withValues(alpha: 0.08),
-            selectedColor: scheme.onSurface,
+            backgroundColor: chipColor,
+            selectedColor: selectedColor,
+            shape: shape,
+            padding: padding,
+            labelPadding: labelPadding,
             labelStyle: TextStyle(
-              fontSize: 13,
+              fontSize: 14,
               fontWeight: FontWeight.w500,
-              color: isSelected ? scheme.surface : scheme.onSurface,
+              color: isSelected ? selectedText : text,
             ),
             side: BorderSide.none,
             visualDensity: VisualDensity.compact,
@@ -1297,7 +1465,7 @@ class _PreviewBanner extends StatelessWidget {
   Widget build(BuildContext context) => Material(
     color: AppColors.brand,
     child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(
         children: [
           const Icon(Icons.info_outline, size: 16, color: Colors.white),
@@ -1351,7 +1519,8 @@ class _KidsTimeBar extends StatelessWidget {
     return Container(
       width: double.infinity,
       color: kidsGreen.withValues(alpha: 0.12),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Row(
         children: [
           const Icon(Icons.timer_outlined, size: 15, color: kidsGreen),

@@ -13,8 +13,15 @@ Future<void> showDescriptionSheet(
   required String title,
   required String description,
   required void Function(Duration) onSeek,
+  List<String> stats = const [],
 }) {
   final chapters = parseChapters(description);
+  // The watch page's header is now the way in, and it can be tapped before
+  // the details scrape has landed — or when it failed outright.
+  final body = description.trim().isEmpty
+      ? 'No description for this video.'
+      : description;
+  final statLine = metaLine(stats);
 
   return showModalBottomSheet<void>(
     context: context,
@@ -55,6 +62,19 @@ Future<void> showDescriptionSheet(
                     fontWeight: FontWeight.w600,
                   ),
                 ),
+                // Views, likes and the exact upload date with its relative
+                // age — the long form of the header's short line.
+                if (statLine.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    statLine,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(
+                        context,
+                      ).colorScheme.onSurface.withValues(alpha: 0.65),
+                    ),
+                  ),
+                ],
                 if (chapters.isNotEmpty) ...[
                   const SizedBox(height: 18),
                   Text(
@@ -89,8 +109,9 @@ Future<void> showDescriptionSheet(
                     ),
                   const Divider(height: 28),
                 ],
+                if (chapters.isEmpty) const SizedBox(height: 14),
                 SelectableText(
-                  description,
+                  body,
                   style: Theme.of(
                     context,
                   ).textTheme.bodyMedium?.copyWith(height: 1.5),

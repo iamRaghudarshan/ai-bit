@@ -742,6 +742,51 @@ class YtRepository {
     return search(query, sortByViews: true);
   }
 
+  /// One page of the search SCREEN — mixed results, chips, corrections and a
+  /// next-page token. [search] above stays the feed's videos-only call.
+  ///
+  /// [kids] keeps the answer inside kid-safe content three ways at once,
+  /// because none of them is enough alone: the query gets a kid term
+  /// ([kidsSafeQuery]), the request asks for YouTube's Restricted Mode, and
+  /// channels and playlists — doors out to unfiltered content — are dropped
+  /// ([kidsSafeItems]). Measured: Restricted Mode alone replaced about half of
+  /// a "horror movie scene" page and still returned horror.
+  Future<SearchBatch> searchPage(
+    String query, {
+    String? params,
+    bool kids = false,
+  }) async {
+    if (isPreview) {
+      final rows = await search(query);
+      return SearchBatch(items: [for (final v in rows) SearchVideoItem(v)]);
+    }
+    final batch = await _search.searchPage(
+      kids ? kidsSafeQuery(query) : query,
+      params: params,
+      safetyMode: kids,
+    );
+    return kids ? _kidsBatch(batch) : batch;
+  }
+
+  /// The next page of a search, or a chip's fresh first page.
+  Future<SearchBatch> searchMore(String token, {bool kids = false}) async {
+    if (isPreview) return const SearchBatch();
+    final batch = await _search.searchContinuation(token, safetyMode: kids);
+    return kids ? _kidsBatch(batch) : batch;
+  }
+
+  static SearchBatch _kidsBatch(SearchBatch b) => SearchBatch(
+    items: kidsSafeItems(b.items),
+    continuation: b.continuation,
+    // Chips are continuations YouTube built for the query as sent; they
+    // carry the kid term, but "Live" and friends are not worth offering a
+    // child, so the bar is hidden in Kids mode.
+    chips: const [],
+    // A correction would be of the query as sent, "… for kids", which reads
+    // as nonsense to the child who typed the first half.
+    skipped: b.skipped,
+  );
+
   Future<List<String>> suggestions(String query) async {
     if (query.trim().isEmpty) return const [];
     if (isPreview) {
@@ -914,6 +959,56 @@ class YtRepository {
   /// Replies to one comment.
   Future<List<VideoComment>> commentReplies(String token) =>
       _comments.replies(token);
+
+  // ---- Paged channel / playlist / comment views (Subscriptions, You,
+  // channel and playlist pages). Thin on purpose: the parsing lives in
+  // browse_client.dart and comments_client.dart where it is tested.
+
+  /// One page of replies, with the "Show more replies" token.
+  Future<CommentPage> commentRepliesPage(String token) =>
+      _comments.repliesPage(token);
+
+  /// The first comment page in the order at [selected] of [sorts].
+  Future<CommentPage> sortedComments(List<CommentSort> sorts, int selected) =>
+      _comments.sorted(sorts, selected);
+
+  /// First page of a channel tab, with its sort chips and next-page token.
+  Future<ChannelTabPage> channelTabPage(
+    String channelId, {
+    ChannelTab tab = ChannelTab.videos,
+    String channelTitle = '',
+  }) async {
+    if (isPreview) return ChannelTabPage(videos: _previewRows(0));
+    return _browse.channelTab(channelId, tab: tab, channelTitle: channelTitle);
+  }
+
+  /// The next page of a channel tab, or the tab re-sorted from a chip token.
+  Future<ChannelTabPage> channelTabMore(
+    String token, {
+    required ChannelTab tab,
+    required String channelId,
+    String channelTitle = '',
+    String? avatarUrl,
+  }) => _browse.channelTabMore(
+    token,
+    tab: tab,
+    channelId: channelId,
+    channelTitle: channelTitle,
+    avatarUrl: avatarUrl,
+  );
+
+  /// A channel's About panel, from [ChannelInfo.aboutToken].
+  Future<ChannelAbout?> channelAbout(String token) =>
+      _browse.channelAbout(token);
+
+  /// A remote playlist's header and first page.
+  Future<PlaylistPageData> remotePlaylistPage(String playlistId) =>
+      _browse.playlistPage(playlistId);
+
+  /// A further page of a remote playlist.
+  Future<({List<VideoBrief> videos, String? continuation})> remotePlaylistMore(
+    String token,
+  ) => _browse.playlistMore(token);
 
   /// Playlists published by a channel.
   Future<List<PlaylistBrief>> channelPlaylists(String channelId) =>

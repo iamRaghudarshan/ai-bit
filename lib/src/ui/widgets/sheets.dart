@@ -24,8 +24,10 @@ const _sleepOptions = [
   Duration(hours: 1),
 ];
 
+// Top padding is small because every sheet now carries the theme's drag
+// handle above it, which already gives the header its breathing room.
 Widget _sheetHeader(BuildContext context, String title) => Padding(
-  padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
   child: Text(title, style: Theme.of(context).textTheme.titleMedium),
 );
 
@@ -33,8 +35,12 @@ Future<void> showSpeedSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   return showModalBottomSheet<void>(
     context: context,
-    builder: (context) => SafeArea(
-      child: Column(
+    // With the drag handle, eight 56dp rows no longer fit the default
+    // 9/16-height sheet on a small phone; scroll-controlled with 48dp rows
+    // and a scrolling body, it fits and never clips.
+    isScrollControlled: true,
+    builder: (context) => sheetTiles(SafeArea(
+      child: SingleChildScrollView(child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -49,8 +55,8 @@ Future<void> showSpeedSheet(BuildContext context) {
               },
             ),
         ],
-      ),
-    ),
+      )),
+    )),
   );
 }
 
@@ -58,8 +64,12 @@ Future<void> showSleepTimerSheet(BuildContext context) {
   final playback = context.read<PlaybackController>();
   return showModalBottomSheet<void>(
     context: context,
-    builder: (context) => SafeArea(
-      child: Column(
+    // With the drag handle, eight 56dp rows no longer fit the default
+    // 9/16-height sheet on a small phone; scroll-controlled with 48dp rows
+    // and a scrolling body, it fits and never clips.
+    isScrollControlled: true,
+    builder: (context) => sheetTiles(SafeArea(
+      child: SingleChildScrollView(child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -113,8 +123,8 @@ Future<void> showSleepTimerSheet(BuildContext context) {
               },
             ),
         ],
-      ),
-    ),
+      )),
+    )),
   );
 }
 
@@ -554,6 +564,12 @@ Future<void> showDownloadSheet(BuildContext context, VideoBrief video) {
 }
 
 /// Long-press / overflow menu shared by every video tile.
+///
+/// YouTube's order and shape: single-line 48dp rows with outlined icons, no
+/// title header and no subtitles — the card the user just pressed is the
+/// header. Scroll-controlled with a scrolling body, because ten rows plus the
+/// handle are more than the default 9/16-height sheet holds on a small phone
+/// and the last rows (the dismissals) were the ones cut off.
 Future<void> showVideoMenu(
   BuildContext context,
   VideoBrief video, {
@@ -564,191 +580,282 @@ Future<void> showVideoMenu(
   final playback = context.read<PlaybackController>();
   final db = context.read<AppDatabase>();
   final downloads = context.read<DownloadManager>();
-  final existing = downloads.recordFor(video.id);
 
   return showModalBottomSheet<void>(
     context: context,
-    builder: (sheetContext) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-            child: Text(
-              video.title,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(sheetContext).textTheme.titleSmall,
-            ),
-          ),
-          const Divider(),
-          if (existing?.isComplete ?? false)
-            ListTile(
-              leading: const Icon(Icons.download_done, color: Colors.green),
-              title: const Text('Downloaded'),
-              subtitle: const Text('Plays offline. Tap to remove.'),
-              onTap: () async {
-                await downloads.remove(video.id);
-                if (!sheetContext.mounted) return;
-                Navigator.pop(sheetContext);
-              },
-            )
-          else if (downloads.isActive(video.id))
-            ListTile(
-              leading: const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
+    isScrollControlled: true,
+    useSafeArea: true,
+    builder: (sheetContext) => sheetTiles(
+      SafeArea(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              menuRow(
+                icon: Icons.queue_play_next_outlined,
+                label: 'Play next in queue',
+                // Queued after the current video, as YouTube's "Play next"
+                // does — it used to start the video at once. With nothing
+                // playing there is nothing to wait for, so it plays now.
+                onTap: () {
+                  final queued = playback.current != null;
+                  final messenger = ScaffoldMessenger.maybeOf(sheetContext);
+                  playback.playAfterCurrent(video);
+                  Navigator.pop(sheetContext);
+                  if (queued) {
+                    messenger?.showSnackBar(
+                      const SnackBar(
+                        content: Text('Video will play next'),
+                        duration: Duration(seconds: 2),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  }
+                },
               ),
-              title: const Text('Downloading…'),
-              subtitle: const Text('Tap to cancel'),
-              onTap: () async {
-                await downloads.cancel(video.id);
-                if (!sheetContext.mounted) return;
-                Navigator.pop(sheetContext);
-              },
-            )
-          else
-            ListTile(
-              leading: const Icon(Icons.download_outlined),
-              title: const Text('Download'),
-              subtitle: const Text('Choose video or audio'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                showDownloadSheet(context, video);
-              },
-            ),
-          const Divider(height: 1),
-          if (video.channelId.isNotEmpty)
-            ListTile(
-              leading: const Icon(Icons.account_circle_outlined),
-              title: Text('Go to ${video.author}'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                ChannelPage.open(context, video.channelId, title: video.author);
-              },
-            ),
-          ListTile(
-            leading: const Icon(Icons.share_outlined),
-            title: const Text('Share'),
-            onTap: () {
-              Navigator.pop(sheetContext);
-              SharePlus.instance.share(
-                ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
-              );
-            },
+              menuRow(
+                icon: Icons.watch_later_outlined,
+                label: 'Save to Watch later',
+                onTap: () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  Navigator.pop(sheetContext);
+                  await db.addToPlaylist(LocalPlaylist.watchLaterId, video);
+                  messenger.showSnackBar(
+                    const SnackBar(
+                      content: Text('Saved to Watch later'),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                },
+              ),
+              menuRow(
+                icon: Icons.playlist_add,
+                label: 'Save to playlist',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  showSaveToPlaylistSheet(context, video);
+                },
+              ),
+              // Live: the label follows the transfer while the sheet is open.
+              ListenableBuilder(
+                listenable: downloads,
+                builder: (_, _) {
+                  final record = downloads.recordFor(video.id);
+                  final state = downloadMenuState(
+                    record,
+                    active: downloads.isActive(video.id),
+                  );
+                  return menuRow(
+                    icon: switch (state.kind) {
+                      DownloadMenuKind.done => Icons.download_done,
+                      DownloadMenuKind.active => Icons.downloading_outlined,
+                      DownloadMenuKind.none => Icons.download_outlined,
+                    },
+                    label: state.label,
+                    onTap: () async {
+                      switch (state.kind) {
+                        case DownloadMenuKind.none:
+                          Navigator.pop(sheetContext);
+                          showDownloadSheet(context, video);
+                        case DownloadMenuKind.done:
+                          // Asked, not done on the tap: a row reading
+                          // "Downloaded" that silently deletes the file is
+                          // the one-tap delete this app has shipped before.
+                          final ok = await _confirm(
+                            sheetContext,
+                            title: 'Delete download?',
+                            action: 'Delete',
+                          );
+                          if (!ok) return;
+                          await downloads.remove(video.id);
+                          if (sheetContext.mounted) Navigator.pop(sheetContext);
+                        case DownloadMenuKind.active:
+                          final ok = await _confirm(
+                            sheetContext,
+                            title: 'Cancel download?',
+                            action: 'Cancel download',
+                            dismiss: 'Keep',
+                          );
+                          if (!ok) return;
+                          await downloads.cancel(video.id);
+                          if (sheetContext.mounted) Navigator.pop(sheetContext);
+                      }
+                    },
+                  );
+                },
+              ),
+              menuRow(
+                icon: Icons.share_outlined,
+                label: 'Share',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  SharePlus.instance.share(
+                    ShareParams(uri: Uri.parse('https://youtu.be/${video.id}')),
+                  );
+                },
+              ),
+              if (video.channelId.isNotEmpty)
+                menuRow(
+                  icon: Icons.account_box_outlined,
+                  label: 'Go to channel',
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    ChannelPage.open(context, video.channelId,
+                        title: video.author);
+                  },
+                ),
+              const Divider(height: 9, indent: 0),
+              // The only place in the app where the user states a preference
+              // outright. Everything the recommender otherwise knows is
+              // inferred from what they watched, and inference cannot be
+              // argued with; this can, which is why YouTube treats the same
+              // two controls as first-class signals and why the ranker drops
+              // a match entirely rather than merely demoting it.
+              menuRow(
+                icon: Icons.not_interested_outlined,
+                label: 'Not interested',
+                onTap: () async {
+                  // Taken before the await: the sheet is closing, and looking
+                  // a messenger up from a context afterwards is the async-gap
+                  // bug the analyzer is right to object to.
+                  final messenger = ScaffoldMessenger.of(context);
+                  Navigator.pop(sheetContext);
+                  await db.addNotInterested(
+                    id: video.id,
+                    kind: DislikeKind.video,
+                    // Kept so the dismissal can generalise weakly through the
+                    // title's words rather than applying to this one id alone.
+                    title: video.title,
+                  );
+                  onDismissed?.call();
+                  _confirmDismissal(
+                    messenger,
+                    db,
+                    message: 'We will stop recommending this video.',
+                    id: video.id,
+                    kind: DislikeKind.video,
+                  );
+                },
+              ),
+              if (video.channelId.isNotEmpty)
+                menuRow(
+                  icon: Icons.block_outlined,
+                  label: "Don't recommend channel",
+                  onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    Navigator.pop(sheetContext);
+                    await db.addNotInterested(
+                      id: video.channelId,
+                      kind: DislikeKind.channel,
+                    );
+                    onDismissed?.call();
+                    _confirmDismissal(
+                      messenger,
+                      db,
+                      message: 'We will stop recommending ${video.author}.',
+                      id: video.channelId,
+                      kind: DislikeKind.channel,
+                    );
+                  },
+                ),
+              if (onRemove != null)
+                menuRow(
+                  icon: Icons.delete_outline,
+                  label: removeLabel,
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    onRemove();
+                  },
+                ),
+              const SizedBox(height: 8),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.queue_play_next_outlined),
-            title: const Text('Play next'),
-            // Queued after the current video, as YouTube's "Play next" does —
-            // it used to start the video at once. With nothing playing there
-            // is nothing to wait for, so it plays now.
-            onTap: () {
-              final queued = playback.current != null;
-              final messenger = ScaffoldMessenger.maybeOf(sheetContext);
-              playback.playAfterCurrent(video);
-              Navigator.pop(sheetContext);
-              if (queued) {
-                messenger?.showSnackBar(
-                  const SnackBar(
-                    content: Text('Plays next'),
-                    duration: Duration(seconds: 2),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.watch_later_outlined),
-            title: const Text('Save to Watch later'),
-            onTap: () async {
-              await db.addToPlaylist(LocalPlaylist.watchLaterId, video);
-              if (!sheetContext.mounted) return;
-              Navigator.pop(sheetContext);
-              ScaffoldMessenger.of(
-                sheetContext,
-              ).showSnackBar(const SnackBar(content: Text('Saved to Watch later')));
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.playlist_add),
-            title: const Text('Save to playlist'),
-            onTap: () {
-              Navigator.pop(sheetContext);
-              showSaveToPlaylistSheet(context, video);
-            },
-          ),
-          if (onRemove != null)
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: Text(removeLabel),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                onRemove();
-              },
-            ),
-          const Divider(height: 1),
-          // The only place in the app where the user states a preference
-          // outright. Everything the recommender otherwise knows is inferred
-          // from what they watched, and inference cannot be argued with; this
-          // can, which is why YouTube treats the same two controls as
-          // first-class signals and why the ranker drops a match entirely
-          // rather than merely demoting it.
-          ListTile(
-            leading: const Icon(Icons.not_interested),
-            title: const Text('Not interested'),
-            subtitle: const Text('Stop recommending this video'),
-            onTap: () async {
-              // Taken before the await: the sheet is closing, and looking a
-              // messenger up from a context afterwards is the async-gap bug
-              // the analyzer is right to object to.
-              final messenger = ScaffoldMessenger.of(context);
-              Navigator.pop(sheetContext);
-              await db.addNotInterested(
-                id: video.id,
-                kind: DislikeKind.video,
-                // Kept so the dismissal can generalise weakly through the
-                // title's words rather than applying to this one id alone.
-                title: video.title,
-              );
-              onDismissed?.call();
-              _confirmDismissal(
-                messenger,
-                db,
-                message: 'We will stop recommending this video.',
-                id: video.id,
-                kind: DislikeKind.video,
-              );
-            },
-          ),
-          if (video.channelId.isNotEmpty)
-            ListTile(
-              leading: const Icon(Icons.block),
-              title: const Text('Don\'t recommend this channel'),
-              subtitle: Text('Hide ${video.author} from recommendations'),
-              onTap: () async {
-                final messenger = ScaffoldMessenger.of(context);
-                Navigator.pop(sheetContext);
-                await db.addNotInterested(
-                  id: video.channelId,
-                  kind: DislikeKind.channel,
-                );
-                onDismissed?.call();
-                _confirmDismissal(
-                  messenger,
-                  db,
-                  message: 'We will stop recommending ${video.author}.',
-                  id: video.channelId,
-                  kind: DislikeKind.channel,
-                );
-              },
-            ),
-        ],
+        ),
       ),
     ),
   );
+}
+
+/// One single-line menu row: a 24dp outlined icon and a label, 48dp tall.
+Widget menuRow({
+  required IconData icon,
+  required String label,
+  required VoidCallback onTap,
+}) =>
+    ListTile(
+      leading: Icon(icon, size: 24),
+      title: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+      onTap: onTap,
+    );
+
+/// Sheet list styling: 48dp single-line rows with YouTube's icon gap.
+///
+/// Applied per sheet rather than in the global ListTileTheme, because a 48dp
+/// minimum there would also shrink every Settings row, where 56 is right.
+Widget sheetTiles(Widget child) => Builder(
+      builder: (context) => ListTileTheme.merge(
+        minTileHeight: 48,
+        minLeadingWidth: 24,
+        horizontalTitleGap: 20,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+        titleTextStyle: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              fontSize: 15,
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
+        child: child,
+      ),
+    );
+
+/// What the menu's download row says, and does.
+enum DownloadMenuKind { none, active, done }
+
+/// Pure so the label is testable: "Download video", "Downloading 42%"
+/// (or "Downloading…" before the size is known, and "Queued" for one waiting
+/// its turn), "Downloaded".
+({DownloadMenuKind kind, String label}) downloadMenuState(
+  DownloadRecord? record, {
+  required bool active,
+}) {
+  if (record?.isComplete ?? false) {
+    return (kind: DownloadMenuKind.done, label: 'Downloaded');
+  }
+  if (active && record != null) {
+    if (record.status == DownloadStatus.queued) {
+      return (kind: DownloadMenuKind.active, label: 'Download queued');
+    }
+    final p = record.progress;
+    return (
+      kind: DownloadMenuKind.active,
+      label: p == null ? 'Downloading…' : 'Downloading ${(p * 100).floor()}%',
+    );
+  }
+  return (kind: DownloadMenuKind.none, label: 'Download video');
+}
+
+Future<bool> _confirm(
+  BuildContext context, {
+  required String title,
+  required String action,
+  String dismiss = 'Cancel',
+}) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, false),
+          child: Text(dismiss),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext, true),
+          child: Text(action),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
 }
 
 /// Confirms a dismissal and offers to take it back.

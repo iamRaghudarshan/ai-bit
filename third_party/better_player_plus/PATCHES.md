@@ -314,6 +314,18 @@ Re-apply these when upgrading. Every patch is marked `PATCH:` in the source.
    channel page opened from the watch page; the route is now named
    `better-player-fullscreen` (`lib/src/core/better_player.dart`).
 
+30. With `autoDetectFullscreenDeviceOrientation` on, `BetterPlayerWithControls`
+   sized the fullscreen box to the *video's* aspect ratio, so the picture was
+   always letterboxed by the box itself: `BoxFit.cover` and `contain` filled
+   the same box identically, and AI BIT's pinch-to-fill
+   (`setOverriddenFit(BoxFit.cover)`) changed nothing on a 20:9 phone. The
+   fullscreen box now takes the screen's shape and the fit decides — contain
+   still letterboxes exactly as before, cover fills — and the host's controls
+   span the whole screen as YouTube's do
+   (`lib/src/core/better_player_with_controls.dart`). The orientation the
+   route asks for is still chosen from the video's ratio in
+   `better_player.dart`, unchanged.
+
 ## Housekeeping
 
 13. `analysis_options.yaml` included `package:analysis_lints`, which is not a

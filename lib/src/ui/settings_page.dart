@@ -807,6 +807,9 @@ class SettingsPage extends StatelessWidget {
     required List<(int, String)> options,
   }) => showModalBottomSheet<int>(
     context: context,
+    // The theme now gives every sheet a drag handle; scroll-controlled so a
+    // long option list grows past the default 9/16 cap instead of clipping.
+    isScrollControlled: true,
     builder: (sheet) => SafeArea(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -919,6 +922,9 @@ class SettingsPage extends StatelessWidget {
 
     showModalBottomSheet<void>(
       context: context,
+      // Up to nine renditions with subtitles, plus the theme's drag handle:
+      // more than the default 9/16 cap holds.
+      isScrollControlled: true,
       builder: (context) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,

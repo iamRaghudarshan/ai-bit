@@ -353,11 +353,46 @@ class YoutubePlayerClient {
     );
   }
 
+  /// Scrub-preview storyboard specs by video id, newest last.
+  ///
+  /// Kept here rather than threaded through `PlaybackSources`, which has a
+  /// dozen construction sites across every resolve route: the seek bar only
+  /// needs "the spec for the video on screen", and every route that reaches
+  /// the network passes through [_parse]. Bounded, because a session of
+  /// Shorts prefetches would otherwise keep every spec it ever saw.
+  static final Map<String, String> _storyboards = {};
+  static const _storyboardCacheSize = 48;
+
+  /// The storyboard spec last seen for [videoId], or null. See
+  /// `core/storyboard.dart` for its format.
+  static String? storyboardSpecFor(String videoId) => _storyboards[videoId];
+
+  static String? _storyboardSpec(Map<String, dynamic> json) {
+    final boards = json['storyboards'];
+    if (boards is! Map) return null;
+    final renderer = boards['playerStoryboardSpecRenderer'];
+    if (renderer is! Map) return null;
+    final spec = renderer['spec'];
+    return spec is String && spec.isNotEmpty ? spec : null;
+  }
+
+  static void _rememberStoryboard(String? videoId, String? spec) {
+    if (videoId == null || spec == null) return;
+    _storyboards.remove(videoId);
+    _storyboards[videoId] = spec;
+    while (_storyboards.length > _storyboardCacheSize) {
+      _storyboards.remove(_storyboards.keys.first);
+    }
+  }
+
   static PlayerStreams _parse(Map<String, dynamic> json) {
     final streaming = json['streamingData'] as Map<String, dynamic>?;
     final details = json['videoDetails'] as Map<String, dynamic>?;
+    final storyboard = _storyboardSpec(json);
+    _rememberStoryboard(details?['videoId'] as String?, storyboard);
 
     return PlayerStreams(
+      storyboardSpec: storyboard,
       hlsUrl: streaming?['hlsManifestUrl'] as String?,
       audioUrl: _bestAudio(streaming),
       muxedUrl: _bestMuxed(streaming),
@@ -475,7 +510,12 @@ class PlayerStreams {
     this.muxedQualities = const {},
     this.adaptiveFormats = const [],
     this.isLive = false,
+    this.storyboardSpec,
   });
+
+  /// Scrub-preview sprite spec (`storyboards.playerStoryboardSpecRenderer`),
+  /// or null. See `core/storyboard.dart`.
+  final String? storyboardSpec;
 
   /// Adaptive ladder, muxed. The preferred source when present.
   final String? hlsUrl;
@@ -536,8 +576,10 @@ class PlayerStreams {
     var muxedQualities = const <String, String>{};
     var adaptive = const <AdaptiveFormat>[];
     var isLive = false;
+    String? storyboard;
 
     for (final s in all) {
+      storyboard ??= s.storyboardSpec;
       hls ??= s.hlsUrl;
       audio ??= s.audioUrl;
       // Kept together: a label-to-URL map from one client must not be paired
@@ -559,6 +601,7 @@ class PlayerStreams {
       muxedQualities: muxedQualities,
       adaptiveFormats: adaptive,
       isLive: isLive,
+      storyboardSpec: storyboard,
     );
   }
 }

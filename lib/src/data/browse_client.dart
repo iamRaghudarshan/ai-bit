@@ -176,43 +176,263 @@ class YoutubeBrowseClient {
 
   Future<ChannelInfo> channel(String channelId) async {
     final json = await _post({'browseId': channelId});
+    return parseChannelHeader(json, channelId);
+  }
 
+  /// Everything the channel header needs, out of a channel browse response.
+  ///
+  /// The modern header is a `pageHeaderViewModel`:
+  ///
+  ///   title.dynamicTextViewModel.text.content            -> name
+  ///   image…avatarViewModel.image.sources               -> avatar
+  ///   banner.imageBannerViewModel.image.sources         -> banner
+  ///   metadata.contentMetadataViewModel.metadataRows    -> [[@handle],
+  ///                                                        [subs, videos]]
+  ///   description.descriptionPreviewViewModel           -> preview + the
+  ///                                                        About token
+  ///   attribution.attributionViewModel                  -> links line
+  ///
+  /// The subscriber and video counts are told apart by their words first and
+  /// by position second, so a channel answered in Hindi still gets both.
+  /// `c4TabbedHeaderRenderer` is the older shape, still served to some
+  /// channels, and fills whatever the modern one left empty — it used to be
+  /// read for the title alone, which is how the handle was being discarded.
+  /// Pure and public so each shape has a test.
+  static ChannelInfo parseChannelHeader(
+    Map<String, dynamic> json,
+    String channelId,
+  ) {
     final modern = <Map<String, dynamic>>[];
-    _collect(json, 'pageHeaderViewModel', modern);
+    _collect(json['header'] ?? json, 'pageHeaderViewModel', modern);
     final legacy = <Map<String, dynamic>>[];
-    _collect(json, 'c4TabbedHeaderRenderer', legacy);
+    _collect(json['header'] ?? json, 'c4TabbedHeaderRenderer', legacy);
 
     String? title;
     String? avatar;
+    String? banner;
     String? subs;
     String? handle;
+    String? videos;
+    String? description;
+    String? aboutToken;
+    String? linkLabel;
 
     for (final h in modern) {
       title ??= _deepText(h['title'], 'content').nullIfEmpty;
       avatar ??= _firstThumbnail(h['image']);
+      banner ??= _bannerUrl(h['banner']);
 
-      final parts = <String>[];
-      _collectStrings(h['metadata'], 'content', parts);
-      for (final p in parts) {
-        final lower = p.toLowerCase();
-        if (subs == null && lower.contains('subscriber')) subs = p;
-        if (handle == null && p.startsWith('@')) handle = p;
+      final rows = _metadataRowsOf(h['metadata']);
+      final loose = <String>[];
+      for (final row in rows) {
+        for (final p in row) {
+          final lower = p.toLowerCase();
+          if (handle == null && p.startsWith('@')) {
+            handle = p;
+          } else if (subs == null && lower.contains('subscriber')) {
+            subs = p;
+          } else if (videos == null && lower.contains('video')) {
+            videos = p;
+          } else {
+            loose.add(p);
+          }
+        }
+      }
+      // Not English: the words above never match, but the counts are the
+      // only parts that start with a digit.
+      final numeric = loose.where((p) => RegExp(r'^\d').hasMatch(p)).toList();
+      if (subs == null && numeric.isNotEmpty) subs = numeric.removeAt(0);
+      if (videos == null && numeric.isNotEmpty) videos = numeric.removeAt(0);
+
+      final preview = h['description'];
+      description ??= _deepText(preview, 'description').nullIfEmpty;
+      aboutToken ??= _firstToken(preview);
+
+      final attribution = h['attribution'];
+      if (linkLabel == null && attribution is Map) {
+        final model = attribution['attributionViewModel'];
+        if (model is Map) {
+          final first = _text(model['text']).trim();
+          final suffix = _text(model['suffix']).trim();
+          final joined = [first, suffix].where((s) => s.isNotEmpty).join(' ');
+          if (joined.isNotEmpty) linkLabel = joined;
+        }
+        aboutToken ??= _firstToken(attribution);
       }
     }
 
     for (final h in legacy) {
       title ??= _text(h['title']).nullIfEmpty;
       subs ??= _text(h['subscriberCountText']).nullIfEmpty;
+      videos ??= _text(h['videosCountText']).nullIfEmpty;
+      handle ??= _text(h['channelHandleText']).nullIfEmpty;
       avatar ??= _firstThumbnail(h['avatar']);
+      banner ??= _firstThumbnail(h['banner']);
+      description ??= _text(h['tagline']).nullIfEmpty;
     }
 
     return ChannelInfo(
       id: channelId,
       title: title ?? '',
       avatarUrl: avatar,
-      // Fall back to the handle so the line under the name is never blank.
-      subscriberLabel: subs ?? handle,
+      subscriberLabel: subs,
+      bannerUrl: banner,
+      handle: handle,
+      videoCountLabel: videos,
+      description: description,
+      aboutToken: aboutToken,
+      linkLabel: linkLabel,
+      tabs: channelTabsOf(json),
     );
+  }
+
+  /// The tabs a channel response offers, by what each tab's `params` selects
+  /// rather than by its title, which is translated. Null when the response
+  /// lists no tabs at all.
+  static Set<String>? channelTabsOf(Map<String, dynamic> json) {
+    final tabs = <Map<String, dynamic>>[];
+    _collect(json['contents'], 'tabRenderer', tabs);
+    if (tabs.isEmpty) return null;
+    final out = <String>{};
+    for (final t in tabs) {
+      final params = <String>[];
+      _collectStrings(t['endpoint'], 'params', params);
+      if (params.isEmpty) continue;
+      final kind = _tabKind(params.first);
+      if (kind != null) out.add(kind);
+    }
+    return out.isEmpty ? null : out;
+  }
+
+  /// `videos`, `shorts`, `streams`, `playlists` … out of a tab's `params`,
+  /// which is base64 (sometimes URL-encoded) protobuf whose first field is
+  /// the tab's name in ASCII.
+  static String? _tabKind(String params) {
+    try {
+      var b64 = Uri.decodeComponent(params).replaceAll('-', '+').replaceAll('_', '/');
+      while (b64.length % 4 != 0) {
+        b64 += '=';
+      }
+      final bytes = base64.decode(b64);
+      if (bytes.length < 3 || bytes[0] != 0x12) return null;
+      final length = bytes[1];
+      if (bytes.length < 2 + length) return null;
+      return ascii.decode(bytes.sublist(2, 2 + length), allowInvalid: true);
+    } catch (_) {
+      // Not base64 we understand: the tab is simply not classified.
+      return null;
+    }
+  }
+
+  /// The banner at a phone-friendly size: the source closest to 1280 wide
+  /// rather than the 2560 one at the end of the list.
+  static String? _bannerUrl(dynamic banner) {
+    final sources = <Map<String, dynamic>>[];
+    _collect(banner, 'image', sources);
+    for (final image in sources) {
+      final list = image['sources'];
+      if (list is! List || list.isEmpty) continue;
+      Map? best;
+      for (final s in list) {
+        if (s is! Map || s['url'] is! String) continue;
+        final w = (s['width'] as num?) ?? 0;
+        final bw = (best?['width'] as num?) ?? 0;
+        if (best == null || (w - 1280).abs() < (bw - 1280).abs()) best = s;
+      }
+      final url = best?['url'] as String?;
+      if (url != null) return url.startsWith('//') ? 'https:$url' : url;
+    }
+    return null;
+  }
+
+  /// The first `continuationCommand.token` anywhere under [node].
+  static String? _firstToken(dynamic node) {
+    final commands = <Map<String, dynamic>>[];
+    _collect(node, 'continuationCommand', commands);
+    for (final c in commands) {
+      final token = c['token'];
+      if (token is String && token.isNotEmpty) return token;
+    }
+    return null;
+  }
+
+  /// A channel's About panel, from [ChannelInfo.aboutToken].
+  Future<ChannelAbout?> channelAbout(String token) async =>
+      parseChannelAbout(await _post({'continuation': token}));
+
+  /// The `aboutChannelViewModel` out of an About continuation, or null.
+  static ChannelAbout? parseChannelAbout(Map<String, dynamic> json) {
+    final models = <Map<String, dynamic>>[];
+    _collect(json, 'aboutChannelViewModel', models);
+    if (models.isEmpty) return null;
+    final m = models.first;
+    final links = <({String title, String url})>[];
+    final raw = m['links'];
+    if (raw is List) {
+      for (final entry in raw) {
+        final link = entry is Map ? entry['channelExternalLinkViewModel'] : null;
+        if (link is! Map) continue;
+        final title = _text(link['title']);
+        final display = _text(link['link']);
+        final urls = <String>[];
+        _collectStrings(link['link'], 'url', urls);
+        final url = urls.isEmpty ? '' : unwrapRedirect(urls.first);
+        final target = url.isNotEmpty
+            ? url
+            : display.isEmpty
+            ? ''
+            : 'https://$display';
+        if (target.isEmpty) continue;
+        links.add((title: title.isEmpty ? display : title, url: target));
+      }
+    }
+    return ChannelAbout(
+      description: _text(m['description']),
+      links: links,
+      joinedText: _text(m['joinedDateText']).nullIfEmpty,
+      viewCountText: _text(m['viewCountText']).nullIfEmpty,
+      country: _text(m['country']).nullIfEmpty,
+      subscriberText: _text(m['subscriberCountText']).nullIfEmpty,
+      videoCountText: _text(m['videoCountText']).nullIfEmpty,
+      canonicalUrl: _text(m['canonicalChannelUrl']).nullIfEmpty,
+    );
+  }
+
+  /// The real destination of a `youtube.com/redirect?…&q=<url>` link, or
+  /// [url] unchanged when it is not one.
+  static String unwrapRedirect(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    if (uri.path.endsWith('/redirect')) {
+      final q = uri.queryParameters['q'];
+      if (q != null && q.isNotEmpty) return q;
+    }
+    return url;
+  }
+
+  /// `metadataRows[].metadataParts[].text.content` as rows of strings.
+  static List<List<String>> _metadataRowsOf(dynamic metadata) {
+    final models = <Map<String, dynamic>>[];
+    _collect(metadata, 'contentMetadataViewModel', models);
+    if (models.isEmpty) return const [];
+    final rows = models.first['metadataRows'];
+    if (rows is! List) return const [];
+    return [
+      for (final row in rows)
+        if (row is Map && row['metadataParts'] is List)
+          [
+            for (final part in row['metadataParts'] as List)
+              if (part is Map) ...[
+                if (part['text'] is Map &&
+                    (part['text'] as Map)['content'] is String)
+                  (part['text'] as Map)['content'] as String,
+                // The owner line of a playlist is an avatar stack whose text
+                // sits one level deeper.
+                if (part['avatarStack'] is Map)
+                  _deepText(part['avatarStack'], 'text'),
+              ],
+          ],
+    ];
   }
 
   /// Collects every string stored under [key] anywhere in [node].
@@ -255,14 +475,126 @@ class YoutubeBrowseClient {
     String channelId, {
     String channelTitle = '',
     bool live = false,
+  }) async =>
+      (await channelTab(
+        channelId,
+        tab: live ? ChannelTab.live : ChannelTab.videos,
+        channelTitle: channelTitle,
+      )).videos;
+
+  /// First page of one channel tab, with the token for the next page and —
+  /// on Videos, Shorts and Live — the Latest / Popular / Oldest chips.
+  ///
+  /// The sort chips are continuation commands, not `params`: the `params`
+  /// sort variants documented elsewhere return an empty page, but posting a
+  /// chip's own token back returns the whole tab in that order. Measured
+  /// against a real channel in November 2026: Popular came back led by a
+  /// 40M-view video from seven years earlier, which is what YouTube shows.
+  Future<ChannelTabPage> channelTab(
+    String channelId, {
+    ChannelTab tab = ChannelTab.videos,
+    String channelTitle = '',
   }) async {
-    final json = await _post({
-      'browseId': channelId,
-      'params': live ? _liveTab : _videosTab,
-    });
+    final json = await _post({'browseId': channelId, 'params': tab.params});
     final header = _headerOf(json);
     final title = channelTitle.isNotEmpty ? channelTitle : (header.title ?? '');
+    return _tabPage(
+      json,
+      tab: tab,
+      channelId: channelId,
+      channelTitle: title,
+      avatar: header.avatar,
+    );
+  }
 
+  /// The next page of a tab, or the tab re-sorted, from a token out of
+  /// [ChannelTabPage]. The continuation carries no header, so the channel's
+  /// name and avatar are passed back in.
+  Future<ChannelTabPage> channelTabMore(
+    String token, {
+    required ChannelTab tab,
+    required String channelId,
+    String channelTitle = '',
+    String? avatarUrl,
+  }) async {
+    final json = await _post({'continuation': token});
+    return _tabPage(
+      json,
+      tab: tab,
+      channelId: channelId,
+      channelTitle: channelTitle,
+      avatar: avatarUrl,
+    );
+  }
+
+  static ChannelTabPage _tabPage(
+    Map<String, dynamic> json, {
+    required ChannelTab tab,
+    required String channelId,
+    required String channelTitle,
+    String? avatar,
+  }) {
+    final videos = tab == ChannelTab.shorts
+        ? _shortsRows(json, channelId, channelTitle, avatar)
+        : _videoLockupRows(json, channelId, channelTitle, avatar);
+    return ChannelTabPage(
+      videos: videos,
+      continuation: listContinuation(json),
+      sorts: sortChipsOf(json),
+    );
+  }
+
+  /// The sort chips of a channel tab, in YouTube's order.
+  static List<({String label, String token, bool selected})> sortChipsOf(
+    Map<String, dynamic> json,
+  ) {
+    final chips = <Map<String, dynamic>>[];
+    _collect(json, 'chipViewModel', chips);
+    final out = <({String label, String token, bool selected})>[];
+    for (final c in chips) {
+      final token = _firstToken(c['tapCommand']);
+      final label = _text(c['text']);
+      if (token == null || label.isEmpty) continue;
+      out.add((label: label, token: token, selected: c['selected'] == true));
+    }
+    return out;
+  }
+
+  /// Token for the next page of a list, from its trailing continuation item.
+  ///
+  /// Read from the page's own contents and from the actions a continuation
+  /// answers with, and never from the header: the header carries About-panel
+  /// continuations of exactly the same shape, and taking one of those as
+  /// "page two" would append nothing and stop paging.
+  static String? listContinuation(Map<String, dynamic> json) {
+    final roots = [
+      json['contents'],
+      json['onResponseReceivedActions'],
+      json['onResponseReceivedEndpoints'],
+    ];
+    String? last;
+    for (final root in roots) {
+      for (final key in const [
+        'continuationItemRenderer',
+        'continuationItemViewModel',
+      ]) {
+        final items = <Map<String, dynamic>>[];
+        _collect(root, key, items);
+        for (final item in items) {
+          final token = _firstToken(item);
+          if (token != null) last = token;
+        }
+      }
+    }
+    return last;
+  }
+
+  static List<VideoBrief> _videoLockupRows(
+    Map<String, dynamic> json,
+    String channelId,
+    String title,
+    String? avatar,
+  ) {
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'lockupViewModel', lockups);
 
@@ -296,7 +628,7 @@ class YoutubeBrowseClient {
         id: id,
         title: parts.first,
         author: title,
-        avatarUrl: header.avatar,
+        avatarUrl: avatar,
         channelId: channelId,
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),
@@ -603,9 +935,106 @@ class YoutubeBrowseClient {
   /// every playlist measured, the same failure as `channels.getUploads`. The
   /// playlist page is browsed as `VL` + the playlist id, and its videos come
   /// back as `lockupViewModel`, not `playlistVideoRenderer`.
-  Future<List<VideoBrief>> playlistVideos(String playlistId) async {
-    final json = await _post({'browseId': 'VL$playlistId'});
+  Future<List<VideoBrief>> playlistVideos(String playlistId) async =>
+      (await playlistPage(playlistId)).videos;
 
+  /// A playlist's header, its first page of videos (100 at most) and the
+  /// token for the next page. The page token sits in a
+  /// `continuationItemViewModel` here rather than the renderer the channel
+  /// tabs use, which is why [listContinuation] reads both.
+  Future<PlaylistPageData> playlistPage(String playlistId) async {
+    final json = await _post({'browseId': 'VL$playlistId'});
+    return PlaylistPageData(
+      header: parsePlaylistHeader(json, playlistId),
+      videos: _playlistRows(json),
+      continuation: listContinuation(json),
+    );
+  }
+
+  /// A further page of a playlist, from [PlaylistPageData.continuation].
+  Future<({List<VideoBrief> videos, String? continuation})> playlistMore(
+    String token,
+  ) async {
+    final json = await _post({'continuation': token});
+    return (videos: _playlistRows(json), continuation: listContinuation(json));
+  }
+
+  /// Title, owner, counts, description and cover of a playlist page.
+  ///
+  /// `pageHeaderViewModel` again: the owner is an avatar stack reading
+  /// "by Marques Brownlee" whose tap goes to the channel, and the second
+  /// metadata row is `["Playlist", "11 videos", "737,170 views"]`. The cover
+  /// is `heroImage`, falling back to the microformat thumbnail. Pure and
+  /// public so it has a test.
+  static PlaylistBrief parsePlaylistHeader(
+    Map<String, dynamic> json,
+    String playlistId,
+  ) {
+    final headers = <Map<String, dynamic>>[];
+    _collect(json['header'] ?? json, 'pageHeaderViewModel', headers);
+    String? title;
+    String? author;
+    String? authorId;
+    String? views;
+    int? count;
+    String? description;
+    String? cover;
+    for (final h in headers) {
+      title ??= _deepText(h['title'], 'content').nullIfEmpty;
+      cover ??= _firstThumbnail(h['heroImage']);
+      description ??= _deepText(h['description'], 'description').nullIfEmpty;
+      final stacks = <Map<String, dynamic>>[];
+      _collect(h['metadata'], 'avatarStackViewModel', stacks);
+      for (final s in stacks) {
+        final text = _text(s['text']).trim();
+        if (text.isEmpty) continue;
+        author ??= text.startsWith('by ') ? text.substring(3) : text;
+        final ids = <String>[];
+        _collectStrings(s, 'browseId', ids);
+        authorId ??= ids.firstWhere((i) => i.startsWith('UC'), orElse: () => '')
+            .nullIfEmpty;
+      }
+      for (final row in _metadataRowsOf(h['metadata'])) {
+        for (final part in row) {
+          final lower = part.toLowerCase();
+          count ??= videoCountFromBadge(part);
+          if (views == null && lower.contains('view')) views = part;
+        }
+      }
+    }
+
+    // The older header shape.
+    final legacy = <Map<String, dynamic>>[];
+    _collect(json['header'] ?? json, 'playlistHeaderRenderer', legacy);
+    for (final h in legacy) {
+      title ??= _text(h['title']).nullIfEmpty;
+      author ??= _text(h['ownerText']).nullIfEmpty;
+      count ??= videoCountFromBadge(_text(h['numVideosText']));
+      views ??= _text(h['viewCountText']).nullIfEmpty;
+      description ??= _text(h['descriptionText']).nullIfEmpty;
+    }
+
+    final micro = <Map<String, dynamic>>[];
+    _collect(json['microformat'], 'microformatDataRenderer', micro);
+    for (final m in micro) {
+      title ??= _text(m['title']).nullIfEmpty;
+      description ??= _text(m['description']).nullIfEmpty;
+      cover ??= _firstThumbnail(m['thumbnail']);
+    }
+
+    return PlaylistBrief(
+      id: playlistId,
+      title: title ?? 'Playlist',
+      videoCount: count,
+      thumbnailUrl: cover,
+      channelId: authorId,
+      author: author,
+      description: description,
+      viewCountLabel: views,
+    );
+  }
+
+  static List<VideoBrief> _playlistRows(Map<String, dynamic> json) {
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'lockupViewModel', lockups);
 
@@ -626,6 +1055,15 @@ class YoutubeBrowseClient {
         orElse: () => '',
       );
 
+      // The channel link, so a row's menu can go to its channel; a
+      // playlist mixes uploaders, so the page's owner is not the answer.
+      final browseIds = <String>[];
+      _collectStrings(l['metadata'], 'browseId', browseIds);
+      final age = parts.firstWhere(
+        (p) => p.toLowerCase().contains('ago'),
+        orElse: () => '',
+      );
+
       out.add(VideoBrief(
         id: id,
         title: parts.first,
@@ -633,9 +1071,13 @@ class YoutubeBrowseClient {
             ? parts[1]
             : '',
         avatarUrl: lockupAvatar(l),
-        channelId: '',
+        channelId: browseIds.firstWhere(
+          (b) => b.startsWith('UC'),
+          orElse: () => '',
+        ),
         duration: _durationFromBadge(l['contentImage']),
         viewCount: _parseCompact(views),
+        uploadRaw: age.isEmpty ? null : age,
       ));
     }
     return out;
@@ -650,11 +1092,19 @@ class YoutubeBrowseClient {
   Future<List<VideoBrief>> channelShorts(
     String channelId, {
     String channelTitle = '',
-  }) async {
-    final json = await _post({'browseId': channelId, 'params': _shortsTab});
-    final header = _headerOf(json);
-    final title = channelTitle.isNotEmpty ? channelTitle : (header.title ?? '');
+  }) async =>
+      (await channelTab(
+        channelId,
+        tab: ChannelTab.shorts,
+        channelTitle: channelTitle,
+      )).videos;
 
+  static List<VideoBrief> _shortsRows(
+    Map<String, dynamic> json,
+    String channelId,
+    String title,
+    String? avatar,
+  ) {
     final lockups = <Map<String, dynamic>>[];
     _collect(json, 'shortsLockupViewModel', lockups);
 
@@ -673,9 +1123,10 @@ class YoutubeBrowseClient {
         id: id,
         title: titles.first,
         author: title,
-        avatarUrl: header.avatar,
+        avatarUrl: avatar,
         channelId: channelId,
         viewCount: _parseCompact(views),
+        isShort: true,
       ));
     }
     return out;
@@ -917,6 +1368,50 @@ int? videoCountFromBadge(String text) {
   final digits = match.group(1)!.replaceAll(RegExp(r'[^\d]'), '');
   if (digits.isEmpty) return null;
   return int.tryParse(digits);
+}
+
+/// The channel tabs that list videos.
+enum ChannelTab {
+  videos(YoutubeBrowseClient._videosTab),
+  shorts(YoutubeBrowseClient._shortsTab),
+  live(YoutubeBrowseClient._liveTab);
+
+  const ChannelTab(this.params);
+
+  /// The `params` that selects the tab on a plain browse request.
+  final String params;
+}
+
+/// One page of a channel tab.
+class ChannelTabPage {
+  const ChannelTabPage({
+    required this.videos,
+    this.continuation,
+    this.sorts = const [],
+  });
+
+  final List<VideoBrief> videos;
+
+  /// Token for the next page, or null at the end.
+  final String? continuation;
+
+  /// Latest / Popular / Oldest, in YouTube's order and words; each token
+  /// re-fetches the tab from the top in that order. Empty when the tab has
+  /// no sort control (a channel with one video has none).
+  final List<({String label, String token, bool selected})> sorts;
+}
+
+/// A remote playlist's first page.
+class PlaylistPageData {
+  const PlaylistPageData({
+    required this.header,
+    required this.videos,
+    this.continuation,
+  });
+
+  final PlaylistBrief header;
+  final List<VideoBrief> videos;
+  final String? continuation;
 }
 
 class BrowseException implements Exception {

@@ -64,6 +64,42 @@ void main() {
         duration: duration,
       );
 
+  group('playlist order and channel counts', skip: unavailable, () {
+    test('a dragged order persists and survives a reopen of the list',
+        () async {
+      for (final id in ['a', 'b', 'c']) {
+        await db.addToPlaylist(LocalPlaylist.watchLaterId, video(id));
+      }
+      // Newest first by default.
+      expect(
+        (await db.playlistItems(LocalPlaylist.watchLaterId)).map((v) => v.id),
+        ['c', 'b', 'a'],
+      );
+      await db.reorderPlaylist(LocalPlaylist.watchLaterId, ['a', 'c', 'b']);
+      expect(
+        (await db.playlistItems(LocalPlaylist.watchLaterId)).map((v) => v.id),
+        ['a', 'c', 'b'],
+      );
+      // The cover follows the new top row.
+      final wl = (await db.playlists()).firstWhere(
+        (p) => p.id == LocalPlaylist.watchLaterId,
+      );
+      expect(wl.coverVideoId, 'a');
+    });
+
+    test('watch counts per channel leave Kids-mode rows out', () async {
+      await db.recordWatch(video('a', channel: 'UC-1'));
+      await db.recordWatch(video('b', channel: 'UC-1'));
+      await db.recordWatch(video('c', channel: 'UC-2'));
+      await db.recordWatch(
+        VideoBrief(id: 'k', title: 'k', author: 'k', channelId: 'UC-2', isKids: true),
+      );
+      final counts = await db.channelWatchCounts();
+      expect(counts['UC-1'], 2);
+      expect(counts['UC-2'], 1);
+    });
+  });
+
   group('schema', skip: unavailable, () {
     test('a fresh install opens and seeds Watch later', () async {
       final playlists = await db.playlists();
@@ -783,6 +819,97 @@ void main() {
       } finally {
         await upgraded.close();
       }
+    });
+  });
+
+  group('a looping Short is recorded at its furthest point', skip: unavailable, () {
+    test('a later, earlier position does not overwrite a Short', () async {
+      // Watched through three times, swiped away two seconds into the fourth:
+      // that is the Short liked most, and recording two seconds made it read
+      // as a bail-out to the Shorts ranker.
+      final short = video('s1', duration: const Duration(seconds: 30)).asShort();
+      await db.recordWatch(short);
+      await db.savePosition('s1', const Duration(seconds: 30));
+      await db.savePosition('s1', const Duration(seconds: 2));
+      final signal = (await db.watchSignals(shorts: true)).single;
+      expect(signal.completion, 1.0);
+      expect(signal.bailedOut, isFalse);
+    });
+
+    test('a long-form video still records where it was left', () async {
+      await db.recordWatch(video('v1'));
+      await db.savePosition('v1', const Duration(minutes: 5));
+      await db.savePosition('v1', const Duration(minutes: 1));
+      final signal = (await db.watchSignals()).single;
+      expect(signal.completion, closeTo(0.1, 1e-9));
+    });
+
+    test('a missing duration is filled in, an existing one kept', () async {
+      const bare = VideoBrief(
+        id: 's2',
+        title: 'from search',
+        author: '',
+        channelId: '',
+        isShort: true,
+      );
+      await db.recordWatch(bare);
+      await db.savePosition(
+        's2',
+        const Duration(seconds: 12),
+        duration: const Duration(seconds: 20),
+      );
+      await db.savePosition(
+        's2',
+        const Duration(seconds: 20),
+        duration: const Duration(seconds: 99),
+      );
+      await db.savePosition('s2', const Duration(seconds: 1));
+      // 20s of 20s: the first duration stuck, the 99s one did not, and the
+      // later 1s did not pull the position back.
+      final signal = (await db.watchSignals(shorts: true)).single;
+      expect(signal.completion, 1.0);
+    });
+
+    test('with no duration at all, completion stays the neutral guess', () async {
+      const bare = VideoBrief(
+        id: 's3',
+        title: 't',
+        author: '',
+        channelId: '',
+        isShort: true,
+      );
+      await db.recordWatch(bare);
+      await db.savePosition('s3', const Duration(seconds: 5));
+      final signal = (await db.watchSignals(shorts: true)).single;
+      expect(signal.completion, WatchSignal.assumedCompletion);
+    });
+  });
+
+  group('likes', skip: unavailable, () {
+    test('a like round-trips and creates its playlist once', () async {
+      expect(await db.isLiked('a'), isFalse);
+      expect(await db.likedPlaylistId(), isNull);
+      await db.setLiked(video('a'), true);
+      await db.setLiked(video('b'), true);
+      expect(await db.isLiked('a'), isTrue);
+      final liked = (await db.playlists())
+          .where((p) => p.name == AppDatabase.likedPlaylistName)
+          .toList();
+      expect(liked, hasLength(1));
+      expect(liked.single.itemCount, 2);
+      await db.setLiked(video('a'), false);
+      expect(await db.isLiked('a'), isFalse);
+      expect(await db.isLiked('b'), isTrue);
+    });
+
+    test("a like endorses the channel, as a save does", () async {
+      await db.setLiked(video('a', channel: 'UC-liked'), true);
+      expect(await db.endorsedChannels(), contains('UC-liked'));
+    });
+
+    test('unliking with no likes at all is harmless', () async {
+      await db.setLiked(video('a'), false);
+      expect(await db.likedPlaylistId(), isNull);
     });
   });
 }

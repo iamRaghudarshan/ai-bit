@@ -19,6 +19,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:ai_bit/src/data/recommender.dart';
 import 'package:ai_bit/src/data/search_client.dart';
+import 'package:ai_bit/src/ui/search_helpers.dart';
 import 'package:ai_bit/src/data/media_processor.dart';
 import 'package:ai_bit/src/data/storage_service.dart';
 import 'package:ai_bit/src/data/takeout_import.dart';
@@ -33,10 +34,144 @@ import 'package:ai_bit/src/data/dash_manifest.dart';
 import 'package:ai_bit/src/data/hls_manifest.dart';
 import 'package:ai_bit/src/data/browse_client.dart';
 import 'package:ai_bit/src/ui/widgets/now_playing_overlay.dart';
+import 'package:ai_bit/src/ui/shorts_page.dart'
+    show shortPosterUrls, shortsCountLabel;
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ai_bit/src/core/seek_session.dart';
+import 'package:ai_bit/src/core/storyboard.dart';
 
 void main() {
+  group('player gestures (watch page parity)', () {
+    final t0 = DateTime(2026, 11, 27, 12);
+    const pos = Duration(seconds: 100);
+    const len = Duration(minutes: 10);
+
+    test('repeated taps on one side accumulate from the session start', () {
+      final s = SeekSession();
+      expect(s.tap(1, now: t0, position: pos, duration: len),
+          const Duration(seconds: 110));
+      // The player still reports the stale position: the target must not
+      // read from it, or three taps would land on +20.
+      expect(
+          s.tap(1,
+              now: t0.add(const Duration(milliseconds: 300)),
+              position: pos,
+              duration: len),
+          const Duration(seconds: 120));
+      expect(
+          s.tap(1,
+              now: t0.add(const Duration(milliseconds: 600)),
+              position: const Duration(seconds: 111),
+              duration: len),
+          const Duration(seconds: 130));
+      expect(s.label, '+30');
+    });
+
+    test('a lapsed session or the other side starts again', () {
+      final s = SeekSession();
+      s.tap(1, now: t0, position: pos, duration: len);
+      s.tap(1,
+          now: t0.add(const Duration(milliseconds: 200)),
+          position: pos,
+          duration: len);
+      expect(s.label, '+20');
+      expect(
+          s.tap(-1,
+              now: t0.add(const Duration(milliseconds: 400)),
+              position: const Duration(seconds: 120),
+              duration: len),
+          const Duration(seconds: 110));
+      expect(s.label, '-10');
+      // 700ms window: a tap 800ms later is a fresh session.
+      expect(s.isActive(t0.add(const Duration(milliseconds: 1200))), isFalse);
+      s.tap(-1,
+          now: t0.add(const Duration(milliseconds: 1300)),
+          position: const Duration(seconds: 110),
+          duration: len);
+      expect(s.label, '-10');
+    });
+
+    test('seek targets clamp to the video', () {
+      final s = SeekSession();
+      expect(s.tap(-1, now: t0, position: const Duration(seconds: 4)),
+          Duration.zero);
+      final f = SeekSession();
+      expect(
+          f.tap(1,
+              now: t0,
+              position: const Duration(seconds: 595),
+              duration: len),
+          len);
+    });
+
+    test('sides, swipes and pinches', () {
+      expect(seekSideFor(10, 400), -1);
+      expect(seekSideFor(200, 400), 0);
+      expect(seekSideFor(390, 400), 1);
+      expect(seekSideFor(10, 0), 0);
+      expect(swipeExitsFullscreen(81, 0), isTrue);
+      expect(swipeExitsFullscreen(20, 700), isTrue);
+      expect(swipeExitsFullscreen(-200, -900), isFalse);
+      expect(swipeEntersFullscreen(-81, 0), isTrue);
+      expect(swipeEntersFullscreen(-10, -700), isTrue);
+      expect(swipeEntersFullscreen(120, 900), isFalse);
+      expect(pinchFill(1.1), isTrue);
+      expect(pinchFill(0.9), isFalse);
+      expect(pinchFill(1.0), isNull);
+    });
+  });
+
+  group('storyboard spec', () {
+    const len = Duration(minutes: 10);
+    // Shape measured live from the android client on 27 November 2026.
+    const spec = r'https://i.ytimg.com/sb/abcdefghijk/storyboard3_L$L/$N.jpg'
+        r'?sqp=xyz|48#27#100#10#10#0#default#rs$AAA'
+        r'|80#45#108#10#10#2000#M$M#rs$BBB'
+        r'|160#90#108#5#5#2000#M$M#rs$CCC';
+
+    test('parses every level and picks the largest', () {
+      final sb = Storyboard.parse(spec)!;
+      expect(sb.levels, hasLength(3));
+      expect(sb.best.width, 160);
+      expect(sb.best.index, 2);
+      expect(sb.best.perSheet, 25);
+    });
+
+    test('a frame is the right sheet and cell', () {
+      final sb = Storyboard.parse(spec)!;
+      // 61s at 2s per frame is frame 30: sheet 1, cell 5 -> column 0, row 1.
+      final f = sb.frameAt(const Duration(seconds: 61), len)!;
+      expect(f.url,
+          r'https://i.ytimg.com/sb/abcdefghijk/storyboard3_L2/M1.jpg?sqp=xyz&sigh=rs$CCC');
+      expect(f.column, 0);
+      expect(f.row, 1);
+      // Past the last frame clamps to it (107: sheet 4, cell 7).
+      final last = sb.frameAt(const Duration(hours: 1), len)!;
+      expect(last.url, contains('/M4.jpg'));
+      expect(last.column, 2);
+      expect(last.row, 1);
+    });
+
+    test('a zero interval spreads frames over the duration', () {
+      final sb = Storyboard.parse(
+          r'https://x.test/L$L/$N.jpg?a=1|48#27#100#10#10#0#default#rs$A')!;
+      final f = sb.frameAt(const Duration(minutes: 5), len)!;
+      // Halfway through 100 frames is frame 50: column 0, row 5.
+      expect(f.column, 0);
+      expect(f.row, 5);
+      expect(f.url, r'https://x.test/L0/default.jpg?a=1&sigh=rs$A');
+      expect(sb.frameAt(Duration.zero, Duration.zero), isNull);
+    });
+
+    test('missing or malformed specs give no storyboard', () {
+      expect(Storyboard.parse(null), isNull);
+      expect(Storyboard.parse(''), isNull);
+      expect(Storyboard.parse('not a url|1#2'), isNull);
+      expect(Storyboard.parse('https://x.test/a|x#y#z#1#1#0#n#s'), isNull);
+    });
+  });
+
   group('leftover audio only from older versions', () {
     test('a saved Audio only is cleared on the first launch', () async {
       // What an iPhone carried through TestFlight updates from 2.33.2.
@@ -4496,6 +4631,585 @@ Some blurb about the video.
 
   // ------------------------------------------- channel playlist video counts
 
+  // ------------------------------------------------- search screen (parity)
+
+  group('search filter params', () {
+    List<int> bytes(String sp) => base64.decode(sp);
+
+    test('the All search sends no params at all', () {
+      // The old encoder always wrote type ?? 1, which is why channels,
+      // playlists and Shorts never appeared and the Channel filter was empty.
+      expect(YoutubeSearchClient.encodeParams(), isNull);
+      expect(SearchFilters.none.toParams(), isNull);
+    });
+
+    test('each single filter matches the sp YouTube itself serves', () {
+      // Read out of a live searchFilterOptionsDialogRenderer, Nov 2026.
+      String? one(SearchFilterKind kind, int value) =>
+          SearchFilters.none.toggled(kind, value).toParams();
+      expect(one(SearchFilterKind.type, 1), 'EgIQAQ==');
+      expect(one(SearchFilterKind.type, 9), 'EgIQCQ==');
+      expect(one(SearchFilterKind.type, 2), 'EgIQAg==');
+      expect(one(SearchFilterKind.type, 3), 'EgIQAw==');
+      expect(one(SearchFilterKind.type, 4), 'EgIQBA==');
+      expect(one(SearchFilterKind.duration, 4), 'EgIYBA==');
+      expect(one(SearchFilterKind.duration, 5), 'EgIYBQ==');
+      expect(one(SearchFilterKind.duration, 2), 'EgIYAg==');
+      expect(one(SearchFilterKind.uploadDate, 2), 'EgIIAg==');
+      expect(one(SearchFilterKind.uploadDate, 5), 'EgIIBQ==');
+      expect(one(SearchFilterKind.features, 8), 'EgJAAQ==');
+      expect(one(SearchFilterKind.features, 14), 'EgJwAQ==');
+      expect(one(SearchFilterKind.features, 4), 'EgIgAQ==');
+      expect(one(SearchFilterKind.features, 15), 'EgJ4AQ==');
+      expect(one(SearchFilterKind.sort, 3), 'CAM=');
+    });
+
+    test('features above field 15 get two-byte varint tags', () {
+      // VR180 26, HDR 25, Location 23: a one-byte tag would be a different
+      // field entirely, and YouTube would silently ignore it.
+      String? one(int f) =>
+          SearchFilters.none.toggled(SearchFilterKind.features, f).toParams();
+      expect(one(26), 'EgPQAQE=');
+      expect(one(25), 'EgPIAQE=');
+      expect(one(23), 'EgO4AQE=');
+    });
+
+    test('several filters travel in one message, fields ascending', () {
+      final f = SearchFilters.none
+          .toggled(SearchFilterKind.sort, 3)
+          .toggled(SearchFilterKind.uploadDate, 3)
+          .toggled(SearchFilterKind.type, 1)
+          .toggled(SearchFilterKind.features, 25)
+          .toggled(SearchFilterKind.features, 4);
+      expect(bytes(f.toParams()!), [
+        0x08, 3, // sort
+        0x12, 9, // nested, 9 bytes
+        0x08, 3, // upload date
+        0x10, 1, // type
+        0x20, 1, // HD (4)
+        0xC8, 0x01, 1, // HDR (25)
+      ]);
+      expect(f.activeCount, 5);
+    });
+
+    test('every group can return to Any', () {
+      var f = SearchFilters.none
+          .toggled(SearchFilterKind.type, 2)
+          .toggled(SearchFilterKind.features, 8)
+          .toggled(SearchFilterKind.features, 14);
+      f = f
+          .toggled(SearchFilterKind.type, null)
+          .toggled(SearchFilterKind.features, null);
+      expect(f.isEmpty, isTrue);
+      expect(f, SearchFilters.none);
+    });
+
+    test('a feature toggles off on a second tap', () {
+      final f = SearchFilters.none
+          .toggled(SearchFilterKind.features, 8)
+          .toggled(SearchFilterKind.features, 8);
+      expect(f.features, isEmpty);
+    });
+
+    test('the feed encoder still defaults to videos only', () {
+      expect(YoutubeSearchClient.buildParams(), 'EgIQAQ==');
+    });
+
+    test('the panel is YouTube\'s 2026 taxonomy, in its order', () {
+      expect(YoutubeSearchClient.filters.map((g) => g.title), [
+        'Type',
+        'Duration',
+        'Upload date',
+        'Features',
+        'Prioritize',
+      ]);
+      final dates = YoutubeSearchClient.filters
+          .firstWhere((g) => g.kind == SearchFilterKind.uploadDate)
+          .options
+          .map((o) => o.label);
+      expect(dates, isNot(contains('Last hour')));
+    });
+  });
+
+  group('acceptLanguageFor', () {
+    test('follows the configured hl and gl', () {
+      expect(YoutubeSearchClient.acceptLanguageFor('en', 'US'), 'en-US,en;q=0.9');
+      expect(
+        YoutubeSearchClient.acceptLanguageFor('hi', 'IN'),
+        'hi-IN,hi;q=0.9,en;q=0.8',
+      );
+    });
+
+    test('a language that already names its region keeps it', () {
+      expect(
+        YoutubeSearchClient.acceptLanguageFor('pt-BR', 'IN'),
+        'pt-BR,pt;q=0.9,en;q=0.8',
+      );
+    });
+
+    test('empty falls back to English', () {
+      expect(YoutubeSearchClient.acceptLanguageFor('', ''), 'en');
+    });
+  });
+
+  group('parseSearchResponse', () {
+    Map<String, dynamic> video(String id, String title) => {
+      'videoRenderer': {
+        'videoId': id,
+        'title': {
+          'runs': [
+            {'text': title},
+          ],
+        },
+        'ownerText': {
+          'runs': [
+            {
+              'text': 'Owner',
+              'navigationEndpoint': {
+                'browseEndpoint': {'browseId': 'UCowner'},
+              },
+            },
+          ],
+        },
+        'lengthText': {'simpleText': '4:13'},
+      },
+    };
+
+    Map<String, dynamic> short(String id, String title) => {
+      'shortsLockupViewModel': {
+        'onTap': {
+          'innertubeCommand': {
+            'reelWatchEndpoint': {'videoId': id},
+          },
+        },
+        'overlayMetadata': {
+          'primaryText': {'content': title},
+          'secondaryText': {'content': '3.3K views'},
+        },
+      },
+    };
+
+    final firstPage = {
+      'contents': {
+        'twoColumnSearchResultsRenderer': {
+          'primaryContents': {
+            'sectionListRenderer': {
+              'contents': [
+                {
+                  'itemSectionRenderer': {
+                    'contents': [
+                      {
+                        'showingResultsForRenderer': {
+                          'correctedQueryEndpoint': {
+                            'searchEndpoint': {'query': 'flute tutorial'},
+                          },
+                          'originalQueryEndpoint': {
+                            'searchEndpoint': {
+                              'query': 'flutre tutorail',
+                              'params': 'QgIIAQ%3D%3D',
+                            },
+                          },
+                        },
+                      },
+                      video('aaaaaaaaaaa', 'First'),
+                      {
+                        'gridShelfViewModel': {
+                          'contents': [
+                            short('sssssssssss', 'A short'),
+                            short('ttttttttttt', 'Another'),
+                          ],
+                          'header': {
+                            'sectionHeaderViewModel': {
+                              'headline': {'content': 'Shorts'},
+                            },
+                          },
+                        },
+                      },
+                      {
+                        'channelRenderer': {
+                          'channelId': 'UCBJycsmduvYEL83R_U4JriQ',
+                          'title': {'simpleText': 'Marques Brownlee'},
+                          'thumbnail': {
+                            'thumbnails': [
+                              {
+                                'url': '//yt3.ggpht.com/small',
+                                'width': 88,
+                              },
+                              {
+                                'url': '//yt3.ggpht.com/big',
+                                'width': 176,
+                              },
+                            ],
+                          },
+                          'videoCountText': {
+                            'simpleText': '21.5M subscribers',
+                          },
+                          'subscriberCountText': {'simpleText': '@mkbhd'},
+                        },
+                      },
+                      {
+                        'lockupViewModel': {
+                          'contentId': 'PLxyz',
+                          'contentType': 'LOCKUP_CONTENT_TYPE_PLAYLIST',
+                          'contentImage': {
+                            'collectionThumbnailViewModel': {
+                              'primaryThumbnail': {
+                                'thumbnailViewModel': {
+                                  'image': {
+                                    'sources': [
+                                      {
+                                        'url': 'https://i.ytimg.com/p.jpg',
+                                        'width': 480,
+                                      },
+                                    ],
+                                  },
+                                  'overlays': [
+                                    {
+                                      'thumbnailOverlayBadgeViewModel': {
+                                        'thumbnailBadges': [
+                                          {
+                                            'thumbnailBadgeViewModel': {
+                                              'text': '12 videos',
+                                            },
+                                          },
+                                        ],
+                                      },
+                                    },
+                                  ],
+                                },
+                              },
+                            },
+                          },
+                          'metadata': {
+                            'lockupMetadataViewModel': {
+                              'title': {'content': 'A playlist'},
+                              'metadata': {
+                                'contentMetadataViewModel': {
+                                  'metadataRows': [
+                                    {
+                                      'metadataParts': [
+                                        {
+                                          'text': {'content': 'Somebody'},
+                                        },
+                                        {
+                                          'text': {'content': 'Playlist'},
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                      {
+                        'shelfRenderer': {
+                          'title': {'simpleText': 'Latest from Owner'},
+                          'content': {
+                            'verticalListRenderer': {
+                              'items': [
+                                video('bbbbbbbbbbb', 'Shelf one'),
+                                video('ccccccccccc', 'Shelf two'),
+                              ],
+                            },
+                          },
+                        },
+                      },
+                      {
+                        'horizontalCardListRenderer': {
+                          'cards': [
+                            {'macroMarkersListItemRenderer': {}},
+                          ],
+                        },
+                      },
+                      video('aaaaaaaaaaa', 'First again'),
+                    ],
+                  },
+                },
+                {
+                  'continuationItemRenderer': {
+                    'continuationEndpoint': {
+                      'continuationCommand': {'token': 'NEXT'},
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+      'header': {
+        'searchHeaderRenderer': {
+          'chipBar': {
+            'chipCloudRenderer': {
+              'chips': [
+                {
+                  'chipCloudChipRenderer': {
+                    'text': {'simpleText': 'All'},
+                    'isSelected': true,
+                  },
+                },
+                {
+                  'chipCloudChipRenderer': {
+                    'text': {'simpleText': 'Unwatched'},
+                    'navigationEndpoint': {
+                      'continuationCommand': {'token': 'CHIP'},
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    test('mixed results come back in YouTube\'s order', () {
+      final batch = YoutubeSearchClient.parseSearchResponse(firstPage);
+      expect(batch.items.map((i) => i.runtimeType), [
+        SearchVideoItem,
+        SearchShortsShelf,
+        SearchChannelItem,
+        SearchPlaylistItem,
+        SearchShelf,
+      ]);
+      expect(batch.skipped, isEmpty);
+    });
+
+    test('the repeated video is dropped and chapters are skipped', () {
+      final batch = YoutubeSearchClient.parseSearchResponse(firstPage);
+      expect(
+        batch.items.whereType<SearchVideoItem>().map((v) => v.video.title),
+        ['First'],
+      );
+    });
+
+    test('a channel reads its handle and subscribers from swapped fields', () {
+      final c = YoutubeSearchClient.parseSearchResponse(firstPage).items
+          .whereType<SearchChannelItem>()
+          .single;
+      expect(c.handle, '@mkbhd');
+      expect(c.subscriberLabel, '21.5M subscribers');
+      expect(c.avatarUrl, 'https://yt3.ggpht.com/big');
+    });
+
+    test('a playlist carries its count, artwork and byline', () {
+      final p = YoutubeSearchClient.parseSearchResponse(firstPage).items
+          .whereType<SearchPlaylistItem>()
+          .single;
+      expect(p.playlist.id, 'PLxyz');
+      expect(p.playlist.title, 'A playlist');
+      expect(p.playlist.videoCount, 12);
+      expect(p.playlist.thumbnailUrl, 'https://i.ytimg.com/p.jpg');
+      expect(p.byline, 'Somebody • Playlist');
+      expect(p.isMix, isFalse);
+    });
+
+    test('shelves keep their titles and videos', () {
+      final items = YoutubeSearchClient.parseSearchResponse(firstPage).items;
+      final shorts = items.whereType<SearchShortsShelf>().single;
+      expect(shorts.title, 'Shorts');
+      expect(shorts.shorts.map((s) => s.id), ['sssssssssss', 'ttttttttttt']);
+      expect(shorts.shorts.first.viewCount, 3300);
+      final shelf = items.whereType<SearchShelf>().single;
+      expect(shelf.title, 'Latest from Owner');
+      expect(shelf.videos.map((v) => v.id), ['bbbbbbbbbbb', 'ccccccccccc']);
+    });
+
+    test('the continuation, chips and correction are read', () {
+      final batch = YoutubeSearchClient.parseSearchResponse(firstPage);
+      expect(batch.continuation, 'NEXT');
+      expect(batch.chips.map((c) => c.label), ['All', 'Unwatched']);
+      expect(batch.chips.first.token, isNull);
+      expect(batch.chips.first.selected, isTrue);
+      expect(batch.chips[1].token, 'CHIP');
+      expect(batch.chips[1].isUnwatched, isTrue);
+      final fix = batch.correction!;
+      expect(fix.autoCorrected, isTrue);
+      expect(fix.corrected, 'flute tutorial');
+      expect(fix.original, 'flutre tutorail');
+      expect(fix.originalParams, 'QgIIAQ==');
+    });
+
+    test('a next page arrives as appendContinuationItemsAction', () {
+      final next = {
+        'onResponseReceivedCommands': [
+          {
+            'appendContinuationItemsAction': {
+              'continuationItems': [
+                {
+                  'itemSectionRenderer': {
+                    'contents': [video('ddddddddddd', 'Page two')],
+                  },
+                },
+                {
+                  'continuationItemRenderer': {
+                    'continuationEndpoint': {
+                      'continuationCommand': {'token': 'NEXT2'},
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+      final batch = YoutubeSearchClient.parseSearchResponse(next);
+      expect(batch.items.single.key, 'v:ddddddddddd');
+      expect(batch.continuation, 'NEXT2');
+    });
+
+    test('the last page has no token', () {
+      final batch = YoutubeSearchClient.parseSearchResponse({
+        'onResponseReceivedCommands': [
+          {
+            'appendContinuationItemsAction': {
+              'continuationItems': [
+                {
+                  'itemSectionRenderer': {
+                    'contents': [video('eeeeeeeeeee', 'Last')],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+      expect(batch.continuation, isNull);
+    });
+
+    test('did you mean is not an auto-correction', () {
+      final batch = YoutubeSearchClient.parseSearchResponse({
+        'itemSectionRenderer': {
+          'contents': [
+            {
+              'didYouMeanRenderer': {
+                'correctedQueryEndpoint': {
+                  'searchEndpoint': {'query': 'mkbhd'},
+                },
+              },
+            },
+          ],
+        },
+      });
+      expect(batch.correction!.autoCorrected, isFalse);
+      expect(batch.correction!.corrected, 'mkbhd');
+      expect(batch.items, isEmpty);
+    });
+  });
+
+  group('channelLabels', () {
+    test('the current shape: handle in subscriberCountText', () {
+      final l = YoutubeSearchClient.channelLabels('@mkbhd', '21.5M subscribers');
+      expect(l.handle, '@mkbhd');
+      expect(l.subscribers, '21.5M subscribers');
+    });
+
+    test('the other way round', () {
+      final l = YoutubeSearchClient.channelLabels('1M subscribers', '@x');
+      expect(l.handle, '@x');
+      expect(l.subscribers, '1M subscribers');
+    });
+
+    test('an old shape never takes a video count for subscribers', () {
+      final l = YoutubeSearchClient.channelLabels('2M subscribers', '300 videos');
+      expect(l.handle, isNull);
+      expect(l.subscribers, '2M subscribers');
+    });
+  });
+
+  group('kids search', () {
+    test('a plain query gets the kid term', () {
+      expect(kidsSafeQuery('dinosaurs'), 'dinosaurs for kids');
+    });
+
+    test('a query already about kids is left alone', () {
+      expect(kidsSafeQuery('peppa pig cartoon'), 'peppa pig cartoon');
+      expect(kidsSafeQuery('Nursery Rhymes'), 'Nursery Rhymes');
+      expect(kidsSafeQuery('songs for kids'), 'songs for kids');
+    });
+
+    test('a word merely containing a kid term does not count', () {
+      expect(kidsSafeQuery('kidnapping'), 'kidnapping for kids');
+    });
+
+    test('channels and playlists are dropped, videos and shelves kept', () {
+      const v = VideoBrief(id: 'a', title: 't', author: '', channelId: '');
+      final kept = kidsSafeItems(const [
+        SearchVideoItem(v),
+        SearchChannelItem(id: 'UC', title: 'c'),
+        SearchPlaylistItem(playlist: PlaylistBrief(id: 'PL', title: 'p')),
+        SearchShortsShelf(title: 's', shorts: [v]),
+        SearchShelf(title: 'x', videos: [v]),
+      ]);
+      expect(kept.map((i) => i.runtimeType), [
+        SearchVideoItem,
+        SearchShortsShelf,
+        SearchShelf,
+      ]);
+    });
+  });
+
+  group('search suggestions', () {
+    test('matching past searches lead, at most three, then completions', () {
+      final rows = mergeSuggestions(
+        'kan',
+        ['Kannada songs', 'kantara', 'flutter', 'kanye', 'kangaroo'],
+        ['kannada songs', 'kannada movie', 'kantara 2'],
+      );
+      expect(rows.map((r) => (r.text, r.fromHistory)), [
+        ('Kannada songs', true),
+        ('kantara', true),
+        ('kanye', true),
+        ('kannada movie', false),
+        ('kantara 2', false),
+      ]);
+    });
+
+    test('nothing typed, nothing suggested', () {
+      expect(mergeSuggestions('  ', ['a'], ['b']), isEmpty);
+    });
+
+    test('the typed part is plain and the completion bold', () {
+      expect(typedPrefixLength('kannada songs', 'Kann'), 4);
+      // A corrected spelling is all completion.
+      expect(typedPrefixLength('flute tutorial', 'flutre'), 0);
+      expect(typedPrefixLength('anything', ''), 0);
+    });
+  });
+
+  group('search result lists', () {
+    const a = VideoBrief(id: 'a', title: 'a', author: '', channelId: '');
+    const b = VideoBrief(id: 'b', title: 'b', author: '', channelId: '');
+
+    test('a repeated result on the next page is not shown twice', () {
+      final seen = <String>{};
+      var list = appendUnique(const [], const [SearchVideoItem(a)], seen);
+      list = appendUnique(list, const [
+        SearchVideoItem(a),
+        SearchVideoItem(b),
+      ], seen);
+      expect(list.map((i) => i.key), ['v:a', 'v:b']);
+    });
+
+    test('Unwatched drops watched videos and empties shelves locally', () {
+      final out = withoutWatched(const [
+        SearchVideoItem(a),
+        SearchVideoItem(b),
+        SearchShelf(title: 's', videos: [a]),
+        SearchShortsShelf(title: 'sh', shorts: [a, b]),
+        SearchChannelItem(id: 'UC', title: 'c'),
+      ], {'a'});
+      expect(out.map((i) => i.runtimeType), [
+        SearchVideoItem,
+        SearchShortsShelf,
+        SearchChannelItem,
+      ]);
+      expect((out[1] as SearchShortsShelf).shorts.single.id, 'b');
+    });
+  });
+
   group('videoCountFromBadge', () {
     test('the ordinary case', () {
       expect(videoCountFromBadge('9 videos'), 9);
@@ -5051,6 +5765,82 @@ Some blurb about the video.
         aud(bitrate: 128000, trackId: 'en.4', isDefault: true),
       ]);
       expect(picked.last.audioTrackId, 'en.4');
+    });
+  });
+
+  group('Shorts', () {
+    test('the vertical poster is tried first, landscape ones after', () {
+      final urls = shortPosterUrls('abcdefghijk');
+      expect(urls.first, endsWith('/abcdefghijk/oardefault.jpg'));
+      expect(urls.last, endsWith('/abcdefghijk/hqdefault.jpg'));
+      expect(urls, hasLength(3));
+    });
+
+    test('the rail reads the count out of the comments header', () {
+      expect(shortsCountLabel('1.2K Comments'), '1.2K');
+      expect(shortsCountLabel('348 comments'), '348');
+      expect(shortsCountLabel('1,204 Comments'), '1,204');
+      expect(shortsCountLabel('2 M comments'), '2M');
+      expect(shortsCountLabel('Comments'), isNull);
+      expect(shortsCountLabel(''), isNull);
+      expect(shortsCountLabel(null), isNull);
+    });
+
+    test('a loop counts as watched through, whatever the playhead says', () {
+      const total = Duration(seconds: 30);
+      // Watched three times, swiped two seconds into the fourth.
+      expect(
+        PlaybackController.shortReached(
+          position: const Duration(seconds: 2),
+          furthest: const Duration(seconds: 29),
+          looped: true,
+          duration: total,
+        ),
+        total,
+      );
+      // Never looped: the furthest point, not a scrub back.
+      expect(
+        PlaybackController.shortReached(
+          position: const Duration(seconds: 3),
+          furthest: const Duration(seconds: 12),
+          looped: false,
+          duration: total,
+        ),
+        const Duration(seconds: 12),
+      );
+    });
+
+    test('a wrap is tail to head, not any backwards move', () {
+      const total = Duration(seconds: 30);
+      bool wrap(int fromMs, int toMs) => PlaybackController.isLoopWrap(
+            previous: Duration(milliseconds: fromMs),
+            now: Duration(milliseconds: toMs),
+            duration: total,
+          );
+      expect(wrap(29600, 100), isTrue);
+      expect(wrap(28000, 400), isTrue); // 90% in
+      expect(wrap(15000, 200), isFalse); // a scrub back from the middle
+      expect(wrap(29600, 5000), isFalse); // a jump, not a wrap
+      expect(
+        PlaybackController.isLoopWrap(
+          previous: const Duration(seconds: 29),
+          now: Duration.zero,
+          duration: Duration.zero,
+        ),
+        isFalse,
+      );
+    });
+
+    test('the full-screen Shorts player gets no now-playing bar', () {
+      final o = RouteStackObserver();
+      final shell = _FakeRoute(null);
+      o.didPush(shell, null);
+      final shorts = _FakeRoute(RouteStackObserver.shortsRouteName);
+      o.didPush(shorts, shell);
+      expect(o.wantsNowPlayingBar, isFalse);
+      // A channel opened from a Short is an ordinary page again.
+      o.didPush(_FakeRoute('channel'), shorts);
+      expect(o.wantsNowPlayingBar, isTrue);
     });
   });
 }

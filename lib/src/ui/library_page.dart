@@ -1,24 +1,28 @@
 import 'dart:async';
 import 'dart:math';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../core/theme.dart';
 import '../data/db.dart';
 import '../data/download_manager.dart';
 import '../data/models.dart';
 import '../data/yt_repository.dart';
+import 'all_playlists_page.dart';
 import 'downloads_page.dart';
 import 'history_page.dart';
-import 'playlist_detail_page.dart';
+import 'search_page.dart';
+import 'settings_page.dart';
 import 'watch_page.dart';
 import 'widgets/library_transfer.dart';
+import 'widgets/library_widgets.dart';
 import 'widgets/sheets.dart';
 import 'widgets/video_tile.dart';
 
-/// Everything saved on this device: recent history plus local playlists.
+/// The You tab, in YouTube's order: History as a shelf, Playlists as a
+/// shelf, then the rows — Downloads, Surprise me and the Takeout import.
+///
+/// Everything here is on this device: there is no account behind it.
 class LibraryPage extends StatefulWidget {
   const LibraryPage({super.key});
 
@@ -58,7 +62,11 @@ class LibraryPageState extends State<LibraryPage> {
       }
 
       final watched = await db.watchedVideoIds();
-      final videos = await repo.subscribedFeed(channels: channels);
+      // A random fifteen rather than the first fifteen alphabetically, so
+      // every subscription can be the one picked from.
+      final videos = await repo.subscribedFeed(
+        channels: channels.toList()..shuffle(),
+      );
       if (!mounted) return;
       if (videos.isEmpty) {
         _say('Could not reach your subscriptions. Check your connection.');
@@ -90,7 +98,10 @@ class LibraryPageState extends State<LibraryPage> {
 
   Future<_LibraryData> _load() async {
     final db = context.read<AppDatabase>();
-    return (playlists: await db.playlists(), history: await db.history(limit: 12, shorts: false, kids: false));
+    return (
+      playlists: await loadLibraryPlaylists(db),
+      history: await db.history(limit: 20, shorts: false, kids: false),
+    );
   }
 
   /// Called by the shell when this tab becomes visible again, so a video
@@ -109,21 +120,64 @@ class LibraryPageState extends State<LibraryPage> {
   Future<void> _importFromTakeout() =>
       importFromTakeout(context, onDone: reload);
 
+  Future<void> _push(Widget page) async {
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => page));
+    reload();
+  }
+
+  void _historyMenu(HistoryEntry entry) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Remove from watch history'),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                final db = context.read<AppDatabase>();
+                final messenger = ScaffoldMessenger.of(context);
+                await db.deleteHistoryEntry(entry.video.id);
+                reload();
+                messenger.showSnackBar(
+                  const SnackBar(content: Text('Removed from watch history')),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.more_horiz),
+              title: const Text('More options'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                showVideoMenu(context, entry.video);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Library'),
+        title: const Text(
+          'You',
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.playlist_add),
-            tooltip: 'New playlist',
-            onPressed: _createPlaylist,
+            icon: const Icon(Icons.search),
+            tooltip: 'Search',
+            onPressed: () => _push(const SearchPage()),
           ),
           IconButton(
-            icon: const Icon(Icons.drive_folder_upload_outlined),
-            tooltip: 'Import from Google Takeout',
-            onPressed: _importFromTakeout,
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: 'Settings',
+            onPressed: () => _push(const SettingsPage()),
           ),
         ],
       ),
@@ -142,8 +196,79 @@ class LibraryPageState extends State<LibraryPage> {
 
             return ListView(
               children: [
+                ShelfHeader(
+                  title: 'History',
+                  onViewAll: () => _push(const HistoryPage()),
+                ),
+                if (data.history.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+                    child: Text('Videos you watch will show up here.'),
+                  )
+                else
+                  SizedBox(
+                    height: 168,
+                    child: ListView.separated(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      itemCount: data.history.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 10),
+                      itemBuilder: (context, index) => _HistoryCard(
+                        entry: data.history[index],
+                        onTap: () async {
+                          await WatchPage.open(context, data.history[index].video);
+                          reload();
+                        },
+                        onMenu: () => _historyMenu(data.history[index]),
+                      ),
+                    ),
+                  ),
+                ShelfHeader(
+                  title: 'Playlists',
+                  trailing: IconButton(
+                    icon: const Icon(Icons.add),
+                    tooltip: 'New playlist',
+                    onPressed: _createPlaylist,
+                  ),
+                  onViewAll: () => _push(const AllPlaylistsPage()),
+                ),
+                SizedBox(
+                  height: 178,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    itemCount: data.playlists.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 10),
+                    itemBuilder: (context, i) {
+                      final entry = data.playlists[i];
+                      void menu() => showLibraryPlaylistMenu(
+                        context,
+                        entry,
+                        onChanged: reload,
+                      );
+                      return SizedBox(
+                        width: 160,
+                        child: PlaylistCard(
+                          title: entry.title,
+                          subtitle: entry.subtitle,
+                          imageUrl: entry.imageUrl,
+                          count: entry.count,
+                          icon: entry.icon,
+                          onTap: () async {
+                            await openLibraryPlaylist(context, entry);
+                            reload();
+                          },
+                          onMenu: menu,
+                          onLongPress: menu,
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Divider(height: 1),
                 ListTile(
-                  leading: const Icon(Icons.download_for_offline_outlined),
+                  leading: const Icon(Icons.download_outlined),
                   title: const Text('Downloads'),
                   subtitle: Text(
                     busyCount > 0
@@ -153,10 +278,7 @@ class LibraryPageState extends State<LibraryPage> {
                         : '$offlineCount offline • '
                               '${formatBytes(downloads.storageUsed)}',
                   ),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(builder: (_) => const DownloadsPage()),
-                  ),
+                  onTap: () => _push(const DownloadsPage()),
                 ),
                 ListTile(
                   leading: _surprising
@@ -171,80 +293,16 @@ class LibraryPageState extends State<LibraryPage> {
                     'A random video you have not watched, from your '
                     'subscriptions',
                   ),
-                  trailing: const Icon(Icons.chevron_right),
                   onTap: _surprising ? null : _surpriseMe,
                 ),
-                const Divider(height: 1),
-                _SectionHeader(
-                  title: 'History',
-                  onSeeAll: () async {
-                    await Navigator.of(context).push(
-                      MaterialPageRoute<void>(builder: (_) => const HistoryPage()),
-                    );
-                    reload();
-                  },
+                ListTile(
+                  leading: const Icon(Icons.drive_folder_upload_outlined),
+                  title: const Text('Import from Google Takeout'),
+                  subtitle: const Text(
+                    'Bring in playlists, subscriptions and history',
+                  ),
+                  onTap: _importFromTakeout,
                 ),
-                if (data.history.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    child: Text('Videos you watch will show up here.'),
-                  )
-                else
-                  SizedBox(
-                    height: 168,
-                    child: ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      itemCount: data.history.length,
-                      itemBuilder: (context, index) {
-                        final entry = data.history[index];
-                        return SizedBox(
-                          width: 200,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: InkWell(
-                              onTap: () async {
-                                await WatchPage.open(context, entry.video);
-                                reload();
-                              },
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  VideoThumb(
-                                    video: entry.video,
-                                    progress: entry.progress,
-                                    radius: 8,
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    entry.video.title,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: Theme.of(context).textTheme.bodySmall,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                const Divider(height: 32),
-                const _SectionHeader(title: 'Playlists'),
-                for (final playlist in data.playlists)
-                  _PlaylistTile(
-                    playlist: playlist,
-                    onTap: () async {
-                      await Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => PlaylistDetailPage(playlist: playlist),
-                        ),
-                      );
-                      reload();
-                    },
-                    onDeleted: reload,
-                  ),
                 const SizedBox(height: 24),
               ],
             );
@@ -255,109 +313,79 @@ class LibraryPageState extends State<LibraryPage> {
   }
 }
 
-typedef _LibraryData = ({List<LocalPlaylist> playlists, List<HistoryEntry> history});
+typedef _LibraryData = ({
+  List<LibraryPlaylist> playlists,
+  List<HistoryEntry> history,
+});
 
-class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, this.onSeeAll});
-
-  final String title;
-  final VoidCallback? onSeeAll;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 16, 8, 10),
-    child: Row(
-      children: [
-        Expanded(
-          child: Text(title, style: Theme.of(context).textTheme.titleMedium),
-        ),
-        if (onSeeAll != null)
-          TextButton(onPressed: onSeeAll, child: const Text('See all')),
-      ],
-    ),
-  );
-}
-
-class _PlaylistTile extends StatelessWidget {
-  const _PlaylistTile({
-    required this.playlist,
+/// A 150dp history card: thumbnail with the resume bar, two lines of title,
+/// the channel, and a ⋮.
+class _HistoryCard extends StatelessWidget {
+  const _HistoryCard({
+    required this.entry,
     required this.onTap,
-    required this.onDeleted,
+    required this.onMenu,
   });
 
-  final LocalPlaylist playlist;
+  final HistoryEntry entry;
   final VoidCallback onTap;
-  final VoidCallback onDeleted;
+  final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
-    final cover = playlist.coverVideoId;
-    return ListTile(
-      leading: ClipRRect(
-        borderRadius: BorderRadius.circular(6),
-        child: SizedBox(
-          width: 64,
-          height: 40,
-          child: cover == null
-              ? ColoredBox(
-                  color: AppColors.darkElevated,
-                  child: Icon(
-                    playlist.isWatchLater
-                        ? Icons.watch_later_outlined
-                        : Icons.playlist_play,
-                    color: Colors.white38,
-                  ),
-                )
-              : CachedNetworkImage(memCacheWidth: 480, 
-                  imageUrl: 'https://i.ytimg.com/vi/$cover/hqdefault.jpg',
-                  fit: BoxFit.cover,
-                  errorWidget: (_, _, _) =>
-                      const ColoredBox(color: AppColors.darkElevated),
-                ),
-        ),
-      ),
-      title: Text(playlist.name),
-      subtitle: Text(playlist.itemCount == 1 ? '1 video' : '${playlist.itemCount} videos'),
-      trailing: playlist.isWatchLater
-          ? null
-          : IconButton(
-              icon: const Icon(Icons.more_vert, size: 20),
-              onPressed: () => _showPlaylistMenu(context),
-            ),
-      onTap: onTap,
-    );
-  }
-
-  void _showPlaylistMenu(BuildContext context) {
-    final db = context.read<AppDatabase>();
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (sheetContext) => SafeArea(
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: 150,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        onLongPress: onMenu,
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: const Text('Rename'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                final name = await showNewPlaylistDialog(
-                  context,
-                  initial: playlist.name,
-                );
-                if (name == null) return;
-                await db.renamePlaylist(playlist.id, name);
-                onDeleted();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('Delete playlist'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                await db.deletePlaylist(playlist.id);
-                onDeleted();
-              },
+            VideoThumb(video: entry.video, progress: entry.progress, radius: 8),
+            const SizedBox(height: 6),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        entry.video.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          height: 1.25,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        entry.video.author,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontSize: 11.5,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    iconSize: 16,
+                    icon: const Icon(Icons.more_vert),
+                    onPressed: onMenu,
+                  ),
+                ),
+              ],
             ),
           ],
         ),

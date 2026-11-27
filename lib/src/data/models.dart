@@ -210,6 +210,13 @@ class ChannelInfo {
     required this.title,
     this.avatarUrl,
     this.subscriberLabel,
+    this.bannerUrl,
+    this.handle,
+    this.videoCountLabel,
+    this.description,
+    this.aboutToken,
+    this.linkLabel,
+    this.tabs,
   });
 
   final String id;
@@ -219,6 +226,58 @@ class ChannelInfo {
   /// Pre-rendered by YouTube, e.g. "1.2M subscribers". Kept as text because
   /// the exact wording varies by locale and channel type.
   final String? subscriberLabel;
+
+  /// The wide header artwork (about 6:1), when the channel has one.
+  final String? bannerUrl;
+
+  /// "@mkbhd", including the @.
+  final String? handle;
+
+  /// "1.8K videos", as YouTube wrote it.
+  final String? videoCountLabel;
+
+  /// The one- or two-line description preview shown in the header.
+  final String? description;
+
+  /// Continuation token that fetches the full About panel (description,
+  /// links, joined date, views, country). Only good for a few hours, like
+  /// every continuation, so it is used straight after the header loads.
+  final String? aboutToken;
+
+  /// "twitter.com/MKBHD and 4 more links" — the links line under the
+  /// description.
+  final String? linkLabel;
+
+  /// Which tabs the channel actually has — `videos`, `shorts`, `streams`,
+  /// `playlists` — or null when the header did not say, which callers treat
+  /// as "show the usual four".
+  final Set<String>? tabs;
+}
+
+/// A channel's About panel, fetched on demand from [ChannelInfo.aboutToken].
+class ChannelAbout {
+  const ChannelAbout({
+    this.description = '',
+    this.links = const [],
+    this.joinedText,
+    this.viewCountText,
+    this.country,
+    this.subscriberText,
+    this.videoCountText,
+    this.canonicalUrl,
+  });
+
+  final String description;
+
+  /// `(title, url)` — the real destination, unwrapped from YouTube's
+  /// redirect link.
+  final List<({String title, String url})> links;
+  final String? joinedText;
+  final String? viewCountText;
+  final String? country;
+  final String? subscriberText;
+  final String? videoCountText;
+  final String? canonicalUrl;
 }
 
 /// A playlist on YouTube (not one of the local ones).
@@ -229,6 +288,9 @@ class PlaylistBrief {
     this.videoCount,
     this.thumbnailUrl,
     this.channelId,
+    this.author,
+    this.description,
+    this.viewCountLabel,
   });
 
   final String id;
@@ -237,7 +299,37 @@ class PlaylistBrief {
   final String? thumbnailUrl;
   final String? channelId;
 
+  /// The owner's name, as the playlist header shows it.
+  final String? author;
+  final String? description;
+
+  /// "737,170 views", as YouTube wrote it.
+  final String? viewCountLabel;
+
   String get shareUrl => 'https://www.youtube.com/playlist?list=$id';
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'title': title,
+    'videoCount': videoCount,
+    'thumbnailUrl': thumbnailUrl,
+    'channelId': channelId,
+    'author': author,
+  };
+
+  static PlaylistBrief? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final id = json['id'];
+    if (id is! String || id.isEmpty) return null;
+    return PlaylistBrief(
+      id: id,
+      title: (json['title'] as String?) ?? 'Playlist',
+      videoCount: json['videoCount'] as int?,
+      thumbnailUrl: json['thumbnailUrl'] as String?,
+      channelId: json['channelId'] as String?,
+      author: json['author'] as String?,
+    );
+  }
 }
 
 enum DownloadStatus { queued, running, paused, completed, failed }
