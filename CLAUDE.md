@@ -80,7 +80,11 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.34.1, build 166; iOS 2.34.1, build 167.** 2.34.1
+**Latest Android build is 2.34.1, build 166; iOS 2.34.1, build 167.**
+Published to `safenesthub.in` (`fd0b5a4f…7099`, served copy hashed; CI APK
+verified on the emulator over existing data). iOS 167 passed on its second
+attempt: attempt 1 hit a same-millisecond ordering tie in db_test, fixed on
+`main` after the tag (`rowid` tiebreak), so the tag predates that fix. 2.34.1
 is search: the response is parsed in a background isolate (results ~1.1s on
 the emulator, was 5-6s), the desktop answer's Shorts shelves are merged into
 one row after the 2nd result as the phone app lays it out
