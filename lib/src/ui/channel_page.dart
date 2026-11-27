@@ -146,8 +146,16 @@ class _ChannelPageState extends State<ChannelPage>
   /// the header) offers the usual four and fetches each, so the empty ones
   /// can drop out.
   void _applyTabs(Set<String>? tabs) {
+    // A Shorts-only channel has no Videos tab on YouTube; it used to open
+    // here on an empty "No videos" page (seen on AIBitPhone). Videos stays
+    // whenever the channel lists it, the list is unknown, or it would leave
+    // no tab at all.
+    final hasOther = tabs != null &&
+        (tabs.contains('shorts') ||
+            tabs.contains('streams') ||
+            tabs.contains('playlists'));
     final kinds = <_Kind>[
-      _Kind.videos,
+      if (tabs == null || tabs.contains('videos') || !hasOther) _Kind.videos,
       if (tabs == null || tabs.contains('shorts')) _Kind.shorts,
       if (tabs == null || tabs.contains('streams')) _Kind.live,
       if (tabs == null || tabs.contains('playlists')) _Kind.playlists,
@@ -187,7 +195,10 @@ class _ChannelPageState extends State<ChannelPage>
     if (!_headerFailed && _info?.tabs != null) return;
     final kinds = _kinds.where((k) {
       return switch (k) {
-        _Kind.videos => true,
+        // Kept unless it came back empty while Shorts has something to show.
+        _Kind.videos => _videos.loading ||
+            _videos.videos.isNotEmpty ||
+            !(_shorts.videos.isNotEmpty),
         _Kind.shorts => _shorts.loading || _shorts.videos.isNotEmpty,
         _Kind.live => _live.loading || _live.videos.isNotEmpty,
         _Kind.playlists => _loadingPlaylists || _playlists.isNotEmpty,
