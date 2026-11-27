@@ -80,9 +80,20 @@ macOS and first compiles in CI.
 build from that tag — not from `main` unless they ask for latest — and hand
 back `app-arm64-v8a-release.apk` (~73MB) and the iOS build number.
 
-**Latest Android build is 2.33.6, build 162** (tag `android-2.33.6`), published
-to `safenesthub.in` (`c7be3f03…09a5`; served copy hashed). **Latest iOS build
-is 2.33.6, build 163** (tag `v2.33.6`). 2.33.6: the mini player's X now
+**Latest Android build is 2.34.0, build 164** (tag `android-2.34.0`), published
+to `safenesthub.in` (`fd1f7883…0b5a`; served copy hashed; CI APK verified on
+the emulator over existing data). **Latest iOS build is 2.34.0, build 165**
+(tag `v2.34.0`). 2.34.0 is the YouTube-parity release: one continuous
+draggable player sheet with a live mini player (nested content navigator),
+YouTube-style search (mixed results, paging, chips, Jan-2026 filters), Home,
+player controls, Shorts, Subscriptions/You/channel pages. Tested end to end on
+AIBitPhone, which found and fixed: Home not scrolling (chip ensureVisible), a
+129dp nav bar band, black feed previews, Shorts-only channels on an empty tab;
+plus 18 findings from an adversarially verified code review. iOS-specific
+paths (PiP rect, AirPlay) are untested on a device.
+
+2.33.6 (Android 162, iOS 163), published
+to `safenesthub.in` (`c7be3f03…09a5`). 2.33.6: the mini player's X now
 supersedes the load, upgrade and countdown behind it (closing mid-load used to
 play on with no bar); a load waits at most 15s behind another and an attach at
 most 15s for ready; cards on screen resolve before the tap (`TapAhead`), the
