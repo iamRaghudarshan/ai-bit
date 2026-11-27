@@ -326,9 +326,10 @@ class _StackedArtwork extends StatelessWidget {
   }
 }
 
-/// A shelf of Shorts: a header, then a horizontal row of 9:16 tiles — or,
-/// for a big shelf (the Shorts chip's page, the 20-tile grid YouTube puts
-/// lower in the results), a two-column grid that opens collapsed.
+/// A shelf of Shorts: a header, then a horizontal row of 9:16 tiles — or, on
+/// the Shorts chip's page, where the shelf is the whole page, a two-column
+/// grid. In the mixed results it is always the row, as the phone app draws
+/// it; [phoneSearchLayout] has already merged the page's shelves into one.
 class SearchShortsShelfView extends StatefulWidget {
   const SearchShortsShelfView({
     super.key,
@@ -355,7 +356,10 @@ class _SearchShortsShelfViewState extends State<SearchShortsShelfView> {
   @override
   Widget build(BuildContext context) {
     final shelf = widget.shelf;
-    if (shelf.shorts.length <= SearchShortsShelfView.gridThreshold) {
+    // A sideways row in the results, as the phone app draws it; the grid is
+    // for the Shorts chip's page, where the shelf IS the page.
+    if (!widget.startExpanded ||
+        shelf.shorts.length <= SearchShortsShelfView.gridThreshold) {
       return _row(context);
     }
     final theme = Theme.of(context);

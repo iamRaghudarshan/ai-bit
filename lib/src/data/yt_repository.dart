@@ -760,10 +760,13 @@ class YtRepository {
       final rows = await search(query);
       return SearchBatch(items: [for (final v in rows) SearchVideoItem(v)]);
     }
-    final batch = await _search.searchPage(
-      kids ? kidsSafeQuery(query) : query,
-      params: params,
-      safetyMode: kids,
+    final batch = _phoneLayout(
+      await _search.searchPage(
+        kids ? kidsSafeQuery(query) : query,
+        params: params,
+        safetyMode: kids,
+      ),
+      firstPage: true,
     );
     return kids ? _kidsBatch(batch) : batch;
   }
@@ -771,9 +774,21 @@ class YtRepository {
   /// The next page of a search, or a chip's fresh first page.
   Future<SearchBatch> searchMore(String token, {bool kids = false}) async {
     if (isPreview) return const SearchBatch();
-    final batch = await _search.searchContinuation(token, safetyMode: kids);
+    final batch = _phoneLayout(
+      await _search.searchContinuation(token, safetyMode: kids),
+      firstPage: false,
+    );
     return kids ? _kidsBatch(batch) : batch;
   }
+
+  static SearchBatch _phoneLayout(SearchBatch b, {required bool firstPage}) =>
+      SearchBatch(
+        items: phoneSearchLayout(b.items, firstPage: firstPage),
+        continuation: b.continuation,
+        chips: b.chips,
+        correction: b.correction,
+        skipped: b.skipped,
+      );
 
   static SearchBatch _kidsBatch(SearchBatch b) => SearchBatch(
     items: kidsSafeItems(b.items),

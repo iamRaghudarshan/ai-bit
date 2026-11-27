@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:isolate';
+
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 
 import 'package:http/http.dart' as http;
 
@@ -297,12 +300,11 @@ class YoutubeSearchClient {
     String? params,
     bool safetyMode = false,
   }) async {
-    final json = await _post({
+    return _postAndParse({
       'context': _contextWith(safetyMode: safetyMode),
       'query': query,
       'params': ?params,
     });
-    return parseSearchResponse(json);
   }
 
   /// The next page, or a chip's fresh first page — both are a continuation
@@ -313,11 +315,39 @@ class YoutubeSearchClient {
     String token, {
     bool safetyMode = false,
   }) async {
-    final json = await _post({
+    return _postAndParse({
       'context': _contextWith(safetyMode: safetyMode),
       'continuation': token,
     });
-    return parseSearchResponse(json);
+  }
+
+  /// POSTs a search and parses the answer OFF the UI thread.
+  ///
+  /// A search page is 0.5-1 MB of JSON. Decoding it and walking every
+  /// renderer on the UI isolate cost seconds on a phone — the request itself
+  /// answers in about one — and froze the skeleton's shimmer while it ran.
+  /// The response bytes are handed to a short-lived isolate instead.
+  Future<SearchBatch> _postAndParse(Map<String, dynamic> body) async {
+    final watch = Stopwatch()..start();
+    final response = await _http
+        .post(_endpoint, headers: _headers, body: jsonEncode(body))
+        .timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw SearchException('YouTube returned HTTP ${response.statusCode}');
+    }
+    final fetched = watch.elapsedMilliseconds;
+    final bytes = response.bodyBytes;
+    // No isolates on the web preview, which never reaches this client anyway.
+    final batch = kIsWeb
+        ? parseSearchResponse(jsonDecode(utf8.decode(bytes)))
+        : await Isolate.run(
+            () => parseSearchResponse(jsonDecode(utf8.decode(bytes))),
+          );
+    debugPrint(
+      'AI BIT search: ${bytes.length ~/ 1024}KB fetched in ${fetched}ms, '
+      'parsed by ${watch.elapsedMilliseconds}ms, ${batch.items.length} items',
+    );
+    return batch;
   }
 
   Map<String, dynamic> _contextWith({required bool safetyMode}) => {
@@ -1305,6 +1335,45 @@ List<SearchItem> kidsSafeItems(List<SearchItem> items) => [
         item is SearchShelf)
       item,
 ];
+
+/// Lays a page of results out the way YouTube's PHONE app does.
+///
+/// The screen asks the WEB client, whose answer is the desktop layout: for a
+/// query like "how to make pasta" that leads with two Shorts shelves before
+/// any video, and carries five Shorts shelves in fourteen videos. The ANDROID
+/// client — what the YouTube app itself asks — answers the same query with
+/// videos first and a single Shorts shelf after the first to third result
+/// (measured side by side, November 2026). Its response is a 3-6 MB Litho
+/// tree that cannot be parsed reasonably, so the app's layout is rebuilt here
+/// from the web answer instead: every Shorts shelf on the page is merged into
+/// ONE "Shorts" shelf, placed after the [firstPage] ? 2nd : 3rd result.
+///
+/// A page that is nothing but Shorts — the Shorts chip — is left as it is.
+/// Pure, and tested.
+List<SearchItem> phoneSearchLayout(
+  List<SearchItem> items, {
+  required bool firstPage,
+}) {
+  final shelves = items.whereType<SearchShortsShelf>().toList();
+  if (shelves.length == items.length) return items;
+  if (shelves.isEmpty) return items;
+  final rest = [
+    for (final item in items)
+      if (item is! SearchShortsShelf) item,
+  ];
+  final ids = <String>{};
+  final shorts = [
+    for (final shelf in shelves)
+      for (final s in shelf.shorts)
+        if (ids.add(s.id)) s,
+  ];
+  final at = (firstPage ? 2 : 3).clamp(0, rest.length);
+  return [
+    ...rest.sublist(0, at),
+    SearchShortsShelf(title: 'Shorts', shorts: shorts),
+    ...rest.sublist(at),
+  ];
+}
 
 class SearchException implements Exception {
   SearchException(this.message);

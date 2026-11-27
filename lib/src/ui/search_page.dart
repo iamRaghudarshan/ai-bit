@@ -58,8 +58,17 @@ class SearchPage extends StatefulWidget {
   State<SearchPage> createState() => SearchPageState();
 }
 
-class SearchPageState extends State<SearchPage> {
+class SearchPageState extends State<SearchPage>
+    with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
+
+  /// How far the results header (box + chips) has slid away: 0 shown, 1
+  /// hidden. It follows the finger like YouTube's - away on the way down,
+  /// back the moment the list moves up - and snaps to one end on release.
+  late final AnimationController _hide = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
   final _focus = FocusNode();
 
   // ------------------------------------------------------------ editing
@@ -121,6 +130,7 @@ class SearchPageState extends State<SearchPage> {
   @override
   void dispose() {
     _debounce?.cancel();
+    _hide.dispose();
     _controller.dispose();
     _focus.dispose();
     super.dispose();
@@ -231,6 +241,7 @@ class SearchPageState extends State<SearchPage> {
   /// replaces it and the arrow keys can amend it.
   void _startEditing({bool clear = false}) {
     final text = clear ? '' : (_query ?? '');
+    _hide.value = 0;
     // The flag first, then the text: the controller's listener fetches
     // completions only while editing, and it fires on this assignment.
     _editing = true;
@@ -273,6 +284,7 @@ class SearchPageState extends State<SearchPage> {
     if (query == null) return;
     final serial = ++_serial;
     final chip = _activeChip;
+    _hide.value = 0;
     setState(() {
       _loading = true;
       _error = null;
@@ -575,6 +587,10 @@ class SearchPageState extends State<SearchPage> {
     final hasResults = _query != null;
     // select, not read: a read inside build asserts in provider.
     final kids = context.select<SettingsService, bool>((s) => s.kidsMode);
+    final background = Theme.of(context).scaffoldBackgroundColor;
+    final topInset = MediaQuery.paddingOf(context).top;
+    final showChips = hasResults && !_editing && _chips.length > 1 && !kids;
+    final headerHeight = kToolbarHeight + (showChips ? 48 : 0);
     return PopScope(
       // Back from editing returns to the results it came from; only back
       // from the results (or from a first, empty edit) leaves the screen.
@@ -583,71 +599,162 @@ class SearchPageState extends State<SearchPage> {
         if (!didPop) _backToResults();
       },
       child: Scaffold(
-        appBar: AppBar(
-          titleSpacing: 0,
-          automaticallyImplyLeading: false,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: 'Back',
-            onPressed: () => Navigator.of(context).maybePop(),
-          ),
-          // Swapped without a cross-fade on purpose: both halves of a fade
-          // would be alive at once, and a quick tap back into editing would
-          // then attach the one FocusNode to two text fields.
-          title: _editing ? _searchField(context) : _queryPill(context),
-          actions: [
-            if (!_editing && hasResults)
-              PopupMenuButton<String>(
-                tooltip: 'More',
-                icon: Badge(
-                  isLabelVisible: _filters.activeCount > 0,
-                  label: Text('${_filters.activeCount}'),
-                  child: const Icon(Icons.more_vert),
-                ),
-                onSelected: (value) {
-                  if (value == 'filters') unawaited(_showFilters());
-                },
-                itemBuilder: (_) => [
-                  PopupMenuItem(
-                    value: 'filters',
-                    child: Row(
-                      children: [
-                        const Icon(Icons.tune, size: 20),
-                        const SizedBox(width: 12),
-                        Text(
-                          _filters.activeCount == 0
-                              ? 'Search filters'
-                              : 'Search filters (${_filters.activeCount})',
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              )
-            else
-              const SizedBox(width: 12),
-          ],
-        ),
+        // The header is drawn OVER the results rather than above them, so it
+        // can slide away as they scroll; the list is padded by its height.
         // The results stay built underneath while editing, so going back to
         // them keeps their scroll position, an expanded shelf and a channel
         // card's subscribe state; the editing layer fades over them.
         body: Stack(
           fit: StackFit.expand,
           children: [
-            if (hasResults) _resultsBody(context, kids: kids),
-            AnimatedSwitcher(
-              duration: const Duration(milliseconds: 150),
-              child: _editing
-                  ? ColoredBox(
-                      key: const ValueKey('editing'),
-                      color: Theme.of(context).scaffoldBackgroundColor,
-                      child: _editingBody(context),
-                    )
-                  : const SizedBox.shrink(key: ValueKey('none')),
+            if (hasResults)
+              Positioned.fill(
+                top: topInset,
+                // Already placed below the status bar, so nothing inside may
+                // pad for it again: a shrink-wrapped grid with no padding of
+                // its own takes the inset and opened a band in a shelf.
+                child: MediaQuery.removePadding(
+                  context: context,
+                  removeTop: true,
+                  child: NotificationListener<ScrollNotification>(
+                    onNotification: (n) => _onResultsScroll(n, headerHeight),
+                    child: _resultsContent(context, top: headerHeight),
+                  ),
+                ),
+              ),
+            Positioned.fill(
+              top: topInset + kToolbarHeight,
+              child: MediaQuery.removePadding(
+                context: context,
+                removeTop: true,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 150),
+                  child: _editing
+                      ? ColoredBox(
+                          key: const ValueKey('editing'),
+                          color: background,
+                          child: _editingBody(context),
+                        )
+                      : const SizedBox.shrink(key: ValueKey('none')),
+                ),
+              ),
+            ),
+            Positioned(
+              top: topInset,
+              left: 0,
+              right: 0,
+              child: AnimatedBuilder(
+                animation: _hide,
+                builder: (context, child) => Transform.translate(
+                  offset: Offset(0, -_hide.value * headerHeight),
+                  child: child,
+                ),
+                child: ColoredBox(
+                  color: background,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _toolbar(context, hasResults: hasResults),
+                      if (showChips)
+                        SearchChipBar(
+                          chips: _chips,
+                          selected: _chipIndex,
+                          onSelected: _selectChip,
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            // A solid status bar for the header to slide under.
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: topInset,
+              child: ColoredBox(color: background),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  /// Slides the header with the results list: by the distance scrolled, so
+  /// it moves with the finger, then snaps on release. Only the list's own
+  /// vertical scroll counts - a Shorts shelf or the chip row scrolling
+  /// sideways must not move it.
+  bool _onResultsScroll(ScrollNotification n, double headerHeight) {
+    if (_editing || n.depth != 0 || n.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    final pixels = n.metrics.pixels;
+    if (n is ScrollUpdateNotification) {
+      if (pixels <= 0) {
+        _hide.value = 0;
+      } else {
+        final delta = n.scrollDelta ?? 0;
+        _hide.value = (_hide.value + delta / headerHeight).clamp(0.0, 1.0);
+      }
+    } else if (n is ScrollEndNotification) {
+      // Near the top the header always comes back: hiding it there would
+      // leave the first result's top under nothing.
+      final hide = _hide.value > 0.5 && pixels > headerHeight;
+      unawaited(_hide.animateTo(hide ? 1 : 0, curve: Curves.easeOut));
+    }
+    return false;
+  }
+
+  Widget _toolbar(BuildContext context, {required bool hasResults}) {
+    return AppBar(
+      primary: false,
+      titleSpacing: 0,
+      automaticallyImplyLeading: false,
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back),
+        tooltip: 'Back',
+        onPressed: () => Navigator.of(context).maybePop(),
+      ),
+      // Swapped without a cross-fade on purpose: both halves of a fade
+      // would be alive at once, and a quick tap back into editing would
+      // then attach the one FocusNode to two text fields.
+      title: _editing ? _searchField(context) : _queryPill(context),
+      actions: [
+        if (!_editing && hasResults)
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            icon: Badge(
+              isLabelVisible: _filters.activeCount > 0,
+              label: Text('${_filters.activeCount}'),
+              child: const Icon(Icons.more_vert),
+            ),
+            onSelected: (value) {
+              if (value == 'filters') unawaited(_showFilters());
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'filters',
+                child: Row(
+                  children: [
+                    const Icon(Icons.tune, size: 20),
+                    const SizedBox(width: 12),
+                    Text(
+                      _filters.activeCount == 0
+                          ? 'Search filters'
+                          : 'Search filters (${_filters.activeCount})',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          )
+        else
+          const SizedBox(width: 12),
+      ],
     );
   }
 
@@ -734,7 +841,9 @@ class SearchPageState extends State<SearchPage> {
 
     // Completions for exactly what is typed; until they arrive, matching past
     // searches alone, rather than the previous word's completions.
-    final remote = _suggestionsFor == text ? _remoteSuggestions : const <String>[];
+    final remote = _suggestionsFor == text
+        ? _remoteSuggestions
+        : const <String>[];
     final rows = mergeSuggestions(text, _history, remote);
     return ListView.builder(
       keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -793,22 +902,18 @@ class SearchPageState extends State<SearchPage> {
 
   // -------------------------------------------------------- results body
 
-  Widget _resultsBody(BuildContext context, {required bool kids}) {
-    final showChips = _chips.length > 1 && !kids;
-    return Column(
-      children: [
-        if (showChips)
-          SearchChipBar(
-            chips: _chips,
-            selected: _chipIndex,
-            onSelected: _selectChip,
-          ),
-        Expanded(child: _resultsContent(context)),
-      ],
+  Widget _resultsContent(BuildContext context, {required double top}) {
+    final items = _visibleItems;
+    if (!_loading && items.isNotEmpty) {
+      return _resultsList(context, items, top: top);
+    }
+    return Padding(
+      padding: EdgeInsets.only(top: top),
+      child: _resultsState(context),
     );
   }
 
-  Widget _resultsContent(BuildContext context) {
+  Widget _resultsState(BuildContext context) {
     if (_loading) return const FeedSkeleton();
     final items = _visibleItems;
     if (_error != null && items.isEmpty) {
@@ -816,10 +921,7 @@ class SearchPageState extends State<SearchPage> {
         icon: Icons.error_outline,
         title: 'Something went wrong',
         message: _error,
-        action: FilledButton(
-          onPressed: _loadFirst,
-          child: const Text('Retry'),
-        ),
+        action: FilledButton(onPressed: _loadFirst, child: const Text('Retry')),
       );
     }
     if (items.isEmpty && _continuation == null) {
@@ -843,6 +945,14 @@ class SearchPageState extends State<SearchPage> {
       );
     }
 
+    return const SizedBox.shrink();
+  }
+
+  Widget _resultsList(
+    BuildContext context,
+    List<SearchItem> items, {
+    required double top,
+  }) {
     final hasCorrection = _correction != null && _activeChip == null;
     final hasFooter = _continuation != null || _loadingMore || _moreFailed;
     final lead = hasCorrection ? 1 : 0;
@@ -854,7 +964,7 @@ class SearchPageState extends State<SearchPage> {
         return ListView.builder(
           key: PageStorageKey('search-results-$_serial'),
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.only(bottom: 24),
+          padding: EdgeInsets.only(top: top, bottom: 24),
           itemCount: count,
           itemBuilder: (context, index) {
             if (hasCorrection && index == 0) {
@@ -906,7 +1016,11 @@ class SearchPageState extends State<SearchPage> {
     );
   }
 
-  Widget _itemView(BuildContext context, SearchItem item, {required bool phone}) {
+  Widget _itemView(
+    BuildContext context,
+    SearchItem item, {
+    required bool phone,
+  }) {
     switch (item) {
       case SearchVideoItem(:final video):
         // Full-width cards on a phone, as Home draws them; rows on a tablet,
@@ -923,10 +1037,7 @@ class SearchPageState extends State<SearchPage> {
                 onMenu: () => showVideoMenu(context, video),
               );
       case SearchChannelItem():
-        return SearchChannelCard(
-          key: ValueKey(item.key),
-          channel: item,
-        );
+        return SearchChannelCard(key: ValueKey(item.key), channel: item);
       case SearchPlaylistItem():
         return SearchPlaylistCard(item: item, compact: !phone);
       case SearchShortsShelf():
@@ -935,7 +1046,8 @@ class SearchPageState extends State<SearchPage> {
           shelf: item,
           // The Shorts chip's page is one big shelf; collapsing it would
           // hide the page it is.
-          startExpanded: _visibleItems.whereType<SearchShortsShelf>().length ==
+          startExpanded:
+              _visibleItems.whereType<SearchShortsShelf>().length ==
               _visibleItems.length,
         );
       case SearchShelf():

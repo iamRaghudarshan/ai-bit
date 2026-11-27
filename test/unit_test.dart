@@ -5480,6 +5480,61 @@ Some blurb about the video.
     });
   });
 
+  group('phone search layout', () {
+    VideoBrief b(String id) =>
+        VideoBrief(id: id, title: id, author: '', channelId: '');
+    SearchItem v(String id) => SearchVideoItem(b(id));
+    String shape(SearchItem i) => switch (i) {
+      SearchVideoItem(:final video) => video.id,
+      SearchShortsShelf(:final shorts) =>
+        'S[${shorts.map((s) => s.id).join(',')}]',
+      _ => '?',
+    };
+
+    test('desktop shape: two shelves first becomes videos, ONE shelf, videos',
+        () {
+      final out = phoneSearchLayout([
+        SearchShortsShelf(title: 'Shorts', shorts: [b('s1'), b('s2')]),
+        SearchShortsShelf(title: 'Pasta guide', shorts: [b('s2'), b('s3')]),
+        v('a'),
+        v('b'),
+        v('c'),
+        SearchShortsShelf(title: 'Shorts', shorts: [b('s4')]),
+        v('d'),
+      ], firstPage: true);
+      // Merged, de-duplicated, after the second result.
+      expect(out.map(shape), ['a', 'b', 'S[s1,s2,s3,s4]', 'c', 'd']);
+      expect((out[2] as SearchShortsShelf).title, 'Shorts');
+    });
+
+    test('later pages place the shelf after the third result', () {
+      final out = phoneSearchLayout([
+        SearchShortsShelf(title: 'x', shorts: [b('s1')]),
+        v('a'),
+        v('b'),
+        v('c'),
+        v('d'),
+      ], firstPage: false);
+      expect(out.map(shape), ['a', 'b', 'c', 'S[s1]', 'd']);
+    });
+
+    test('a page of only Shorts (the Shorts chip) is untouched', () {
+      final page = [
+        SearchShortsShelf(title: 'x', shorts: [b('s1')]),
+        SearchShortsShelf(title: 'y', shorts: [b('s2')]),
+      ];
+      expect(identical(phoneSearchLayout(page, firstPage: true), page), isTrue);
+    });
+
+    test('a short page still gets its shelf, at the end', () {
+      final out = phoneSearchLayout([
+        SearchShortsShelf(title: 'x', shorts: [b('s1')]),
+        v('a'),
+      ], firstPage: true);
+      expect(out.map(shape), ['a', 'S[s1]']);
+    });
+  });
+
   group('search suggestions', () {
     test('matching past searches lead, at most three, then completions', () {
       final rows = mergeSuggestions(
